@@ -3,7 +3,7 @@ name = "buildcraft3d"
 version = "0.1.0"
 edition = "2021"
 description = "3D BuildCraft: build, repair and prepare 3D models for printing"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 rust-version = "1.84"
 default-run = "buildcraft3d"
 
