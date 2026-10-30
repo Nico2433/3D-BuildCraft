@@ -32,6 +32,7 @@ mod gizmo;
 mod icons;
 mod jobs;
 mod paint_menu;
+mod picking;
 mod print;
 mod ribbon;
 mod selection;
@@ -294,6 +295,10 @@ enum Action {
 }
 
 pub struct App {
+    picking: picking::Cache,
+    fps: bool,
+    last_frame: Option<Instant>,
+    update_ms: f64,
     scene: Scene,
     history: History,
     settings: Settings,
@@ -412,6 +417,10 @@ impl App {
         apply_theme(&cc.egui_ctx, settings.color_mode);
         style::install_fonts(&cc.egui_ctx);
         let mut app = Self {
+            picking: picking::Cache::new(),
+            fps: std::env::var("BUILDCRAFT_FPS").is_ok_and(|v| v == "1"),
+            last_frame: None,
+            update_ms: 0.0,
             scene: Scene::default(),
             history: History::default(),
             settings,
@@ -1431,6 +1440,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let started = Instant::now();
+        let interval = self
+            .last_frame
+            .replace(started)
+            .map(|last| started.duration_since(last));
+        self.picking.prepare(&self.scene.objects, ctx);
         self.take_screenshot(ctx);
         self.thumbs.collect(ctx);
         self.thumbs.keep_objects(&self.scene.objects);
@@ -1470,6 +1485,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
+        self.step_glide(ctx);
         self.resize_edges(ctx);
         self.title_bar(ctx);
         if self.print.is_some() {
@@ -1494,7 +1510,6 @@ impl eframe::App for App {
             self.apply(a, ctx);
         }
         self.serve_agent(ctx);
-        self.step_glide(ctx);
         self.sync_listener(ctx);
         self.chat_events();
 
@@ -1506,6 +1521,23 @@ impl eframe::App for App {
             self.scene_title(),
             if self.scene.dirty { " •" } else { "" }
         )));
+        if self.fps {
+            egui::Area::new(egui::Id::new("frame_times"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+                .order(egui::Order::Tooltip)
+                .interactable(false)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.monospace(format!(
+                            "CPU {:.2} ms | Δ {:.2} ms",
+                            self.update_ms,
+                            interval.map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+                        ));
+                    });
+                });
+            ctx.request_repaint();
+        }
+        self.update_ms = started.elapsed().as_secs_f64() * 1000.0;
         ctx.request_repaint_after(Duration::from_secs(5));
     }
 

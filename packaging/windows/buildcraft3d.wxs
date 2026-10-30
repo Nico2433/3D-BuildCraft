@@ -5,20 +5,26 @@
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of 3D BuildCraft is already installed." />
     <Media Id="1" Cabinet="buildcraft3d.cab" EmbedCab="yes" />
-    <Icon Id="AppIcon" SourceFile="packaging/windows/icon.ico" />
-    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <!-- Advertised shortcuts require the icon identifier to match the target extension. -->
+    <Icon Id="BuildCraft.exe" SourceFile="packaging/windows/icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="BuildCraft.exe" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLDIR" Name="3D BuildCraft">
           <Component Id="Application" Guid="7A4F6AA6-1ABA-4F20-A1EF-4A830E52674D" Win64="yes">
             <File Id="AppExe" Source="target/x86_64-pc-windows-gnu/release/buildcraft3d.exe" KeyPath="yes">
-              <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="3D BuildCraft" Advertise="yes" Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
+              <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="3D BuildCraft" Advertise="yes" Icon="BuildCraft.exe" IconIndex="0" WorkingDirectory="INSTALLDIR" />
             </File>
           </Component>
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder" />
     </Directory>
+    <!-- Commit runs after the files are installed; quiet deployments stay quiet. -->
+    <CustomAction Id="LaunchApplication" FileKey="AppExe" ExeCommand="" Execute="commit" Impersonate="yes" Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApplication" After="InstallFiles">NOT Installed AND NOT REMOVE AND UILevel &gt; 2</Custom>
+    </InstallExecuteSequence>
     <Feature Id="Main" Title="3D BuildCraft" Level="1">
       <ComponentRef Id="Application" />
     </Feature>

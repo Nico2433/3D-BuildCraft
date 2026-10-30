@@ -1,6 +1,6 @@
 [package]
 name = "buildcraft3d"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "3D BuildCraft: build, repair and prepare 3D models for printing"
 license = "MIT"

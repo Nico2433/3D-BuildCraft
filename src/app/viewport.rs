@@ -41,12 +41,10 @@ impl App {
             }
             let inv = o.matrix().inverse();
             let (lo, ld) = (inv.transform_point3(origin), inv.transform_vector3(dir));
-            for (i, [a, b, c]) in o.mesh.triangle_positions().enumerate() {
-                if let Some(t) = ray_triangle(lo, ld, a, b, c) {
-                    let world_t = (o.matrix().transform_point3(lo + ld * t) - origin).length();
-                    if best.is_none_or(|(_, _, bt)| world_t < bt) {
-                        best = Some((o.id, i, world_t));
-                    }
+            if let Some((i, t)) = self.picking.hit(&o.mesh, lo, ld) {
+                let world_t = (o.matrix().transform_point3(lo + ld * t) - origin).length();
+                if best.is_none_or(|(_, _, bt)| world_t < bt) {
+                    best = Some((o.id, i, world_t));
                 }
             }
         }

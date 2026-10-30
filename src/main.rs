@@ -64,7 +64,12 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            present_mode: eframe::wgpu::PresentMode::AutoVsync,
+            present_mode: if cfg!(windows) {
+                eframe::wgpu::PresentMode::AutoNoVsync
+            } else {
+                eframe::wgpu::PresentMode::AutoVsync
+            },
+            desired_maximum_frame_latency: if cfg!(windows) { Some(1) } else { None },
             wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
                 instance_descriptor: eframe::wgpu::InstanceDescriptor {
                     backends: if cfg!(windows) {
