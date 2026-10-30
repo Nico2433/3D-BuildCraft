@@ -1,0 +1,46 @@
+# Builds 3D BuildCraft from this repository inside the GNOME SDK (GTK for the file
+# dialogs). Cargo fetches the crates, so the build needs the network; fine for a local or
+# CI bundle (see .github/workflows/release.yml), not for Flathub, which wants vendored crates.
+app-id: io.github.nico2433.BuildCraft3D
+runtime: org.gnome.Platform
+runtime-version: "51"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang, for the webcam crate's bindings (v4l2).
+  - org.freedesktop.Sdk.Extension.llvm22
+command: buildcraft3d
+finish-args:
+  - --talk-name=org.freedesktop.Flatpak
+  - --share=ipc
+  # XWayland provides file drops, which winit does not support on Wayland.
+  - --socket=x11
+  - --device=all          # GPU and webcam
+  - --share=network       # AI assistant endpoints, local servers included
+  - --filesystem=host     # open, save and drop models from any disk
+  - --talk-name=org.freedesktop.secrets   # API keys in the keychain
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/buildcraft3d/cargo
+    LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+  build-args:
+    - --share=network
+modules:
+  - name: buildcraft3d
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/buildcraft3d /app/bin/buildcraft3d
+      - install -Dm644 packaging/flatpak/io.github.nico2433.BuildCraft3D.desktop /app/share/applications/io.github.nico2433.BuildCraft3D.desktop
+      - install -Dm644 packaging/icon.svg /app/share/icons/hicolor/scalable/apps/io.github.nico2433.BuildCraft3D.svg
+      - install -Dm644 packaging/flatpak/io.github.nico2433.BuildCraft3D.metainfo.xml /app/share/metainfo/io.github.nico2433.BuildCraft3D.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .git
+          - .flatpak-builder
+          - flatpak-build
+          - flatpak-repo

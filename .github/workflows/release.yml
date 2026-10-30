@@ -1,0 +1,89 @@
+name: Release
+
+# A tag such as v0.1.0 builds Windows, macOS and Linux (Flatpak) packages and publishes
+# them as a GitHub release. Run it by hand to get the packages as artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_PROFILE_RELEASE_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+  APP_ID: io.github.nico2433.BuildCraft3D
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path target/release/buildcraft3d.exe, README.md -DestinationPath buildcraft3d-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: buildcraft3d-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - name: App bundle (universal, unsigned)
+        run: |
+          app="3D BuildCraft.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/buildcraft3d" \
+            target/aarch64-apple-darwin/release/buildcraft3d \
+            target/x86_64-apple-darwin/release/buildcraft3d
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          sed "s/@VERSION@/$version/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          ditto -c -k --keepParent "$app" buildcraft3d-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: buildcraft3d-macos-universal.zip
+
+  linux:
+    # Built inside the GNOME SDK by the manifest, so it runs on any distribution.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+      - name: Flatpak bundle
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --force-clean --repo=flatpak-repo \
+            flatpak-build packaging/flatpak/$APP_ID.yml
+          flatpak build-bundle flatpak-repo buildcraft3d-linux-x86_64.flatpak $APP_ID
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: buildcraft3d-linux-x86_64.flatpak
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            buildcraft3d-windows-x64.zip
+            buildcraft3d-macos-universal.zip
+            buildcraft3d-linux-x86_64.flatpak

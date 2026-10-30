@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=3D BuildCraft
+Comment=Build, repair and prepare 3D models for printing
+Exec=buildcraft3d %f
+Icon=io.github.nico2433.BuildCraft3D
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=model/stl;model/3mf;model/obj;model/gltf+json;model/gltf-binary;
+Keywords=3D;print;STL;3MF;mesh;
+StartupWMClass=io.github.nico2433.BuildCraft3D

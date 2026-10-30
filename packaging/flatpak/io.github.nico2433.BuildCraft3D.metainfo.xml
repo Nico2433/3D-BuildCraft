@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nico2433.BuildCraft3D</id>
+  <name>3D BuildCraft</name>
+  <summary>Build, repair and prepare 3D models for printing</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <description>
+    <p>A simple 3D modelling app for 3D printing: basic shapes, booleans, emboss, repair,
+    painting and export to STL, 3MF, OBJ, PLY and glTF.</p>
+  </description>
+  <launchable type="desktop-id">io.github.nico2433.BuildCraft3D.desktop</launchable>
+  <url type="homepage">https://github.com/Nico2433/3D-BuildCraft</url>
+  <content_rating type="oars-1.1"/>
+</component>

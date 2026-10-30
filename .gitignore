@@ -1,0 +1,6 @@
+/target
+*.autosave.3mf
+/.flatpak-builder
+/flatpak-build
+/flatpak-repo
+/dist
