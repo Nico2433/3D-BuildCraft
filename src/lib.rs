@@ -17,6 +17,7 @@ pub mod repair;
 pub mod scene;
 pub mod settings;
 pub mod slicer;
+pub mod snapping;
 pub mod solid;
 pub mod thumbnail;
 pub mod webcam;

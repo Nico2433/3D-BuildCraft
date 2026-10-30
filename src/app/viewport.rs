@@ -1,6 +1,7 @@
 //! 3D view: camera, picking, dragging and overlays.
 
 use super::*;
+use crate::snapping;
 use std::sync::Arc;
 
 impl App {
@@ -181,6 +182,7 @@ impl App {
                         });
                     }
                 }
+                let mut snap_guides = Vec::new();
                 self.update_settle(ctx, ui, &resp, rect, aspect, box_press);
                 // Every frame of a drag starts again from the objects as they were; if
                 // something else (the assistant) changed the scene meanwhile, the drag
@@ -210,7 +212,7 @@ impl App {
                         };
                         h.last = p;
                         let (start, b0) = (h.start.clone(), h.aabb);
-                        self.drag_handle(handle.kind, amount, start, &b0);
+                        self.drag_handle(handle.kind, amount, start, &b0, ui.input(|i| i.modifiers.alt));
                     } else {
                         // The grabbed point follows the pointer on its horizontal plane.
                         let on_plane = |q: Pos2| {
@@ -221,7 +223,7 @@ impl App {
                         if let (Some(a), Some(b)) = (on_plane(h.from), on_plane(p)) {
                             let mut shift = b - a;
                             shift.z = 0.0;
-                            if self.settings.snap {
+                            if self.settings.snap && !ui.input(|i| i.modifiers.alt) {
                                 shift = shift.round();
                             }
                             self.scene.objects = h.start.clone();
@@ -230,6 +232,18 @@ impl App {
                             }
                             self.scene.dirty = true;
                         }
+                    }
+                }
+                if let Some(h) = &self.handle {
+                    let axes: &[usize] = match h.handle.map(|h| h.kind) {
+                        None => &[0, 1],
+                        Some(gizmo::Kind::Move(0)) => &[0],
+                        Some(gizmo::Kind::Move(1)) => &[1],
+                        Some(gizmo::Kind::Move(2)) => &[2],
+                        _ => &[],
+                    };
+                    if !ui.input(|i| i.modifiers.alt) {
+                        snap_guides = self.snap_movement(axes, rect, aspect);
                     }
                 }
                 if resp.drag_started_by(PointerButton::Primary) {
@@ -531,6 +545,11 @@ impl App {
                 // 2D overlays.
                 let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
                 let painter = ui.painter_at(rect);
+                for (a, b) in snap_guides {
+                    if let (Some(a), Some(b)) = (to_screen(a), to_screen(b)) {
+                        painter.line_segment([a, b], Stroke::new(1.0_f32, Color32::from_rgb(90, 210, 245)));
+                    }
+                }
                 if r.grid && r.grid_labels {
                     // Distances along the X and Y axes, written on the floor and smaller
                     // far away.
@@ -598,14 +617,10 @@ impl App {
                     };
                     let pressed = ui.input(|i| i.pointer.primary_down());
                     if self.handle.is_some() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        icons::hand_cursor(ui.ctx(), true);
                     } else if hot.is_some() || over_selection() {
                         // Held down on them, the hand closes before the drag starts.
-                        ui.ctx().set_cursor_icon(if pressed {
-                            egui::CursorIcon::Grabbing
-                        } else {
-                            egui::CursorIcon::Grab
-                        });
+                        icons::hand_cursor(ui.ctx(), pressed);
                     }
                     g.paint(&painter, hot, self.field);
                 }
@@ -727,11 +742,71 @@ impl App {
         }
     }
 
+    /// Convert eight logical screen pixels at the selection depth into millimetres.
+    fn snap_movement(
+        &mut self,
+        axes: &[usize],
+        rect: egui::Rect,
+        aspect: f32,
+    ) -> Vec<(Vec3, Vec3)> {
+        let targets: Vec<_> = self
+            .scene
+            .objects
+            .iter()
+            .filter(|o| !self.scene.selection.contains(&o.id))
+            .map(Object::world_aabb)
+            .collect();
+        let mut guides = Vec::new();
+        for &axis in axes {
+            let bounds = self.scene.selection_aabb();
+            let centre = bounds.center();
+            let mut direction = Vec3::ZERO;
+            direction[axis] = 1.0;
+            let pixels_per_mm = self
+                .to_screen(centre, rect, aspect)
+                .zip(self.to_screen(centre + direction, rect, aspect))
+                .map(|(a, b)| a.distance(b))
+                .unwrap_or(0.0);
+            // An axis viewed end-on has no useful screen-space snapping distance.
+            if pixels_per_mm < 0.01 {
+                continue;
+            }
+            if let Some(hit) = snapping::snap_axis(&bounds, &targets, axis, 8.0 / pixels_per_mm) {
+                if axis == 2 && bounds.min.z >= -1e-4 && bounds.min.z + hit.offset < -1e-4 {
+                    continue;
+                }
+                for id in self.scene.selected_ids() {
+                    self.scene.get_mut(id).unwrap().translation[axis] += hit.offset;
+                }
+                self.scene.dirty = true;
+                let mut a = centre;
+                let mut b = hit.target.center();
+                a[axis] = hit.value;
+                b[axis] = hit.value;
+                let along = (b - a).normalize_or_zero();
+                let pad = bounds
+                    .size()
+                    .max_element()
+                    .max(hit.target.size().max_element())
+                    * 0.6;
+                guides.push((a - along * pad, b + along * pad));
+            }
+        }
+        guides
+    }
+
     /// Applies a handle drag of `amount` (mm, degrees or a size factor) to the objects as
     /// they were when it started.
-    fn drag_handle(&mut self, kind: gizmo::Kind, amount: f32, start: Vec<Object>, b0: &Aabb) {
+    fn drag_handle(
+        &mut self,
+        kind: gizmo::Kind,
+        amount: f32,
+        start: Vec<Object>,
+        b0: &Aabb,
+        unsnapped: bool,
+    ) {
         use gizmo::Kind;
-        let snap = self.settings.snap;
+        let snap = self.settings.snap && !unsnapped;
         self.scene.objects = start;
         let ids = self.scene.selected_ids();
         match kind {

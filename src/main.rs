@@ -63,6 +63,52 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: eframe::wgpu::PresentMode::AutoVsync,
+            wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: eframe::wgpu::InstanceDescriptor {
+                    backends: if cfg!(windows) {
+                        eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN
+                    } else {
+                        eframe::wgpu::Backends::PRIMARY | eframe::wgpu::Backends::GL
+                    },
+                    ..Default::default()
+                },
+                power_preference: eframe::wgpu::PowerPreference::HighPerformance,
+                native_adapter_selector: Some(std::sync::Arc::new(|adapters, surface| {
+                    use eframe::wgpu::{Backend, DeviceType};
+                    let adapter = adapters
+                        .iter()
+                        .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+                        .min_by_key(|a| {
+                            let info = a.get_info();
+                            let device = match info.device_type {
+                                DeviceType::DiscreteGpu => 0,
+                                DeviceType::IntegratedGpu => 1,
+                                DeviceType::VirtualGpu => 2,
+                                DeviceType::Other => 3,
+                                DeviceType::Cpu => 4,
+                            };
+                            let backend = if cfg!(windows) {
+                                match info.backend {
+                                    Backend::Dx12 => 0,
+                                    Backend::Vulkan => 1,
+                                    _ => 2,
+                                }
+                            } else {
+                                0
+                            };
+                            (device, backend)
+                        })
+                        .ok_or_else(|| "No compatible graphics adapter".to_owned())?;
+                    log::info!("Graphics adapter: {:?}", adapter.get_info());
+                    Ok(adapter.clone())
+                })),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
         multisampling: render::MSAA_SAMPLES as u16,
         depth_buffer: 24,
         viewport: egui::ViewportBuilder::default()

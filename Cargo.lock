@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "buildcraft3d"
-version = "0.1.0"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "bytemuck",

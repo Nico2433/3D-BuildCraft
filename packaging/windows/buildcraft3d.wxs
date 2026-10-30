@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="3D BuildCraft" Language="1033" Version="$(var.Version)"
+           Manufacturer="3D BuildCraft" UpgradeCode="92D5896B-47F4-4B9F-B70A-164C07F9A883">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of 3D BuildCraft is already installed." />
+    <Media Id="1" Cabinet="buildcraft3d.cab" EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="packaging/windows/icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="3D BuildCraft">
+          <Component Id="Application" Guid="7A4F6AA6-1ABA-4F20-A1EF-4A830E52674D" Win64="yes">
+            <File Id="AppExe" Source="target/x86_64-pc-windows-gnu/release/buildcraft3d.exe" KeyPath="yes">
+              <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="3D BuildCraft" Advertise="yes" Icon="AppIcon" WorkingDirectory="INSTALLDIR" />
+            </File>
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+    <Feature Id="Main" Title="3D BuildCraft" Level="1">
+      <ComponentRef Id="Application" />
+    </Feature>
+  </Product>
+</Wix>

@@ -1,5 +1,5 @@
 //! Transform-only damped rigid-body motion for the interactive Settle tool.
-use super::Tool;
+use super::{icons, Tool};
 use crate::{mesh::Aabb, scene::Object};
 use eframe::egui;
 use glam::{Quat, Vec2, Vec3};
@@ -309,11 +309,7 @@ impl super::App {
             }
             let grabbing = matches!(&self.tool, Some(Tool::Settle { bodies, .. }) if bodies.iter().any(|b| b.grab.is_some()));
             if grabbing || settle_hit.is_some() {
-                ctx.set_cursor_icon(if grabbing {
-                    egui::CursorIcon::Grabbing
-                } else {
-                    egui::CursorIcon::Grab
-                });
+                icons::hand_cursor(ctx, grabbing);
             }
         }
     }

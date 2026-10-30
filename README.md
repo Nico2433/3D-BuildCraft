@@ -8,7 +8,7 @@ Build, repair and prepare 3D models for printing. Runs on Windows, Linux and mac
 
 Each release on GitHub has a package per system:
 
-- Windows: `buildcraft3d-windows-x64.zip`, unzip and run `buildcraft3d.exe`.
+- Windows: `buildcraft3d-windows-x64.msi`; run the installer. Installing a newer (or rebuilt same) version updates the existing installation. Remove it through Settings > Apps.
 - macOS (Apple silicon and Intel, coming in a later release): `buildcraft3d-macos-universal.zip` with `3D BuildCraft.app`. It is not signed: the first time, right-click it and choose Open, or run `xattr -dr com.apple.quarantine "3D BuildCraft.app"`.
 - Linux: `buildcraft3d-linux-x86_64.flatpak`, installed with `flatpak install --user buildcraft3d-linux-x86_64.flatpak` (it needs the GNOME 51 runtime from Flathub).
 
@@ -77,3 +77,5 @@ Development notes (architecture, decisions, progress log and the study of the or
 ## License
 
 MIT. See [LICENSE](LICENSE). 3D BuildCraft is an independent project, not affiliated with or endorsed by Microsoft; "3D Builder" is a trademark of Microsoft.
+
+Build the Windows MSI on Linux with `packaging/windows/build-msi.sh` (requires cargo-zigbuild, zig, Python 3 and msitools/wixl). While moving objects, bounding-box edges and centres snap to other objects with cyan alignment guides. Hold Alt after starting a drag to disable snapping (Alt at press starts box selection).
