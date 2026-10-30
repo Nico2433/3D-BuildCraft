@@ -73,3 +73,7 @@ With the app open, `--mcp` attaches to that window through a local port (127.0.0
 Textures; slicing and sending to the printer from the app (the slicer does it for now).
 
 Development notes (architecture, decisions, progress log and the study of the original app) are in [docs/dev](docs/dev/README.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE). 3D BuildCraft is an independent project, not affiliated with or endorsed by Microsoft; "3D Builder" is a trademark of Microsoft.

@@ -4,7 +4,7 @@
   <name>3D BuildCraft</name>
   <summary>Build, repair and prepare 3D models for printing</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT OR Apache-2.0</project_license>
+  <project_license>MIT</project_license>
   <description>
     <p>A simple 3D modelling app for 3D printing: basic shapes, booleans, emboss, repair,
     painting and export to STL, 3MF, OBJ, PLY and glTF.</p>
