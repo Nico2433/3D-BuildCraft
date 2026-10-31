@@ -34,7 +34,7 @@ impl App {
                     let size = Vec2::new(46.0, style::TITLE_H);
                     let close_hover = Color32::from_rgb(0xE8, 0x11, 0x23);
                     if style::icon_button(ui, Icon::Close, size, true, close_hover).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.actions.push(Action::Quit);
                     }
                     if style::icon_button(ui, Icon::Maximize, size, true, style::BLUE_HOVER)
                         .clicked()

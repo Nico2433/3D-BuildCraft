@@ -1455,11 +1455,19 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if ctx.input(|i| i.viewport().close_requested()) && self.scene.dirty {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Action::Quit);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.scene.dirty {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.confirm = Some(Action::Quit);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
         }
-        if self.power_update(ctx, frame) {
+        // A pending quit must draw its confirmation even if XWayland still
+        // reports the window as minimized while it is being restored.
+        if !matches!(self.confirm, Some(Action::Quit)) && self.power_update(ctx, frame) {
             return;
         }
         let started = Instant::now();
@@ -1560,6 +1568,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        // Stop accepting agent calls and remove the endpoint before other cleanup.
+        self.listener = None;
+        self.tool = None;
         self.autosave.clear();
         let _ = self.settings.save();
     }

@@ -121,89 +121,113 @@ impl App {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::splat(6.0);
-                        ui.add_space(6.0);
-                        let thumbs = &mut self.thumbs;
-                        for o in &self.scene.objects {
-                            let (rect, resp) =
-                                ui.allocate_exact_size(Vec2::splat(60.0), Sense::click());
-                            let selected = self.scene.selection.contains(&o.id);
-                            let p = ui.painter();
-                            p.rect_filled(rect, egui::CornerRadius::ZERO, Color32::WHITE);
-                            p.rect_filled(
-                                rect,
-                                egui::CornerRadius::ZERO,
-                                style::interaction_fill(&resp, true, selected, style::PANE_BAR),
-                            );
-                            match thumbs.object(o) {
-                                Some(id) => {
-                                    p.image(
-                                        id,
-                                        rect.shrink(3.0),
-                                        egui::Rect::from_min_max(
-                                            egui::pos2(0.0, 0.0),
-                                            egui::pos2(1.0, 1.0),
-                                        ),
-                                        Color32::WHITE,
-                                    );
-                                }
-                                None => {
-                                    let c = o.color;
-                                    super::icons::paint(
-                                        p,
-                                        rect.shrink(12.0),
-                                        Icon::Cube,
-                                        Color32::from_rgb(c[0], c[1], c[2]),
-                                    );
-                                }
-                            }
-                            if self.invalid.contains(&o.id) {
-                                p.rect_stroke(
-                                    rect,
-                                    egui::CornerRadius::ZERO,
-                                    Stroke::new(2.0_f32, style::CARD_ERROR),
-                                    egui::StrokeKind::Inside,
-                                );
-                            }
-                            let resp = resp.on_hover_ui(|ui| {
-                                let Some(s) = crate::scene::cached_stats(&o.mesh) else {
-                                    ui.label(&o.name);
-                                    ui.spinner();
-                                    ui.ctx().request_repaint_after(Duration::from_millis(50));
-                                    return;
-                                };
-                                let mut tip = format!(
-                                    "{}\n{} {} · {} {}",
-                                    o.name,
-                                    s.triangles,
-                                    tr(lang, "triangles"),
-                                    s.vertices,
-                                    tr(lang, "vertices")
-                                );
-                                if !s.is_closed_manifold() {
-                                    tip += &format!(
-                                        "\n{}: {} · {}: {} · {}: {}",
-                                        tr(lang, "Open edges"),
-                                        s.boundary_edges,
-                                        tr(lang, "non-manifold"),
-                                        s.nonmanifold_edges,
-                                        tr(lang, "misoriented"),
-                                        s.misoriented_edges
-                                    );
-                                }
-                                ui.label(tip);
-                            });
-                            if resp.clicked() {
-                                self.actions.push(Action::Select(o.id, add));
-                            }
-                            // As in the view: a double click centres it.
-                            if resp.double_clicked() {
-                                self.actions.push(Action::Select(o.id, false));
-                                self.actions.push(Action::Frame);
-                            }
-                        }
-                    });
+                    const CELL: f32 = 60.0;
+                    const GAP: f32 = 6.0;
+                    let columns = ((ui.available_width() - GAP) / (CELL + GAP))
+                        .floor()
+                        .max(1.0) as usize;
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(GAP as i8, 0))
+                        .show(ui, |ui| {
+                            egui::Grid::new("selection_thumbnails")
+                                .spacing(Vec2::splat(GAP))
+                                .show(ui, |ui| {
+                                    let thumbs = &mut self.thumbs;
+                                    for (index, o) in self.scene.objects.iter().enumerate() {
+                                        let (rect, resp) = ui
+                                            .allocate_exact_size(Vec2::splat(CELL), Sense::click());
+                                        let selected = self.scene.selection.contains(&o.id);
+                                        let p = ui.painter();
+                                        p.rect_filled(
+                                            rect,
+                                            egui::CornerRadius::ZERO,
+                                            Color32::WHITE,
+                                        );
+                                        p.rect_filled(
+                                            rect,
+                                            egui::CornerRadius::ZERO,
+                                            style::interaction_fill(
+                                                &resp,
+                                                true,
+                                                selected,
+                                                style::PANE_BAR,
+                                            ),
+                                        );
+                                        match thumbs.object(o) {
+                                            Some(id) => {
+                                                p.image(
+                                                    id,
+                                                    rect.shrink(3.0),
+                                                    egui::Rect::from_min_max(
+                                                        egui::pos2(0.0, 0.0),
+                                                        egui::pos2(1.0, 1.0),
+                                                    ),
+                                                    Color32::WHITE,
+                                                );
+                                            }
+                                            None => {
+                                                let c = o.color;
+                                                super::icons::paint(
+                                                    p,
+                                                    rect.shrink(12.0),
+                                                    Icon::Cube,
+                                                    Color32::from_rgb(c[0], c[1], c[2]),
+                                                );
+                                            }
+                                        }
+                                        if self.invalid.contains(&o.id) {
+                                            p.rect_stroke(
+                                                rect,
+                                                egui::CornerRadius::ZERO,
+                                                Stroke::new(2.0_f32, style::CARD_ERROR),
+                                                egui::StrokeKind::Inside,
+                                            );
+                                        }
+                                        let resp = resp.on_hover_ui(|ui| {
+                                            let Some(s) = crate::scene::cached_stats(&o.mesh)
+                                            else {
+                                                ui.label(&o.name);
+                                                ui.spinner();
+                                                ui.ctx().request_repaint_after(
+                                                    Duration::from_millis(50),
+                                                );
+                                                return;
+                                            };
+                                            let mut tip = format!(
+                                                "{}\n{} {} · {} {}",
+                                                o.name,
+                                                s.triangles,
+                                                tr(lang, "triangles"),
+                                                s.vertices,
+                                                tr(lang, "vertices")
+                                            );
+                                            if !s.is_closed_manifold() {
+                                                tip += &format!(
+                                                    "\n{}: {} · {}: {} · {}: {}",
+                                                    tr(lang, "Open edges"),
+                                                    s.boundary_edges,
+                                                    tr(lang, "non-manifold"),
+                                                    s.nonmanifold_edges,
+                                                    tr(lang, "misoriented"),
+                                                    s.misoriented_edges
+                                                );
+                                            }
+                                            ui.label(tip);
+                                        });
+                                        if resp.clicked() {
+                                            self.actions.push(Action::Select(o.id, add));
+                                        }
+                                        // As in the view: a double click centres it.
+                                        if resp.double_clicked() {
+                                            self.actions.push(Action::Select(o.id, false));
+                                            self.actions.push(Action::Frame);
+                                        }
+                                        if (index + 1) % columns == 0 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
                 });
             });
     }
