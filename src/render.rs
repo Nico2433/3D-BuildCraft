@@ -47,9 +47,6 @@ struct Vertex {
     normal: [f32; 3],
     /// Painted colour, alpha 0 for the object's.
     color: [u8; 4],
-    /// The normals of every corner at this position, averaged, so the selection outline
-    /// pushes creases out without gaps.
-    smooth: [f32; 3],
 }
 
 /// What one frame draws. Built by the UI, consumed by the callback.
@@ -89,9 +86,25 @@ struct GpuMesh {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     index_count: u32,
+    bounds: crate::mesh::Aabb,
     /// Drawn triangles, for the wireframe built on first use.
     triangles: Vec<[u32; 3]>,
     lines: Option<(wgpu::Buffer, u32)>,
+}
+
+#[derive(PartialEq)]
+struct SelectionKey {
+    view_proj: Mat4,
+    size: [u32; 2],
+    items: Vec<(usize, Mat4)>,
+}
+
+struct SelectionMask {
+    key: SelectionKey,
+    mask: wgpu::TextureView,
+    mask_bg: wgpu::BindGroup,
+    outline: wgpu::TextureView,
+    outline_bg: wgpu::BindGroup,
 }
 
 pub struct Renderer {
@@ -99,6 +112,10 @@ pub struct Renderer {
     xray: wgpu::RenderPipeline,
     wire: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
+    mask_pipeline: wgpu::RenderPipeline,
+    dilate: wgpu::RenderPipeline,
+    mask_layout: wgpu::BindGroupLayout,
+    selection: Option<SelectionMask>,
     shadow: wgpu::RenderPipeline,
     floor: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
@@ -160,19 +177,43 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     return vec4<f32>(c, a);
 }
 
-// Selection outline: the back faces pushed out a few pixels on screen, so only a rim
-// shows around the object, as the original's light blue contour.
-@vertex fn vs_outline(@location(0) p: vec3<f32>, @location(3) sn: vec3<f32>) -> @builtin(position) vec4<f32> {
-    var pos = g.view_proj * (o.model * vec4<f32>(p, 1.0));
-    let dir = (g.view_proj * vec4<f32>((o.normal * vec4<f32>(sn, 0.0)).xyz, 0.0)).xy;
-    if (length(dir) > 1e-6) {
-        pos = vec4<f32>(pos.xy + normalize(dir) * 4.0 * 2.0 / g.viewport.xy * pos.w, pos.zw);
-    }
-    return pos;
+// A depth-free mask covers the projected union, including concave interiors.
+@vertex fn vs_mask(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return g.view_proj * o.model * vec4<f32>(p, 1.0);
+}
+@fragment fn fs_mask() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
 }
 
-@fragment fn fs_outline() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.62, 0.78, 0.92, 1.0);
+@group(0) @binding(0) var mask: texture_2d<f32>;
+struct OutlineOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs_screen(@builtin(vertex_index) i: u32) -> OutlineOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: OutlineOut;
+    out.pos = vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = vec2<f32>(p.x, 1.0 - p.y);
+    return out;
+}
+fn coverage(p: vec2<i32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(mask));
+    if (any(p < vec2<i32>(0)) || any(p >= size)) { return 0.0; }
+    return textureLoad(mask, p, 0).r;
+}
+@fragment fn fs_dilate(in: OutlineOut) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(in.pos.xy);
+    if (coverage(p) > 0.5) { return vec4<f32>(0.0); }
+    var edge = 0.0;
+    // A circular four-pixel dilation has a constant width at every crease.
+    for (var y = -4; y <= 4; y++) {
+        for (var x = -4; x <= 4; x++) {
+            if (x*x + y*y <= 16) { edge = max(edge, coverage(p + vec2<i32>(x, y))); }
+        }
+    }
+    return vec4<f32>(edge);
+}
+@fragment fn fs_outline(in: OutlineOut) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(in.uv * vec2<f32>(textureDimensions(mask)));
+    return vec4<f32>(0.62, 0.78, 0.92, coverage(p));
 }
 
 struct SOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -241,6 +282,7 @@ impl Renderer {
             bytes
         );
         self.meshes = HashMap::new();
+        self.selection = None;
     }
 
     pub fn new(device: &wgpu::Device, target: wgpu::TextureFormat) -> Self {
@@ -297,7 +339,7 @@ impl Renderer {
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4, 3 => Float32x3],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4],
         };
         let pipeline = |label: &str,
                         layout: &wgpu::PipelineLayout,
@@ -306,7 +348,7 @@ impl Renderer {
                         buffers: &[wgpu::VertexBufferLayout],
                         topology: wgpu::PrimitiveTopology,
                         depth_write: bool,
-                        cull_mode: Option<wgpu::Face>| {
+                        depth_compare: Option<wgpu::CompareFunction>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -318,18 +360,21 @@ impl Renderer {
                 },
                 primitive: wgpu::PrimitiveState {
                     topology,
-                    cull_mode,
                     ..Default::default()
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
+                depth_stencil: depth_compare.map(|compare| wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: depth_write,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_compare: compare,
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: MSAA_SAMPLES,
+                    count: if depth_compare.is_some() {
+                        MSAA_SAMPLES
+                    } else {
+                        1
+                    },
                     ..Default::default()
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -337,8 +382,14 @@ impl Renderer {
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: target,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        format: if depth_compare.is_some() {
+                            target
+                        } else {
+                            wgpu::TextureFormat::R8Unorm
+                        },
+                        blend: depth_compare
+                            .is_some()
+                            .then_some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -355,7 +406,7 @@ impl Renderer {
             std::slice::from_ref(&vertex_layout),
             tri,
             true,
-            None,
+            Some(wgpu::CompareFunction::LessEqual),
         );
         let xray = pipeline(
             "xray",
@@ -365,7 +416,7 @@ impl Renderer {
             std::slice::from_ref(&vertex_layout),
             tri,
             false,
-            None,
+            Some(wgpu::CompareFunction::LessEqual),
         );
         let wire = pipeline(
             "wire",
@@ -375,17 +426,55 @@ impl Renderer {
             std::slice::from_ref(&vertex_layout),
             wgpu::PrimitiveTopology::LineList,
             false,
+            Some(wgpu::CompareFunction::LessEqual),
+        );
+        let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("selection texture"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let screen_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("selection screen"),
+            bind_group_layouts: &[&mask_layout],
+            push_constant_ranges: &[],
+        });
+        let mask_pipeline = pipeline(
+            "selection mask",
+            &mesh_layout,
+            "vs_mask",
+            "fs_mask",
+            std::slice::from_ref(&vertex_layout),
+            tri,
+            false,
+            None,
+        );
+        let dilate = pipeline(
+            "selection dilation",
+            &screen_layout,
+            "vs_screen",
+            "fs_dilate",
+            &[],
+            tri,
+            false,
             None,
         );
         let outline = pipeline(
-            "outline",
-            &mesh_layout,
-            "vs_outline",
+            "selection outline",
+            &screen_layout,
+            "vs_screen",
             "fs_outline",
-            std::slice::from_ref(&vertex_layout),
+            &[],
             tri,
-            true,
-            Some(wgpu::Face::Front),
+            false,
+            Some(wgpu::CompareFunction::Always),
         );
         let shadow = pipeline(
             "shadow",
@@ -395,7 +484,7 @@ impl Renderer {
             &[],
             tri,
             false,
-            None,
+            Some(wgpu::CompareFunction::LessEqual),
         );
         let floor = pipeline(
             "floor",
@@ -405,7 +494,7 @@ impl Renderer {
             &[],
             tri,
             false,
-            None,
+            Some(wgpu::CompareFunction::LessEqual),
         );
 
         let object_capacity = 64;
@@ -415,6 +504,10 @@ impl Renderer {
             xray,
             wire,
             outline,
+            mask_pipeline,
+            dilate,
+            mask_layout,
+            selection: None,
             shadow,
             floor,
             globals_buf,
@@ -455,11 +548,6 @@ impl Renderer {
 
     fn upload_mesh(device: &wgpu::Device, mesh: &Arc<Mesh>) -> GpuMesh {
         let shading = mesh.shading(40.0);
-        let key = |p: &Vec3| p.to_array().map(f32::to_bits);
-        let mut smooth: HashMap<[u32; 3], Vec3> = HashMap::new();
-        for (p, n) in shading.positions.iter().zip(&shading.normals) {
-            *smooth.entry(key(p)).or_default() += *n;
-        }
         let verts: Vec<Vertex> = shading
             .positions
             .iter()
@@ -469,7 +557,6 @@ impl Renderer {
                 pos: p.to_array(),
                 normal: n.to_array(),
                 color: *c,
-                smooth: smooth[&key(p)].normalize_or_zero().to_array(),
             })
             .collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -487,6 +574,7 @@ impl Renderer {
             vbuf,
             ibuf,
             index_count: (shading.triangles.len() * 3) as u32,
+            bounds: mesh.aabb(),
             lines: None,
             triangles: shading.triangles,
         }
@@ -515,8 +603,8 @@ impl CallbackTrait for FrameCallback {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
+        screen: &egui_wgpu::ScreenDescriptor,
+        encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let Some(r) = resources.get_mut::<Renderer>() else {
@@ -556,15 +644,25 @@ impl CallbackTrait for FrameCallback {
         let mut bytes = vec![0u8; 3 * n * OBJECT_STRIDE as usize];
         let mut live = HashSet::new();
         for (i, it) in self.items.iter().enumerate() {
+            let key = Arc::as_ptr(&it.mesh) as usize;
+            live.insert(key);
+            let gm = r
+                .meshes
+                .entry(key)
+                .or_insert_with(|| Renderer::upload_mesh(device, &it.mesh));
             let c = it.color;
             let color = Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32)
                 .to_array()
                 .map(|x| x / 255.0);
             let mirrored = Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0)) * it.model;
-            // The shadow patch: the footprint, a little larger and pushed away from the light.
-            let b = crate::scene::cached_aabb(&it.mesh, &it.model);
-            let half = ((b.max - b.min) * 0.5).truncate() * 1.2 + glam::Vec2::splat(2.0);
-            let centre = ((b.min + b.max) * 0.5).truncate()
+            // Transform the cached local box in constant time. A soft shadow needs
+            // only a conservative footprint, not a scan of every rotated vertex.
+            let local_half = gm.bounds.size() * 0.5;
+            let extent = it.model.x_axis.truncate().abs() * local_half.x
+                + it.model.y_axis.truncate().abs() * local_half.y
+                + it.model.z_axis.truncate().abs() * local_half.z;
+            let half = extent.truncate() * 1.2 + glam::Vec2::splat(2.0);
+            let centre = it.model.transform_point3(gm.bounds.center()).truncate()
                 - light.truncate().truncate() * 0.15 * half.length();
             let patch =
                 Mat4::from_translation(centre.extend(0.01)) * Mat4::from_scale(half.extend(1.0));
@@ -584,12 +682,6 @@ impl CallbackTrait for FrameCallback {
                     .copy_from_slice(bytemuck::bytes_of(&u));
             }
 
-            let key = Arc::as_ptr(&it.mesh) as usize;
-            live.insert(key);
-            let gm = r
-                .meshes
-                .entry(key)
-                .or_insert_with(|| Renderer::upload_mesh(device, &it.mesh));
             if self.flags.wireframe && gm.lines.is_none() {
                 let idx = Renderer::line_indices(&gm.triangles);
                 let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -604,6 +696,146 @@ impl CallbackTrait for FrameCallback {
             queue.write_buffer(&r.object_buf, 0, &bytes);
         }
         r.meshes.retain(|k, _| live.contains(k));
+        // Egui can prepare an oversized viewport during its first layout pass.
+        let size = std::array::from_fn(|i| {
+            let limit = screen.size_in_pixels[i]
+                .min(device.limits().max_texture_dimension_2d)
+                .max(1);
+            self.viewport[i].round().clamp(1.0, limit as f32) as u32
+        });
+        let key = SelectionKey {
+            view_proj: self.view_proj,
+            size,
+            items: self
+                .items
+                .iter()
+                .filter(|it| it.selected)
+                .map(|it| (Arc::as_ptr(&it.mesh) as usize, it.model))
+                .collect(),
+        };
+        if key.items.is_empty() {
+            r.selection = None;
+        } else if r.selection.as_ref().is_none_or(|s| s.key != key) {
+            if r.selection.as_ref().is_none_or(|s| s.key.size != key.size) {
+                let texture = |label| {
+                    let view = device
+                        .create_texture(&wgpu::TextureDescriptor {
+                            label: Some(label),
+                            size: wgpu::Extent3d {
+                                width: key.size[0],
+                                height: key.size[1],
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: wgpu::TextureFormat::R8Unorm,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        })
+                        .create_view(&Default::default());
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(label),
+                        layout: &r.mask_layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        }],
+                    });
+                    (view, bg)
+                };
+                let (mask, mask_bg) = texture("selection mask");
+                let (outline, outline_bg) = texture("selection outline");
+                r.selection = Some(SelectionMask {
+                    key: SelectionKey {
+                        view_proj: Mat4::IDENTITY,
+                        size: key.size,
+                        items: vec![],
+                    },
+                    mask,
+                    mask_bg,
+                    outline,
+                    outline_bg,
+                });
+            }
+            // Limit dilation to the projected selection box, especially when a dense
+            // model occupies only a small part of a large viewport.
+            let size = glam::Vec2::new(key.size[0] as f32, key.size[1] as f32);
+            let (mut min, mut max) = (size, glam::Vec2::ZERO);
+            'bounds: for it in self.items.iter().filter(|it| it.selected) {
+                let b = r.meshes[&(Arc::as_ptr(&it.mesh) as usize)].bounds;
+                let m = self.view_proj * it.model;
+                for x in [b.min.x, b.max.x] {
+                    for y in [b.min.y, b.max.y] {
+                        for z in [b.min.z, b.max.z] {
+                            let p = m * Vec4::new(x, y, z, 1.0);
+                            // A box crossing the eye plane can cover the whole screen.
+                            if p.w <= 0.0 {
+                                min = glam::Vec2::ZERO;
+                                max = size;
+                                break 'bounds;
+                            }
+                            let p = (p.truncate().truncate() / p.w * glam::Vec2::new(0.5, -0.5)
+                                + glam::Vec2::splat(0.5))
+                                * size;
+                            min = min.min(p);
+                            max = max.max(p);
+                        }
+                    }
+                }
+            }
+            let min = (min - glam::Vec2::splat(5.0))
+                .floor()
+                .clamp(glam::Vec2::ZERO, size)
+                .as_uvec2();
+            let max = (max + glam::Vec2::splat(5.0))
+                .ceil()
+                .clamp(glam::Vec2::ZERO, size)
+                .as_uvec2();
+            let selection = r.selection.as_mut().unwrap();
+            // Both passes are cached until geometry, placement, camera or viewport changes.
+            for dilate in [false, true] {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("selection"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: if dilate {
+                            &selection.outline
+                        } else {
+                            &selection.mask
+                        },
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                if min.x >= max.x || min.y >= max.y {
+                    continue;
+                }
+                pass.set_scissor_rect(min.x, min.y, max.x - min.x, max.y - min.y);
+                if dilate {
+                    pass.set_pipeline(&r.dilate);
+                    pass.set_bind_group(0, &selection.mask_bg, &[]);
+                    pass.draw(0..3, 0..1);
+                } else {
+                    pass.set_pipeline(&r.mask_pipeline);
+                    pass.set_bind_group(0, &r.globals_bg, &[]);
+                    for (i, it) in self.items.iter().enumerate().filter(|(_, it)| it.selected) {
+                        let gm = &r.meshes[&(Arc::as_ptr(&it.mesh) as usize)];
+                        pass.set_bind_group(1, &r.object_bg, &[(i as u64 * OBJECT_STRIDE) as u32]);
+                        pass.set_vertex_buffer(0, gm.vbuf.slice(..));
+                        pass.set_index_buffer(gm.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..gm.index_count, 0, 0..1);
+                    }
+                }
+            }
+            selection.key = key;
+        }
         vec![]
     }
 
@@ -682,18 +914,10 @@ impl CallbackTrait for FrameCallback {
                 pass.draw_indexed(0..*count, 0, 0..1);
             }
         }
-        pass.set_pipeline(&r.outline);
-        for (i, it) in self.items.iter().enumerate().filter(|(_, it)| it.selected) {
-            let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
-                continue;
-            };
-            if gm.index_count == 0 {
-                continue;
-            }
-            pass.set_bind_group(1, &r.object_bg, &slot(i as u64));
-            pass.set_vertex_buffer(0, gm.vbuf.slice(..));
-            pass.set_index_buffer(gm.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..gm.index_count, 0, 0..1);
+        if let Some(selection) = &r.selection {
+            pass.set_pipeline(&r.outline);
+            pass.set_bind_group(0, &selection.outline_bg, &[]);
+            pass.draw(0..3, 0..1);
         }
     }
 }
