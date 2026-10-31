@@ -1,6 +1,5 @@
-//! The AI assistant in the app: its settings page in the menu (on or off, which agent or
-//! endpoint, the API key in the system keychain, how to attach an external agent over
-//! MCP) and the chat panel at the right, whose requests run the app's tools.
+//! The AI assistant's chat panel and settings tab: model endpoints, API keys in the
+//! system keychain, and external agents connected over MCP.
 
 use super::icons::Icon;
 use super::style;
@@ -176,7 +175,7 @@ impl App {
                 });
                 ui.add_space(6.0);
                 if self.chat.settings_tab {
-                    self.ai_panel(ui);
+                    self.ai_settings(ui);
                     return;
                 }
                 ui.label(egui::RichText::new(self.chat_target()).color(style::TEXT_DIM));
@@ -273,8 +272,8 @@ impl App {
         self.chat.detecting = Some(rx);
     }
 
-    /// The assistant's page in the menu.
-    pub(super) fn ai_panel(&mut self, ui: &mut egui::Ui) {
+    /// Settings shared by the assistant's chat and external agents.
+    fn ai_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         let before = self.settings.ai.clone();
         if let Some(rx) = &self.chat.detecting {
@@ -444,13 +443,6 @@ impl App {
                     }
                     None => {}
                 }
-                if button(ui, tr(lang, "Open the chat")).clicked() {
-                    self.chat.open = true;
-                    self.chat.settings_tab = false;
-                    self.menu_open = false;
-                    self.ai_open = false;
-                }
-
                 heading(ui, tr(lang, "External agents (MCP)"));
                 ui.horizontal(|ui| {
                     style::switch(ui, &mut ai.external, tr(lang, "On"), tr(lang, "Off"));

@@ -346,8 +346,6 @@ pub struct App {
     /// The local MCP port while the assistant needs it, or why it could not open.
     listener: Option<Result<crate::mcp::Listener, String>>,
     chat: assistant_ui::ChatState,
-    /// The assistant's settings page in the menu is open.
-    ai_open: bool,
     /// Where the screenshot the assistant asked for goes, once it is taken.
     agent_shot: Option<std::sync::mpsc::Sender<crate::mcp::Reply>>,
     print_status_open: bool,
@@ -460,7 +458,6 @@ impl App {
             agent_tx,
             listener: None,
             chat: Default::default(),
-            ai_open: false,
             agent_shot: None,
             print_status_open: false,
             design_edit: None,
@@ -535,11 +532,12 @@ impl App {
             Some("paint-more") => app.actions.push(Action::PaintMenu(true)),
             _ => {}
         }
-        // The assistant's settings page, or its chat.
-        app.ai_open = launch.tool.as_deref() == Some("ai");
-        app.menu_open |= app.ai_open;
-        app.chat.open = matches!(launch.tool.as_deref(), Some("chat" | "chat-settings"));
-        app.chat.settings_tab = launch.tool.as_deref() == Some("chat-settings");
+        // The assistant's chat panel and its settings tab.
+        app.chat.open = matches!(
+            launch.tool.as_deref(),
+            Some("ai" | "chat" | "chat-settings")
+        );
+        app.chat.settings_tab = matches!(launch.tool.as_deref(), Some("ai" | "chat-settings"));
         // The question asked when closing with unsaved changes.
         if launch.tool.as_deref() == Some("unsaved") {
             app.scene.dirty = true;

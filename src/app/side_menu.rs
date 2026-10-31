@@ -81,7 +81,6 @@ impl App {
                         if r.clicked() && opens {
                             self.recent_open = !self.recent_open;
                             self.settings_open = false;
-                            self.ai_open = false;
                         } else if r.clicked() {
                             pick = action.clone();
                         }
@@ -113,11 +112,13 @@ impl App {
                         Icon::Assistant,
                         tr(lang, "AI assistant"),
                         true,
-                        self.ai_open,
+                        self.chat.open && self.chat.settings_tab,
                     )
                     .clicked()
                     {
-                        self.ai_open = !self.ai_open;
+                        self.chat.open = true;
+                        self.chat.settings_tab = true;
+                        self.menu_open = false;
                         self.settings_open = false;
                         self.recent_open = false;
                     }
@@ -132,22 +133,15 @@ impl App {
                     {
                         self.settings_open = !self.settings_open;
                         self.recent_open = false;
-                        self.ai_open = false;
                     }
                     menu_item(ui, Icon::Feedback, tr(lang, "Feedback"), false, false)
                         .on_hover_text(tr(lang, SOON));
                 });
             });
-        // The assistant's page has forms, so it is wider.
-        let flyout_w = if self.ai_open {
-            style::FLYOUT_W + 160.0
-        } else {
-            style::FLYOUT_W
-        };
-        if self.settings_open || self.recent_open || self.ai_open {
+        if self.settings_open || self.recent_open {
             let panel = egui::Rect::from_min_size(
                 egui::pos2(column.right(), top),
-                Vec2::new(flyout_w, screen.bottom() - top),
+                Vec2::new(style::FLYOUT_W, screen.bottom() - top),
             );
             egui::Area::new(egui::Id::new("menu_flyout"))
                 .fixed_pos(panel.min)
@@ -161,9 +155,7 @@ impl App {
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(24, 20))
                         .show(ui, |ui| {
-                            if self.ai_open {
-                                self.ai_panel(ui);
-                            } else if self.settings_open {
+                            if self.settings_open {
                                 self.settings_panel(ui, ctx);
                             } else {
                                 self.recent_panel(ui);
@@ -175,8 +167,8 @@ impl App {
         let outside = ctx.input(|i| {
             i.pointer.primary_clicked()
                 && i.pointer.interact_pos().is_some_and(|p| {
-                    let open_w = if self.settings_open || self.recent_open || self.ai_open {
-                        style::MENU_W + flyout_w
+                    let open_w = if self.settings_open || self.recent_open {
+                        style::MENU_W + style::FLYOUT_W
                     } else {
                         style::MENU_W
                     };
@@ -187,7 +179,6 @@ impl App {
             self.menu_open = false;
             self.settings_open = false;
             self.recent_open = false;
-            self.ai_open = false;
         }
     }
 
