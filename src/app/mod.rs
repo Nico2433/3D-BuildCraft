@@ -538,7 +538,8 @@ impl App {
         // The assistant's settings page, or its chat.
         app.ai_open = launch.tool.as_deref() == Some("ai");
         app.menu_open |= app.ai_open;
-        app.chat.open = launch.tool.as_deref() == Some("chat");
+        app.chat.open = matches!(launch.tool.as_deref(), Some("chat" | "chat-settings"));
+        app.chat.settings_tab = launch.tool.as_deref() == Some("chat-settings");
         // The question asked when closing with unsaved changes.
         if launch.tool.as_deref() == Some("unsaved") {
             app.scene.dirty = true;

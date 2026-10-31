@@ -18,6 +18,7 @@ enum Who {
 #[derive(Default)]
 pub struct ChatState {
     pub open: bool,
+    pub settings_tab: bool,
     log: Vec<(Who, String)>,
     input: String,
     busy: bool,
@@ -84,7 +85,7 @@ impl App {
 
     fn chat_send(&mut self, ctx: &egui::Context) {
         let text = self.chat.input.trim().to_owned();
-        if text.is_empty() || self.chat.busy {
+        if text.is_empty() || self.chat.busy || !self.settings.ai.enabled {
             return;
         }
         let cfg = self.settings.ai.clone();
@@ -118,7 +119,7 @@ impl App {
 
     /// The chat at the right of the window.
     pub(super) fn chat_panel(&mut self, ctx: &egui::Context) {
-        if !self.chat.open || !self.settings.ai.enabled {
+        if !self.chat.open {
             return;
         }
         let lang = self.settings.lang();
@@ -148,7 +149,7 @@ impl App {
                         {
                             self.chat.open = false;
                         }
-                        if button(ui, tr(lang, "New chat"))
+                        if !self.chat.settings_tab && button(ui, tr(lang, "New chat"))
                             .on_hover_text(tr(lang, "Start over; the scene stays as it is."))
                             .clicked()
                         {
@@ -158,6 +159,26 @@ impl App {
                         }
                     });
                 });
+                ui.horizontal(|ui| {
+                    for (settings, label) in [(false, tr(lang, "Chat")), (true, tr(lang, "Settings"))] {
+                        let selected = self.chat.settings_tab == settings;
+                        let response = ui.selectable_label(selected, egui::RichText::new(label).color(style::TEXT));
+                        if selected {
+                            ui.painter().line_segment(
+                                [response.rect.left_bottom(), response.rect.right_bottom()],
+                                egui::Stroke::new(2.0_f32, style::TEXT),
+                            );
+                        }
+                        if response.clicked() {
+                            self.chat.settings_tab = settings;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                if self.chat.settings_tab {
+                    self.ai_panel(ui);
+                    return;
+                }
                 ui.label(egui::RichText::new(self.chat_target()).color(style::TEXT_DIM));
                 ui.add_space(6.0);
                 let input_h = 112.0;
@@ -230,7 +251,7 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ready = !self.chat.busy && !self.chat.input.trim().is_empty();
+                        let ready = self.settings.ai.enabled && !self.chat.busy && !self.chat.input.trim().is_empty();
                         if ui.add_enabled(ready, framed(tr(lang, "Send"))).clicked() {
                             send = true;
                         }
@@ -347,7 +368,7 @@ impl App {
                             });
                             ui.end_row();
                             text(ui, tr(lang, "Base URL"));
-                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width(240.0));
+                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
                             ui.end_row();
                             text(ui, tr(lang, "Model"));
                             // A detected server offers its models; any other endpoint takes a typed name.
@@ -357,7 +378,7 @@ impl App {
                             match detected {
                                 Some(server) => {
                                     egui::ComboBox::from_id_salt("detected_models")
-                                        .width(228.0)
+                                        .width((ui.available_width() - 10.0).clamp(80.0, 228.0))
                                         .selected_text(ai.model.clone())
                                         .show_ui(ui, |ui| {
                                             for model in &server.models {
@@ -366,7 +387,7 @@ impl App {
                                         });
                                 }
                                 None => {
-                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width(240.0));
+                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
                                 }
                             }
                             ui.end_row();
@@ -378,7 +399,7 @@ impl App {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.chat.key)
                                         .password(true)
-                                        .desired_width(160.0)
+                                        .desired_width((ui.available_width() - 90.0).clamp(60.0, 160.0))
                                         .hint_text(tr(lang, "optional")),
                                 );
                                 if button(ui, tr(lang, "Save key")).clicked() {
@@ -425,6 +446,7 @@ impl App {
                 }
                 if button(ui, tr(lang, "Open the chat")).clicked() {
                     self.chat.open = true;
+                    self.chat.settings_tab = false;
                     self.menu_open = false;
                     self.ai_open = false;
                 }

@@ -294,6 +294,7 @@ const ES: &[(&str, &str)] = &[
     ("3D printer status", "Estado de la impresora 3D"),
     ("Recent", "Recientes"),
     ("Browse files…", "Buscar archivos…"),
+    ("Chat", "Chat"),
     ("Settings", "Configuración"),
     ("3D models", "Modelos 3D"),
     (

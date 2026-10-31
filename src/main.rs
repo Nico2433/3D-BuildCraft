@@ -14,7 +14,7 @@ const APP_ID: &str = "io.github.nico2433.BuildCraft3D";
 
 const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size WxH] \
 [--tab insert|object|edit|paint|view|help] [--lang es|en] [--select-all] [--menu] \
-[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--tool settle|cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
+[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--tool settle|cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
 
 fn main() -> eframe::Result<()> {
     env_logger::init();

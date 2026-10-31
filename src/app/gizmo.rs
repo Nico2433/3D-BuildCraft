@@ -113,12 +113,16 @@ pub fn build(
     match mode {
         TransformMode::Move => {
             for (axis, along) in axes.iter().enumerate() {
-                let side = if axis != 2 && eye[axis] < c[axis] {
+                let side = if axis < 2 && eye[axis] < c[axis] {
                     -1.0
                 } else {
                     1.0
                 };
-                let p = face(axis, side);
+                let mut p = face(axis, side);
+                // Horizontal handles sit at the bottom edge of the camera-facing face.
+                if axis < 2 {
+                    p.z = b.min.z;
+                }
                 // Measure screen scale across the view plane, independent of the axis's
                 // foreshortening, then keep the arrow on the face's outward normal.
                 let right = (c - eye).cross(Vec3::Z).try_normalize().unwrap_or(Vec3::X);
@@ -348,6 +352,9 @@ mod tests {
                 };
                 let mut p = b.center();
                 p[axis] = if side > 0.0 { b.max[axis] } else { b.min[axis] };
+                if axis < 2 {
+                    p.z = b.min.z;
+                }
                 let depth = -view.transform_point3(p).z;
                 p[axis] += side * 18.0 * depth / focal;
                 assert!(h.at.distance(project(p).unwrap()) < 0.01);
