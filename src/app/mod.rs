@@ -354,6 +354,7 @@ pub struct App {
     design_edit: Option<(Vec3, Snapshot, bool)>,
     /// The open tab was clicked again: only the tab bar shows.
     ribbon_hidden: bool,
+    items_open: bool,
     settings_open: bool,
     recent_open: bool,
     /// Bottom-bar field shown green: the last one used (0 = X).
@@ -462,6 +463,7 @@ impl App {
             print_status_open: false,
             design_edit: None,
             ribbon_hidden: false,
+            items_open: true,
             settings_open: false,
             recent_open: false,
             field: 0,
@@ -1127,7 +1129,17 @@ impl App {
             Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
             Action::ApplySimplify => {
                 if let Some(Tool::Simplify { level }) = self.tool.take() {
-                    self.edit(|s| s.simplify_selected(1.0 - level));
+                    let mut result = Ok(());
+                    self.edit(|s| result = s.simplify_selected(1.0 - level));
+                    if result.is_err() {
+                        self.toast(
+                            tr(
+                                self.settings.lang(),
+                                "Simplification produced an invalid solid",
+                            ),
+                            true,
+                        );
+                    }
                 }
             }
             Action::ApplyCut => {

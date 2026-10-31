@@ -196,10 +196,20 @@ impl App {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Reduction level"));
                 ui.spacing_mut().slider_width = 360.0;
-                ui.add(egui::Slider::new(level, 0.0..=0.99).show_value(false));
+                let max_level = self
+                    .scene
+                    .selected()
+                    .map(|o| 1.0 - 4.0 / o.mesh.triangles.len().max(4) as f32)
+                    .fold(0.99_f32, f32::min);
+                *level = level.clamp(0.0, max_level);
+                ui.add(egui::Slider::new(level, 0.0..=max_level).show_value(false));
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let faces: usize = self.scene.selected().map(|o| o.mesh.triangles.len()).sum();
-                let kept = (faces as f32 * (1.0 - *level)) as usize;
+                let kept: usize = self
+                    .scene
+                    .selected()
+                    .map(|o| o.mesh.simplify_target(1.0 - *level))
+                    .sum();
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     style::label(ui, &format!("{}   {kept}", tr(lang, "Number of faces")));

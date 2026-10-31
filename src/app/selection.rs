@@ -86,19 +86,37 @@ impl App {
                     return;
                 }
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    style::label(ui, tr(lang, "Items"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (r, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
-                        super::icons::paint(
-                            ui.painter(),
-                            r.shrink(8.0),
-                            Icon::ChevronUp,
-                            style::TEXT,
-                        );
-                    });
-                });
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(w, 32.0), Sense::click());
+                if response.clicked() {
+                    self.items_open = !self.items_open;
+                }
+                if response.hovered() {
+                    ui.painter()
+                        .rect_filled(rect, egui::CornerRadius::ZERO, style::RIBBON_HOVER);
+                }
+                ui.painter().text(
+                    egui::pos2(rect.left() + 8.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    tr(lang, "Items"),
+                    egui::FontId::proportional(style::LABEL_FONT),
+                    style::TEXT,
+                );
+                super::icons::paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - 16.0, rect.center().y),
+                        Vec2::splat(16.0),
+                    ),
+                    if self.items_open {
+                        Icon::ChevronUp
+                    } else {
+                        Icon::ChevronDown
+                    },
+                    style::TEXT,
+                );
+                if !self.items_open {
+                    return;
+                }
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);

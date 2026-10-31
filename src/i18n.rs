@@ -312,6 +312,7 @@ const ES: &[(&str, &str)] = &[
     ("Select none", "Sin selección"),
     ("Invert selection", "Invertir selección"),
     ("Items", "Elementos"),
+    ("Simplification produced an invalid solid", "La simplificación produjo un sólido no válido"),
     ("triangles", "triángulos"),
     ("vertices", "vértices"),
     ("Open edges", "Bordes abiertos"),

@@ -390,12 +390,16 @@ impl Scene {
     }
 
     /// "Simplify": keeps about `keep` (0..1) of each selected object's triangles.
-    pub fn simplify_selected(&mut self, keep: f32) {
-        for id in self.selected_ids() {
-            let o = self.get_mut(id).unwrap();
-            o.mesh = Arc::new(o.mesh.simplified(keep));
+    pub fn simplify_selected(&mut self, keep: f32) -> anyhow::Result<()> {
+        let meshes: anyhow::Result<Vec<_>> = self
+            .selected()
+            .map(|o| Ok((o.id, o.mesh.try_simplified(keep)?)))
+            .collect();
+        for (id, mesh) in meshes? {
+            self.get_mut(id).unwrap().mesh = Arc::new(mesh);
         }
         self.dirty = true;
+        Ok(())
     }
 
     /// "Split": cuts the selected objects at height `z` and keeps the chosen halves
@@ -487,6 +491,9 @@ fn cached_aabb_local(mesh: &Arc<Mesh>) -> Aabb {
 /// is applied afterwards, so moving an object never scans its vertices again.
 /// Weak keys avoid retaining old meshes solely for cached bounds.
 pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
+    if mesh.is_empty() {
+        return Aabb::empty();
+    }
     use std::sync::Weak;
     type Entry = (Weak<Mesh>, Mat4, Aabb);
     thread_local! { static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) }; }
@@ -537,6 +544,28 @@ pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
 mod tests {
     use super::*;
     use crate::primitives::Primitive;
+
+    #[test]
+    fn empty_mesh_world_bounds_remain_invalid() {
+        let mut object = Object::new("empty", Mesh::default(), DEFAULT_COLOR);
+        object.scale = Vec3::new(0.0, -1.0, 2.0);
+        object.translation = Vec3::splat(10.0);
+        let bounds = object.world_aabb();
+        assert!(!bounds.is_valid());
+        assert_eq!(bounds.center(), Vec3::ZERO);
+        assert_eq!(bounds.size(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn failed_simplification_preserves_every_selected_mesh() {
+        let mut scene = Scene::default();
+        let good = scene.add(Object::new("cube", Primitive::Cube.build(), DEFAULT_COLOR));
+        let bad = scene.add(Object::new("empty", Mesh::default(), DEFAULT_COLOR));
+        scene.selection.extend([good, bad]);
+        let original = scene.get(good).unwrap().mesh.clone();
+        assert!(scene.simplify_selected(0.0).is_err());
+        assert!(Arc::ptr_eq(&original, &scene.get(good).unwrap().mesh));
+    }
 
     #[test]
     fn group_ungroup_preserves_world_geometry_and_colours() {

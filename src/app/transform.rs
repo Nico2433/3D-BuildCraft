@@ -45,7 +45,9 @@ impl App {
         if let Some(Tool::Emboss { .. }) = self.tool {
             return self.emboss_bar(ctx);
         }
-        if self.scene.selection.is_empty() || self.tool.is_some() || !self.pending_import.is_empty()
+        if !self.scene.selection_aabb().is_valid()
+            || self.tool.is_some()
+            || !self.pending_import.is_empty()
         {
             // The editor closes with the bar, not to reopen with the next selection.
             self.bar_edit = None;

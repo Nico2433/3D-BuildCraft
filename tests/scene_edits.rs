@@ -403,7 +403,7 @@ fn simplify_selected_reduces_triangles_only_for_the_selection() {
     let (mut s, ids) = scene_with(vec![sphere(), sphere()]);
     s.selection.insert(ids[0]);
     let n = s.objects[0].mesh.triangles.len();
-    s.simplify_selected(0.25);
+    s.simplify_selected(0.25).unwrap();
     assert!(s.get(ids[0]).unwrap().mesh.triangles.len() <= n / 4 + 2);
     assert_eq!(s.get(ids[1]).unwrap().mesh.triangles.len(), n);
 }

@@ -49,7 +49,7 @@ impl Aabb {
         }
     }
     pub fn is_valid(&self) -> bool {
-        self.min.x <= self.max.x
+        self.min.is_finite() && self.max.is_finite() && self.min.cmple(self.max).all()
     }
     pub fn size(&self) -> Vec3 {
         if self.is_valid() {
@@ -59,7 +59,11 @@ impl Aabb {
         }
     }
     pub fn center(&self) -> Vec3 {
-        (self.min + self.max) * 0.5
+        if self.is_valid() {
+            self.min * 0.5 + self.max * 0.5
+        } else {
+            Vec3::ZERO
+        }
     }
 }
 
@@ -140,7 +144,7 @@ impl Mesh {
 
     pub fn aabb(&self) -> Aabb {
         let mut b = Aabb::empty();
-        for p in &self.positions {
+        for p in self.positions.iter().filter(|_| !self.is_empty()) {
             b.grow(*p);
         }
         b
@@ -165,7 +169,7 @@ impl Mesh {
 
     pub fn aabb_transformed(&self, m: &Mat4) -> Aabb {
         let mut b = Aabb::empty();
-        for p in &self.positions {
+        for p in self.positions.iter().filter(|_| !self.is_empty()) {
             b.grow(m.transform_point3(*p));
         }
         b
@@ -365,13 +369,25 @@ impl Mesh {
 
     /// Reduces the triangle count to about `keep` (0..1) of the current one with
     /// meshoptimizer's edge-collapse simplifier ("Simplify").
+    pub fn simplify_target(&self, keep: f32) -> usize {
+        ((self.triangles.len() as f32 * keep.clamp(0.0, 1.0)) as usize)
+            .max(4)
+            .min(self.triangles.len())
+    }
+
     pub fn simplified(&self, keep: f32) -> Mesh {
+        self.try_simplified(keep).unwrap_or_else(|_| self.clone())
+    }
+
+    /// Rejects collapsed results so callers can retain the original and report the error.
+    pub fn try_simplified(&self, keep: f32) -> anyhow::Result<Mesh> {
         let indices: Vec<u32> = self.triangles.iter().flatten().copied().collect();
-        let target = ((indices.len() as f32 * keep.clamp(0.0, 1.0)) as usize / 3) * 3;
+        let target = self.simplify_target(keep) * 3;
+        anyhow::ensure!(!self.is_empty(), "Simplification produced an invalid solid");
         let Ok(adapter) =
             meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&self.positions), 12, 0)
         else {
-            return self.clone();
+            anyhow::bail!("Simplification produced an invalid solid");
         };
         // Error 1.0 (relative to the mesh size) lets it reach the target count.
         let out = meshopt::simplify(
@@ -382,11 +398,27 @@ impl Mesh {
             meshopt::SimplifyOptions::None,
             None,
         );
-        Mesh::new(
+        let mesh = Mesh::new(
             self.positions.clone(),
             out.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
         )
-        .welded()
+        .welded();
+        let stats = mesh.stats();
+        anyhow::ensure!(
+            stats.triangles >= 4
+                && stats.degenerate_triangles == 0
+                && stats.is_closed_manifold()
+                && stats.area.is_finite()
+                && stats.volume.is_finite()
+                && stats.volume.abs() > 1e-9
+                && mesh.aabb().is_valid()
+                && mesh.triangle_positions().all(|[a, b, c]| {
+                    let area = (b - a).cross(c - a).length_squared();
+                    area.is_finite() && area > 0.0
+                }),
+            "Simplification produced an invalid solid"
+        );
+        Ok(mesh)
     }
 
     pub fn stats(&self) -> MeshStats {
@@ -642,6 +674,37 @@ mod tests {
     fn mirrored_transform_keeps_outward_winding() {
         let m = primitives::cube(10.0).transformed(&Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)));
         assert!(m.stats().volume > 0.0);
+    }
+
+    #[test]
+    fn simplify_minimum_keeps_finite_closed_solid() {
+        for mesh in [primitives::cube(10.0), primitives::sphere(20.0, 64, 32)] {
+            for keep in [0.0, 0.001, 0.01] {
+                let reduced = mesh.simplified(keep);
+                assert!(reduced.triangles.len() >= 4);
+                assert!(reduced.stats().is_closed_manifold());
+                assert!(reduced.aabb().is_valid());
+                assert!(reduced.aabb().center().is_finite());
+                assert!(reduced.aabb().size().is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn empty_bounds_have_finite_display_values() {
+        let mesh = Mesh::default();
+        for bounds in [mesh.aabb(), mesh.aabb_transformed(&Mat4::IDENTITY)] {
+            assert!(!bounds.is_valid());
+            assert_eq!(bounds.center(), Vec3::ZERO);
+            assert_eq!(bounds.size(), Vec3::ZERO);
+        }
+        assert!(mesh.try_simplified(0.0).is_err());
+        assert_eq!(mesh.simplified(0.0), mesh);
+        let invalid = Aabb {
+            min: Vec3::ZERO,
+            max: Vec3::new(1.0, f32::INFINITY, 1.0),
+        };
+        assert!(!invalid.is_valid());
     }
 
     #[test]
