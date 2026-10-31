@@ -497,7 +497,8 @@ impl App {
         if launch.select_all {
             app.scene.select_all();
         }
-        app.menu_open = launch.menu;
+        app.settings_open = launch.tool.as_deref() == Some("settings");
+        app.menu_open = launch.menu || app.settings_open;
         app.add_open = launch.tool.as_deref() == Some("add");
         app.extra_libraries.extend(launch.library);
         app.mode = match launch.mode.as_deref() {

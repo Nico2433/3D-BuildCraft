@@ -270,26 +270,54 @@ pub fn label(ui: &mut Ui, text: &str) -> Response {
     ui.label(egui::RichText::new(text).size(LABEL_FONT + 1.3).color(TEXT))
 }
 
+/// A radio row with theme-independent contrast on the dark flyout.
+pub fn radio(ui: &mut Ui, on: bool, text: &str) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font(MENU_FONT), TEXT);
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(32.0 + galley.size().x, 32.0), Sense::click());
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, text)
+    });
+    let center = egui::pos2(rect.left() + 11.0, rect.center().y);
+    ui.painter()
+        .circle_stroke(center, 10.0, Stroke::new(2.0_f32, TEXT));
+    if on {
+        ui.painter().circle_filled(center, 5.0, TOGGLE_ON);
+    }
+    ui.painter().galley(
+        egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        TEXT,
+    );
+    resp
+}
+
 /// A Windows-style on/off switch followed by its state text.
 pub fn switch(ui: &mut Ui, on: &mut bool, on_text: &str, off_text: &str) -> Response {
-    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(44.0, 20.0), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(50.0, 26.0), Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
     let p = ui.painter();
-    let r = CornerRadius::same(10);
+    let r = CornerRadius::same(13);
     if *on {
         p.rect_filled(rect, r, TOGGLE_ON);
-        p.circle_filled(egui::pos2(rect.right() - 10.0, rect.center().y), 5.0, TEXT);
+        p.circle_filled(egui::pos2(rect.right() - 13.0, rect.center().y), 6.0, TEXT);
     } else {
         p.rect_stroke(
             rect,
             r,
-            Stroke::new(1.5_f32, TEXT),
+            Stroke::new(2.0_f32, TEXT),
             egui::StrokeKind::Inside,
         );
-        p.circle_filled(egui::pos2(rect.left() + 10.0, rect.center().y), 5.0, TEXT);
+        p.circle_filled(
+            egui::pos2(rect.left() + 13.0, rect.center().y),
+            6.0,
+            TEXT_DIM,
+        );
     }
     label(ui, if *on { on_text } else { off_text });
     resp

@@ -138,7 +138,7 @@ impl App {
                     ui.painter()
                         .rect_filled(panel, egui::CornerRadius::ZERO, style::FLYOUT);
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(24, 20))
+                        .inner_margin(egui::Margin::symmetric(16, 20))
                         .show(ui, |ui| {
                             if self.settings_open {
                                 self.settings_panel(ui, ctx);
@@ -170,8 +170,9 @@ impl App {
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let lang = self.settings.lang();
         let before = self.settings.clone();
+        ui.spacing_mut().item_spacing.y = 0.0;
         let heading = |ui: &mut egui::Ui, t: &str| {
-            ui.add_space(10.0);
+            ui.add_space(20.0);
             ui.label(
                 egui::RichText::new(t)
                     .size(style::MENU_FONT)
@@ -179,21 +180,19 @@ impl App {
             );
             ui.add_space(4.0);
         };
-        let radio = |ui: &mut egui::Ui, on: bool, t: &str| {
-            ui.radio(
-                on,
-                egui::RichText::new(t)
-                    .size(style::MENU_FONT)
-                    .color(style::TEXT),
-            )
-        };
-        heading(ui, tr(lang, "Units"));
+        ui.label(
+            egui::RichText::new(tr(lang, "Units"))
+                .size(style::MENU_FONT)
+                .color(style::TEXT),
+        );
+        ui.add_space(4.0);
         egui::Grid::new("units")
             .num_columns(2)
-            .min_col_width(110.0)
+            .min_col_width(112.0)
+            .spacing(Vec2::new(8.0, 0.0))
             .show(ui, |ui| {
                 for (i, u) in Units::ALL.into_iter().enumerate() {
-                    if radio(ui, self.settings.units == u, tr(lang, u.label())).clicked() {
+                    if style::radio(ui, self.settings.units == u, tr(lang, u.label())).clicked() {
                         self.settings.units = u;
                     }
                     if i % 2 == 1 {
@@ -207,13 +206,13 @@ impl App {
             (ColorMode::Light, tr(lang, "Light")),
             (ColorMode::Dark, tr(lang, "Dark")),
         ] {
-            if radio(ui, self.settings.color_mode == m, t).clicked() {
+            if style::radio(ui, self.settings.color_mode == m, t).clicked() {
                 self.settings.color_mode = m;
             }
         }
         heading(ui, tr(lang, "Language"));
         for l in Lang::ALL {
-            if radio(ui, self.settings.lang() == l, l.label()).clicked() {
+            if style::radio(ui, self.settings.lang() == l, l.label()).clicked() {
                 self.settings.lang = Some(l);
             }
         }
