@@ -112,9 +112,10 @@ pub fn build(
     };
     match mode {
         TransformMode::Move => {
-            add(Kind::Move(0), face(0, 1.0), Vec3::X, 1.0);
-            add(Kind::Move(1), face(1, front), Vec3::Y, 1.0);
-            add(Kind::Move(2), face(2, 1.0), Vec3::Z, 1.0);
+            for (axis, along) in axes.iter().enumerate() {
+                let side = if eye[axis] < c[axis] { -1.0 } else { 1.0 };
+                add(Kind::Move(axis), face(axis, side), *along, 1.0);
+            }
         }
         TransformMode::Scale => {
             for (axis, side) in [(0, -1.0), (0, 1.0), (1, front), (2, -1.0), (2, 1.0)] {
@@ -158,7 +159,7 @@ pub fn build(
             }
         }
     }
-    if mode == TransformMode::Scale {
+    if matches!(mode, TransformMode::Move | TransformMode::Scale) {
         let corners: Vec<Pos2> = (0..8)
             .filter_map(|i| {
                 to_screen(Vec3::new(
@@ -168,8 +169,34 @@ pub fn build(
                 ))
             })
             .collect();
-        if corners.len() == 8 {
+        if !corners.is_empty() && (mode == TransformMode::Move || corners.len() == 8) {
             let frame = egui::Rect::from_points(&corners);
+            if mode == TransformMode::Move {
+                // Include the arrow's 19-point extent and a 12-point gap. Drawing and
+                // grabbing both use this position, while drag units stay on the axis.
+                let outside = frame.expand(31.0);
+                for h in &mut g.handles {
+                    let Kind::Move(axis) = h.kind else { continue };
+                    let side = if eye[axis] < c[axis] { -1.0 } else { 1.0 };
+                    let dir = h.per.normalized() * side;
+                    let mut distance = f32::INFINITY;
+                    for (p, d, min, max) in [
+                        (h.at.x, dir.x, outside.left(), outside.right()),
+                        (h.at.y, dir.y, outside.top(), outside.bottom()),
+                    ] {
+                        if d.abs() > 1e-6 {
+                            distance = distance.min((if d > 0.0 { max - p } else { min - p }) / d);
+                        }
+                    }
+                    h.at = if distance.is_finite() {
+                        h.at + dir * distance.max(0.0)
+                    } else {
+                        // An axis aimed straight at the camera has no screen direction.
+                        outside.right_top()
+                    };
+                }
+                return g;
+            }
             for p in [
                 frame.left_top(),
                 frame.right_top(),
@@ -311,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn move_has_an_arrow_per_axis_on_the_faces() {
+    fn move_arrows_clear_the_selection_and_use_the_same_grab_positions() {
         let g = build(
             TransformMode::Move,
             &cube(),
@@ -321,15 +348,49 @@ mod tests {
         );
         let kinds: Vec<Kind> = g.handles.iter().map(|h| h.kind).collect();
         assert_eq!(kinds, [Kind::Move(0), Kind::Move(1), Kind::Move(2)]);
-        // Z: top face centre, one point up per mm.
+        let frame = egui::Rect::from_min_max(Pos2::new(-13.0, -23.0), Pos2::new(13.0, 3.0));
+        for h in &g.handles {
+            assert!(!frame.expand(30.0).contains(h.at));
+            assert_eq!(g.grab(h.at).unwrap().kind, h.kind);
+        }
         let z = g.handles[2];
-        assert_eq!(z.at, Pos2::new(0.0, -20.0));
         assert!((z.amount(Vec2::new(0.0, -5.0)) - 5.0).abs() < 1e-4);
-        // Y on the face towards the eye.
-        assert_eq!(
-            g.handles[1].at,
-            screen(Vec3::new(0.0, -10.0, 10.0)).unwrap()
-        );
+    }
+
+    #[test]
+    fn move_arrows_clear_perspective_bounds_from_both_sides() {
+        let b = cube();
+        for offset in [
+            Vec3::new(80.0, -100.0, 70.0),
+            Vec3::new(-80.0, 100.0, -70.0),
+            Vec3::new(0.0, -100.0, 0.0),
+        ] {
+            let eye = b.center() + offset;
+            let vp = glam::Mat4::perspective_rh(1.0, 1.0, 0.1, 1000.0)
+                * glam::Mat4::look_at_rh(eye, b.center(), Vec3::Z);
+            let project = |p: Vec3| {
+                let p = vp.project_point3(p);
+                Some(Pos2::new(p.x * 400.0, p.y * 400.0))
+            };
+            let corners: Vec<_> = (0..8)
+                .map(|i| {
+                    project(Vec3::new(
+                        if i & 1 == 0 { b.min.x } else { b.max.x },
+                        if i & 2 == 0 { b.min.y } else { b.max.y },
+                        if i & 4 == 0 { b.min.z } else { b.max.z },
+                    ))
+                    .unwrap()
+                })
+                .collect();
+            let frame = egui::Rect::from_points(&corners).expand(30.0);
+            let g = build(TransformMode::Move, &b, eye, [0.0; 3], &project);
+            assert_eq!(g.handles.len(), 3);
+            for h in &g.handles {
+                assert!(h.at.x.is_finite() && h.at.y.is_finite());
+                assert!(!frame.contains(h.at));
+                assert!(g.grab(h.at).is_some());
+            }
+        }
     }
 
     #[test]

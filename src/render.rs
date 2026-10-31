@@ -207,7 +207,7 @@ struct FOut { @builtin(position) pos: vec4<f32>, @location(0) w: vec2<f32> };
     var corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
     let w = corners[i] * 3000.0;
     var out: FOut;
-    out.pos = g.view_proj * vec4<f32>(w, -0.02, 1.0);
+    out.pos = g.view_proj * vec4<f32>(w, 0.0, 1.0);
     out.w = w;
     return out;
 }
@@ -389,7 +389,8 @@ impl Renderer {
             "fs_floor",
             &[],
             tri,
-            false,
+            // Blend over the reflection first, then occlude real geometry below z = 0.
+            true,
             None,
         );
 
