@@ -228,6 +228,21 @@ struct FOut { @builtin(position) pos: vec4<f32>, @location(0) w: vec2<f32> };
 "#;
 
 impl Renderer {
+    /// Mesh uploads and wireframe copies are rebuilt on the next draw.
+    pub fn release_meshes(&mut self) {
+        let bytes: u64 = self
+            .meshes
+            .values()
+            .map(|m| m.vbuf.size() + m.ibuf.size() + m.lines.as_ref().map_or(0, |(b, _)| b.size()))
+            .sum();
+        log::info!(
+            "power: releasing {} GPU meshes, {} buffer bytes",
+            self.meshes.len(),
+            bytes
+        );
+        self.meshes = HashMap::new();
+    }
+
     pub fn new(device: &wgpu::Device, target: wgpu::TextureFormat) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("viewport"),

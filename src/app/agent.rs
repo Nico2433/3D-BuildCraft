@@ -37,7 +37,12 @@ pub fn caller(
 
 impl App {
     /// Runs the agent's pending calls; call once a frame, after the UI's actions.
-    pub(super) fn serve_agent(&mut self, ctx: &egui::Context) {
+    pub(super) fn serve_agent(&mut self, ctx: &egui::Context) -> bool {
+        if self.power.sleeping() {
+            if let Some(reply) = self.agent_shot.take() {
+                let _ = reply.send(Err("screenshots are unavailable while minimized".into()));
+            }
+        }
         if let Some(reply) = self.agent_shot.take() {
             let shot = ctx.input(|i| {
                 i.raw.events.iter().find_map(|e| match e {
@@ -56,8 +61,15 @@ impl App {
             }
         }
         let requests: Vec<Request> = self.agent.try_iter().collect();
+        let processed = !requests.is_empty();
         let lang = self.settings.lang();
         for r in requests {
+            if r.tool == "screenshot" && self.power.sleeping() {
+                let _ = r
+                    .reply
+                    .send(Err("screenshots are unavailable while minimized".into()));
+                continue;
+            }
             if r.tool == "screenshot" {
                 if self.agent_shot.is_some() {
                     let _ = r
@@ -88,6 +100,7 @@ impl App {
             }
             let _ = r.reply.send(out);
         }
+        processed
     }
 
     fn agent_call(&mut self, tool: &str, a: &Value, ctx: &egui::Context) -> Reply {

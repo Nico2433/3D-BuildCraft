@@ -427,19 +427,32 @@ impl Scene {
     }
 }
 
+use std::sync::{mpsc, Weak};
+type StatsEntry = (Weak<Mesh>, Option<crate::mesh::MeshStats>);
+type StatsPending = (Weak<Mesh>, mpsc::Receiver<crate::mesh::MeshStats>);
+#[derive(Default)]
+struct StatsCache {
+    ready: Vec<StatsEntry>,
+    pending: Option<StatsPending>,
+}
+thread_local! { static STATS: std::cell::RefCell<StatsCache> = std::cell::RefCell::new(StatsCache::default()); }
+
+thread_local! {
+    static LOCAL: std::cell::RefCell<Vec<(std::sync::Weak<Mesh>, Aabb)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static BOUNDS: std::cell::RefCell<Vec<(std::sync::Weak<Mesh>, Mat4, Aabb)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Releases rebuildable caches on the calling (UI) thread.
+pub fn clear_caches() {
+    STATS.with(|c| *c.borrow_mut() = StatsCache::default());
+    LOCAL.with(|c| *c.borrow_mut() = Vec::new());
+    BOUNDS.with(|c| *c.borrow_mut() = Vec::new());
+}
+
 /// Topology statistics are computed off the UI thread. Weak keys do not retain
 /// obsolete geometry, and a single worker bounds concurrent topology allocations.
 pub fn cached_stats(mesh: &Arc<Mesh>) -> Option<crate::mesh::MeshStats> {
-    use std::sync::{mpsc, Weak};
-    type Entry = (Weak<Mesh>, Option<crate::mesh::MeshStats>);
-    type Pending = (Weak<Mesh>, mpsc::Receiver<crate::mesh::MeshStats>);
-    #[derive(Default)]
-    struct Cache {
-        ready: Vec<Entry>,
-        pending: Option<Pending>,
-    }
-    thread_local! { static CACHE: std::cell::RefCell<Cache> = std::cell::RefCell::new(Cache::default()); }
-    CACHE.with(|cache| {
+    STATS.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.ready.retain(|(m, _)| m.strong_count() > 0);
         if let Some((key, rx)) = cache.pending.take() {
@@ -469,8 +482,6 @@ pub fn cached_stats(mesh: &Arc<Mesh>) -> Option<crate::mesh::MeshStats> {
 }
 
 fn cached_aabb_local(mesh: &Arc<Mesh>) -> Aabb {
-    type Entry = (std::sync::Weak<Mesh>, Aabb);
-    thread_local! { static LOCAL: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) }; }
     LOCAL.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.retain(|(m, _)| m.strong_count() > 0);
@@ -495,13 +506,11 @@ pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
         return Aabb::empty();
     }
     use std::sync::Weak;
-    type Entry = (Weak<Mesh>, Mat4, Aabb);
-    thread_local! { static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) }; }
     let translation = matrix.w_axis.truncate();
     let mut linear = *matrix;
     linear.w_axis = glam::Vec4::W;
     let key = Arc::downgrade(mesh);
-    let bounds = CACHE.with(|cache| {
+    let bounds = BOUNDS.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.retain(|(m, _, _)| m.strong_count() > 0);
         if let Some((_, _, bounds)) = cache

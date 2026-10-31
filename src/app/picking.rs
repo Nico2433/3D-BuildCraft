@@ -15,6 +15,16 @@ impl Cache {
         }
     }
 
+    pub fn release(&mut self) {
+        let bytes: usize = self.entries.iter().map(|(_, node)| node.heap_bytes()).sum();
+        log::info!(
+            "power: releasing {} picking BVHs, {} heap bytes",
+            self.entries.len(),
+            bytes
+        );
+        *self = Self::new();
+    }
+
     pub fn prepare(&mut self, objects: &[Object], ctx: &egui::Context) {
         self.entries.retain(|(mesh, _)| {
             objects
@@ -43,8 +53,9 @@ impl Cache {
             let ctx = ctx.clone();
             std::thread::spawn(move || {
                 let node = Node::build(&mesh, (0..mesh.triangles.len()).collect());
-                let _ = tx.send(node);
-                ctx.request_repaint();
+                if tx.send(node).is_ok() {
+                    ctx.request_repaint();
+                }
             });
         }
     }
@@ -74,6 +85,14 @@ struct Node {
 }
 
 impl Node {
+    fn heap_bytes(&self) -> usize {
+        self.triangles.capacity() * std::mem::size_of::<usize>()
+            + self.children.as_ref().map_or(0, |children| {
+                std::mem::size_of::<[Node; 2]>()
+                    + children.iter().map(Node::heap_bytes).sum::<usize>()
+            })
+    }
+
     fn build(mesh: &Mesh, mut triangles: Vec<usize>) -> Self {
         let bounds_for = |i: usize| {
             let mut bounds = Aabb::empty();

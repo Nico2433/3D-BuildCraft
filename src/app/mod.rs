@@ -33,6 +33,7 @@ mod icons;
 mod jobs;
 mod paint_menu;
 mod picking;
+mod power;
 mod print;
 mod ribbon;
 mod selection;
@@ -297,6 +298,7 @@ enum Action {
 }
 
 pub struct App {
+    power: power::State,
     picking: picking::Cache,
     fps: bool,
     last_frame: Option<Instant>,
@@ -418,6 +420,7 @@ impl App {
         apply_theme(&cc.egui_ctx, settings.color_mode);
         style::install_fonts(&cc.egui_ctx);
         let mut app = Self {
+            power: power::State::default(),
             picking: picking::Cache::new(),
             fps: std::env::var("BUILDCRAFT_FPS").is_ok_and(|v| v == "1"),
             last_frame: None,
@@ -1451,7 +1454,14 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.scene.dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Action::Quit);
+        }
+        if self.power_update(ctx, frame) {
+            return;
+        }
         let started = Instant::now();
         let interval = self
             .last_frame
@@ -1462,10 +1472,6 @@ impl eframe::App for App {
         self.thumbs.collect(ctx);
         self.thumbs.keep_objects(&self.scene.objects);
         self.shortcuts(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && self.scene.dirty {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Action::Quit);
-        }
         // Files dropped onto the window are added to the scene.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw

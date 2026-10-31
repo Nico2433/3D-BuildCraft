@@ -53,4 +53,5 @@ lto = "thin"
 
 # Same winit as eframe, to pick X11 on Linux: winit cannot take dropped files on Wayland.
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
