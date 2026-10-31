@@ -356,13 +356,15 @@ impl App {
                     );
                     let resp = ui.interact(row, ui.id().with(("grid_mode", k)), Sense::click());
                     let current = r.grid == shown && (!shown || r.grid_tone == tone);
-                    let fill = if current {
-                        Color32::from_rgb(0x12, 0x4A, 0x62)
-                    } else if resp.hovered() {
-                        style::RIBBON_HOVER
-                    } else {
-                        Color32::TRANSPARENT
-                    };
+                    let fill = style::interaction_fill(
+                        &resp,
+                        true,
+                        current,
+                        style::Bar {
+                            active: Color32::from_rgb(0x12, 0x4A, 0x62),
+                            ..style::RIBBON_BAR
+                        },
+                    );
                     let p = ui.painter();
                     p.rect_filled(row, egui::CornerRadius::ZERO, fill);
                     let icon = egui::Rect::from_center_size(

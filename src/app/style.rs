@@ -114,6 +114,25 @@ pub const TOOL_BAR: Bar = Bar {
     active: BLUE_ACTIVE,
 };
 
+/// Shared interaction colours for both widths of the selection pane.
+pub const PANE_BAR: Bar = Bar {
+    height: 48.0,
+    hover: Color32::from_rgb(0x57, 0x60, 0x64),
+    active: ACTIVE,
+};
+
+/// Flat rows share state precedence while retaining their bar's palette.
+/// Disabled rows never react to the pointer; an existing selection stays visible.
+pub fn interaction_fill(response: &Response, enabled: bool, selected: bool, bar: Bar) -> Color32 {
+    if selected || (enabled && response.enabled() && response.is_pointer_button_down_on()) {
+        bar.active
+    } else if enabled && response.enabled() && response.hovered() {
+        bar.hover
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
 /// A flat button the size of its bar: icon then label, a lighter background when
 /// `active` (a toggle that is on) or hovered.
 pub fn ribbon_button(
@@ -124,11 +143,7 @@ pub fn ribbon_button(
     enabled: bool,
     active: bool,
 ) -> Response {
-    let Bar {
-        height,
-        hover,
-        active: active_fill,
-    } = bar;
+    let height = bar.height;
     let color = if enabled { TEXT } else { TEXT_DIM };
     let galley = ui
         .painter()
@@ -141,13 +156,7 @@ pub fn ribbon_button(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), sense);
-    let fill = if active {
-        active_fill
-    } else if enabled && resp.hovered() {
-        hover
-    } else {
-        Color32::TRANSPARENT
-    };
+    let fill = interaction_fill(&resp, enabled, active, bar);
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::ZERO, fill);
     let icon_rect = Rect::from_center_size(
@@ -190,9 +199,11 @@ pub fn stacked(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response 
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, TOOL_H), sense);
     let p = ui.painter();
-    if enabled && resp.hovered() {
-        p.rect_filled(rect, CornerRadius::ZERO, BLUE_HOVER);
-    }
+    p.rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        interaction_fill(&resp, enabled, false, TOOL_BAR),
+    );
     let icon_rect = Rect::from_center_size(
         egui::pos2(rect.center().x, rect.top() + 20.0),
         Vec2::splat(22.0),
@@ -208,15 +219,28 @@ pub fn stacked(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response 
 
 /// A square icon-only button, e.g. save, undo and redo on the tab bar.
 pub fn icon_button(ui: &mut Ui, icon: Icon, size: Vec2, enabled: bool, hover: Color32) -> Response {
+    icon_button_in_bar(ui, icon, size, enabled, Bar { hover, ..TAB_BAR })
+}
+
+/// An icon button with the same interaction palette as the surrounding rows.
+pub fn icon_button_in_bar(
+    ui: &mut Ui,
+    icon: Icon,
+    size: Vec2,
+    enabled: bool,
+    bar: Bar,
+) -> Response {
     let sense = if enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
-    if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, hover);
-    }
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        interaction_fill(&resp, enabled, false, bar),
+    );
     let color = if enabled { TEXT } else { TEXT_ON_BLUE_DIM };
     let side = 20.0f32.min(size.y - 8.0);
     icons::paint(

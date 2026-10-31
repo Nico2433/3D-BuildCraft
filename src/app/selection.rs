@@ -26,7 +26,7 @@ impl App {
                 } else {
                     Icon::ChevronLeft
                 };
-                if style::icon_button(ui, chevron, Vec2::new(w, 44.0), true, style::RIBBON_HOVER)
+                if style::icon_button_in_bar(ui, chevron, Vec2::new(w, 44.0), true, style::PANE_BAR)
                     .clicked()
                 {
                     self.settings.selection_pane_open = !open;
@@ -90,10 +90,11 @@ impl App {
                 if response.clicked() {
                     self.items_open = !self.items_open;
                 }
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, egui::CornerRadius::ZERO, style::RIBBON_HOVER);
-                }
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    style::interaction_fill(&response, true, false, style::PANE_BAR),
+                );
                 ui.painter().text(
                     egui::pos2(rect.left() + 8.0, rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -130,14 +131,11 @@ impl App {
                             let selected = self.scene.selection.contains(&o.id);
                             let p = ui.painter();
                             p.rect_filled(rect, egui::CornerRadius::ZERO, Color32::WHITE);
-                            if selected {
-                                p.rect_stroke(
-                                    rect.expand(2.0),
-                                    egui::CornerRadius::ZERO,
-                                    Stroke::new(3.0_f32, Color32::from_rgb(0x28, 0x47, 0x80)),
-                                    egui::StrokeKind::Outside,
-                                );
-                            }
+                            p.rect_filled(
+                                rect,
+                                egui::CornerRadius::ZERO,
+                                style::interaction_fill(&resp, true, selected, style::PANE_BAR),
+                            );
                             match thumbs.object(o) {
                                 Some(id) => {
                                     p.image(
@@ -231,14 +229,11 @@ fn pane_item(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 48.0), sense);
-    let highlight = Color32::from_rgb(0x57, 0x60, 0x64);
-    if current {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, highlight);
-    } else if enabled && resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, style::RIBBON_HOVER);
-    }
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::ZERO,
+        style::interaction_fill(&resp, enabled, current, style::PANE_BAR),
+    );
     let icon_x = rect.left() + style::STRIP_W / 2.0;
     super::icons::paint(
         ui.painter(),

@@ -109,21 +109,6 @@ impl App {
                         .on_hover_text(tr(lang, SOON));
                     if menu_item(
                         ui,
-                        Icon::Assistant,
-                        tr(lang, "AI assistant"),
-                        true,
-                        self.chat.open && self.chat.settings_tab,
-                    )
-                    .clicked()
-                    {
-                        self.chat.open = true;
-                        self.chat.settings_tab = true;
-                        self.menu_open = false;
-                        self.settings_open = false;
-                        self.recent_open = false;
-                    }
-                    if menu_item(
-                        ui,
                         Icon::Settings,
                         tr(lang, "Settings"),
                         true,
@@ -334,13 +319,11 @@ fn menu_item(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(style::MENU_W, height), sense);
-    if active {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, style::BLUE_ACTIVE);
-    } else if enabled && resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, style::BLUE_HOVER);
-    }
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::ZERO,
+        style::interaction_fill(&resp, enabled, active, style::TAB_BAR),
+    );
     super::icons::paint(
         ui.painter(),
         egui::Rect::from_center_size(
