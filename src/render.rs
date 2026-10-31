@@ -207,7 +207,7 @@ struct FOut { @builtin(position) pos: vec4<f32>, @location(0) w: vec2<f32> };
     var corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
     let w = corners[i] * 3000.0;
     var out: FOut;
-    out.pos = g.view_proj * vec4<f32>(w, 0.0, 1.0);
+    out.pos = g.view_proj * vec4<f32>(w, -0.02, 1.0);
     out.w = w;
     return out;
 }
@@ -389,8 +389,7 @@ impl Renderer {
             "fs_floor",
             &[],
             tri,
-            // Blend over the reflection first, then occlude real geometry below z = 0.
-            true,
+            false,
             None,
         );
 
@@ -605,7 +604,7 @@ impl CallbackTrait for FrameCallback {
         pass.set_bind_group(0, &r.globals_bg, &[]);
         let n = self.items.len() as u64;
         let slot = |s: u64| [(s * OBJECT_STRIDE) as u32];
-        if self.flags.floor && self.flags.reflections && !self.flags.xray {
+        if self.flags.floor && self.flags.reflections && !self.flags.xray && self.eye.z > 0.0 {
             pass.set_pipeline(&r.solid);
             for (i, it) in self.items.iter().enumerate() {
                 let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
