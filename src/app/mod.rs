@@ -1476,7 +1476,7 @@ impl eframe::App for App {
             .last_frame
             .replace(started)
             .map(|last| started.duration_since(last));
-        self.picking.prepare(&self.scene.objects, ctx);
+        let picking_ready = self.picking.prepare(&self.scene.objects, ctx);
         self.take_screenshot(ctx);
         self.thumbs.collect(ctx);
         self.thumbs.keep_objects(&self.scene.objects);
@@ -1506,7 +1506,9 @@ impl eframe::App for App {
                 self.load_file_at(&p, false, at, ctx);
             }
         }
+        let jobs_before = self.jobs.len();
         self.collect_jobs();
+        self.reclaim_after_work(ctx, picking_ready || self.jobs.len() != jobs_before);
         if !self.jobs.is_empty() {
             // Keeps the progress bars moving.
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -1543,11 +1545,7 @@ impl eframe::App for App {
         if self.autosave.due(self.scene.dirty) {
             self.autosave.start(self.scene.objects.clone());
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "3D BuildCraft - {}{}",
-            self.scene_title(),
-            if self.scene.dirty { " •" } else { "" }
-        )));
+        self.update_title(ctx);
         if self.fps {
             egui::Area::new(egui::Id::new("frame_times"))
                 .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
@@ -1562,10 +1560,12 @@ impl eframe::App for App {
                         ));
                     });
                 });
-            ctx.request_repaint();
         }
         self.update_ms = started.elapsed().as_secs_f64() * 1000.0;
-        ctx.request_repaint_after(Duration::from_secs(5));
+        if self.scene.dirty {
+            // Only unsaved edits need a timer; clean scenes sleep until an event.
+            ctx.request_repaint_after(crate::settings::AUTOSAVE_INTERVAL);
+        }
     }
 
     fn on_exit(&mut self) {

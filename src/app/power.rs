@@ -4,6 +4,8 @@ use super::*;
 #[derive(Default)]
 pub(super) struct State {
     minimized: bool,
+    title: String,
+    reclaim_at: Option<Instant>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -30,6 +32,34 @@ impl State {
 }
 
 impl App {
+    pub(super) fn update_title(&mut self, ctx: &egui::Context) {
+        let title = format!(
+            "3D BuildCraft - {}{}",
+            self.scene_title(),
+            if self.scene.dirty { " •" } else { "" }
+        );
+        // Viewport commands request a repaint even when their value is unchanged.
+        if self.power.title != title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.power.title = title;
+        }
+    }
+
+    /// Return temporary import/upload allocations to the OS once workers settle.
+    pub(super) fn reclaim_after_work(&mut self, ctx: &egui::Context, completed: bool) {
+        if completed {
+            self.power.reclaim_at = Some(Instant::now() + Duration::from_secs(1));
+        }
+        if let Some(at) = self.power.reclaim_at {
+            if Instant::now() >= at {
+                self.power.reclaim_at = None;
+                trim_heap();
+            } else {
+                ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
+            }
+        }
+    }
+
     /// Returns true when only background work should be serviced. egui 0.31 has
     /// no viewport visibility/occlusion flag; lack of focus is not minimization.
     pub(super) fn power_update(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> bool {
@@ -67,6 +97,7 @@ impl App {
                     self.camera = to;
                 }
                 self.last_frame = None;
+                self.power.reclaim_at = None;
                 trim_heap();
                 log_memory("after release");
             }
@@ -109,6 +140,13 @@ fn trim_heap() {
     // was already present in Cargo.lock; no additional package is introduced.
     unsafe {
         libc::malloc_trim(0);
+    }
+    #[cfg(target_os = "windows")]
+    // SAFETY: the pseudo-handle belongs to this process. MAX/MAX requests a
+    // working-set trim; it does not discard committed model or undo data.
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
     }
 }
 

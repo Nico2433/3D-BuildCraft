@@ -58,16 +58,19 @@ fn main() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    let device_descriptor = eframe::egui_wgpu::WgpuSetupCreateNew::default().device_descriptor;
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            present_mode: if cfg!(windows) {
-                eframe::wgpu::PresentMode::AutoNoVsync
-            } else {
-                eframe::wgpu::PresentMode::AutoVsync
-            },
+            present_mode: eframe::wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: if cfg!(windows) { Some(1) } else { None },
             wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
+                device_descriptor: std::sync::Arc::new(move |adapter| {
+                    let mut descriptor = device_descriptor(adapter);
+                    // Small scenes should not reserve large performance-oriented heaps.
+                    descriptor.memory_hints = eframe::wgpu::MemoryHints::MemoryUsage;
+                    descriptor
+                }),
                 instance_descriptor: eframe::wgpu::InstanceDescriptor {
                     backends: if cfg!(windows) {
                         eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN

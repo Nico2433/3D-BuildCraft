@@ -55,3 +55,6 @@ lto = "thin"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

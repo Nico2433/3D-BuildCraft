@@ -25,7 +25,8 @@ impl Cache {
         *self = Self::new();
     }
 
-    pub fn prepare(&mut self, objects: &[Object], ctx: &egui::Context) {
+    pub fn prepare(&mut self, objects: &[Object], ctx: &egui::Context) -> bool {
+        let mut completed = false;
         self.entries.retain(|(mesh, _)| {
             objects
                 .iter()
@@ -36,9 +37,10 @@ impl Cache {
                 Ok(node) => {
                     self.entries.push((mesh.clone(), node));
                     self.pending = None;
+                    completed = true;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.pending = None,
-                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Empty) => return false,
             }
         }
         if let Some(object) = objects.iter().find(|o| {
@@ -58,6 +60,7 @@ impl Cache {
                 }
             });
         }
+        completed
     }
 
     pub fn hit(&self, mesh: &Arc<Mesh>, origin: Vec3, dir: Vec3) -> Option<(usize, f32)> {
@@ -105,6 +108,8 @@ impl Node {
             .iter()
             .fold(Aabb::empty(), |b, &i| b.union(bounds_for(i)));
         if triangles.len() <= 16 {
+            // split_off keeps the parent's capacity in the left branch.
+            triangles.shrink_to_fit();
             return Self {
                 bounds,
                 triangles,
