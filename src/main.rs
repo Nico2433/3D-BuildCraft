@@ -51,15 +51,12 @@ fn main() -> eframe::Result<()> {
             _ => launch.file = Some(PathBuf::from(arg)),
         }
     }
-    // With the app already open, an agent's `--mcp` works on that window.
     if launch.mcp {
-        if let Some(done) = mcp::bridge() {
-            if let Err(e) = done {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-            return Ok(());
+        if let Err(e) = mcp::bridge() {
+            eprintln!("{e:#}");
+            std::process::exit(1);
         }
+        return Ok(());
     }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,

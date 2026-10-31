@@ -111,3 +111,32 @@ fn selection_measurements_follow_transforms() {
             < 1e-9
     );
 }
+
+#[test]
+fn closed_app_still_lists_tools_and_returns_a_tool_error() {
+    let missing = std::env::temp_dir().join(format!("buildcraft-missing-{}", uuid::Uuid::new_v4()));
+    let input = format!(
+        "{}\n{}\n",
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_scene"}})
+    );
+    let mut out = Vec::new();
+    serve(input.as_bytes(), &mut out, |name, args| {
+        buildcraft3d::mcp::call_app(&missing, name, args)
+    })
+    .unwrap();
+    let replies: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        replies[0]["result"]["tools"].as_array().unwrap().len(),
+        tools().len()
+    );
+    assert_eq!(replies[1]["result"]["isError"], true);
+    assert_eq!(
+        replies[1]["result"]["content"][0]["text"],
+        buildcraft3d::mcp::NOT_OPEN
+    );
+}

@@ -34,8 +34,8 @@ impl App {
                 }
                 ui.add_space(8.0);
                 let items: [(Icon, &str, Option<Action>); 6] = [
-                    (Icon::Group, tr(lang, "Group"), None),
-                    (Icon::Ungroup, tr(lang, "Ungroup"), None),
+                    (Icon::Group, tr(lang, "Group"), Some(Action::Group)),
+                    (Icon::Ungroup, tr(lang, "Ungroup"), Some(Action::Ungroup)),
                     (
                         Icon::SelectAll,
                         tr(lang, "Select all"),
@@ -54,15 +54,19 @@ impl App {
                     (Icon::SpecialSelect, tr(lang, "Special selection"), None),
                 ];
                 for (icon, label, action) in items {
-                    let enabled = action.is_some();
+                    let enabled = match &action {
+                        Some(Action::Group) => self.scene.selection.len() >= 2,
+                        Some(Action::Ungroup) => self.scene.can_ungroup(),
+                        _ => action.is_some(),
+                    };
                     // Object selection is the mode the original shows as current.
                     let current = icon == Icon::SpecialSelect;
                     let r = pane_item(ui, icon, if open { label } else { "" }, enabled, current, w);
                     if r.clicked() {
-                        self.actions.extend(action);
+                        self.actions.extend(action.clone());
                     }
                     let r = if open { r } else { r.on_hover_text(label) };
-                    if !enabled {
+                    if action.is_none() {
                         r.on_hover_text(tr(lang, SOON));
                     }
                 }

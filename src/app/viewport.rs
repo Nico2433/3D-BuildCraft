@@ -770,9 +770,6 @@ impl App {
                 continue;
             }
             if let Some(hit) = snapping::snap_axis(&bounds, &targets, axis, 8.0 / pixels_per_mm) {
-                if axis == 2 && bounds.min.z >= -1e-4 && bounds.min.z + hit.offset < -1e-4 {
-                    continue;
-                }
                 for id in self.scene.selected_ids() {
                     self.scene.get_mut(id).unwrap().translation[axis] += hit.offset;
                 }
@@ -809,11 +806,7 @@ impl App {
         let ids = self.scene.selected_ids();
         match kind {
             Kind::Move(axis) => {
-                let mut d = if snap { amount.round() } else { amount };
-                // Not below the floor, unless it already was.
-                if axis == 2 && b0.min.z >= -1e-4 {
-                    d = d.max(-b0.min.z);
-                }
+                let d = if snap { amount.round() } else { amount };
                 for id in &ids {
                     self.scene.get_mut(*id).unwrap().translation[axis] += d;
                 }

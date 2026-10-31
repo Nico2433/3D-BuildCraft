@@ -245,6 +245,59 @@ impl Scene {
         self.dirty = true;
     }
 
+    pub fn can_ungroup(&self) -> bool {
+        self.selected().any(|o| o.mesh.solids().len() > 1)
+    }
+
+    fn free_name(&self, base: &str) -> String {
+        let mut name = base.to_owned();
+        let mut n = 2;
+        while self.objects.iter().any(|o| o.name == name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        name
+    }
+
+    /// Joins world-space meshes without welding or applying a boolean union.
+    pub fn group_selected(&mut self) {
+        if self.selected().count() < 2 {
+            return;
+        }
+        let name = self.free_name("Group");
+        let mut mesh = Mesh::default();
+        for o in self.selected() {
+            let mut part = o.world_mesh();
+            part.colors = (0..part.triangles.len())
+                .map(|i| part.face_color(i).unwrap_or(o.color))
+                .collect();
+            mesh.append(&part);
+        }
+        self.delete_selected();
+        let id = self.add(Object::new(name, mesh, DEFAULT_COLOR));
+        self.selection.insert(id);
+    }
+
+    /// Splits selected multi-solid objects, preserving world placement and face colours.
+    pub fn ungroup_selected(&mut self) {
+        let parts: Vec<_> = self
+            .selected()
+            .filter_map(|o| {
+                let solids = o.world_mesh().solids();
+                (solids.len() > 1).then(|| (o.id, o.name.clone(), o.color, solids))
+            })
+            .collect();
+        for (id, name, color, solids) in parts {
+            self.objects.retain(|o| o.id != id);
+            self.selection.remove(&id);
+            for mesh in solids {
+                let name = self.free_name(&name);
+                let id = self.add(Object::new(name, mesh, color));
+                self.selection.insert(id);
+            }
+        }
+    }
+
     /// Copies the selection and places the copies beside it.
     pub fn duplicate_selected(&mut self) {
         let copies: Vec<Object> = self.selected().cloned().collect();
@@ -484,6 +537,41 @@ pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
 mod tests {
     use super::*;
     use crate::primitives::Primitive;
+
+    #[test]
+    fn group_ungroup_preserves_world_geometry_and_colours() {
+        let mut scene = Scene::default();
+        for (i, color) in [DEFAULT_COLOR, PALETTE[1].1].into_iter().enumerate() {
+            let mut o = Object::new("part", Primitive::Cube.build(), color);
+            o.translation = Vec3::new(i as f32 * 80.0, 7.0, -25.0);
+            o.rotation.z = 25.0;
+            o.scale = Vec3::new(1.0, 2.0, 0.5);
+            let id = scene.add(o);
+            scene.selection.insert(id);
+        }
+        let before: Vec<_> = scene.objects.iter().map(Object::world_mesh).collect();
+        assert!(!scene.can_ungroup());
+        scene.group_selected();
+        assert_eq!(scene.objects.len(), 1);
+        assert_eq!(scene.selection.len(), 1);
+        assert_eq!(scene.objects[0].name, "Group");
+        assert!(scene.can_ungroup());
+        scene.ungroup_selected();
+        assert_eq!(scene.objects.len(), 2);
+        assert_eq!(scene.selection.len(), 2);
+        for (i, (o, original)) in scene.objects.iter().zip(before).enumerate() {
+            let mesh = o.world_mesh();
+            assert_eq!(mesh.triangles.len(), original.triangles.len());
+            assert_eq!(
+                mesh.triangle_positions().collect::<Vec<_>>(),
+                original.triangle_positions().collect::<Vec<_>>()
+            );
+            assert!(mesh
+                .colors
+                .iter()
+                .all(|c| *c == [DEFAULT_COLOR, PALETTE[1].1][i]));
+        }
+    }
 
     #[test]
     fn drop_rests_on_highest_support_and_leaves_instant_settle_on_floor() {

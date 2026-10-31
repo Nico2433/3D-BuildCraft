@@ -233,6 +233,8 @@ enum Action {
     Undo,
     Redo,
     Insert(Primitive),
+    Group,
+    Ungroup,
     Duplicate,
     Copy,
     Cut,
@@ -501,9 +503,6 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
-        if launch.mcp {
-            agent::serve_stdio(agent::caller(app.agent_tx.clone(), cc.egui_ctx.clone()));
-        }
         if let Some(path) = launch.image {
             app.tool = Some(Tool::image(path));
         }
@@ -1000,6 +999,8 @@ impl App {
                     crate::scene::DEFAULT_COLOR,
                 ));
             }),
+            Action::Group => self.edit(Scene::group_selected),
+            Action::Ungroup => self.edit(Scene::ungroup_selected),
             Action::Duplicate => self.edit(Scene::duplicate_selected),
             action @ (Action::Copy | Action::Cut) => {
                 self.clipboard = self.scene.selected().cloned().collect();

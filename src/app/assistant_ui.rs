@@ -483,7 +483,7 @@ impl App {
                         }
                     }
                 });
-                dim(ui, tr(lang, "With this switch on and the app open, the agent works in this window; otherwise the command opens a new one."));
+                dim(ui, tr(lang, "With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools."));
                 if let Some(Err(e)) = &self.listener {
                     ui.label(egui::RichText::new(e).color(Color32::from_rgb(0xFF, 0x7A, 0x7A)));
                 }

@@ -363,7 +363,7 @@ const ES: &[(&str, &str)] = &[
     ("External agents (MCP)", "Agentes externos (MCP)"),
     ("To use the tools from an agent outside the app (Claude Code, Claude Desktop, Codex, Cursor or any MCP client), add this command to it as an MCP server:", "Para usar las herramientas desde un agente fuera de la app (Claude Code, Claude Desktop, Codex, Cursor o cualquier cliente MCP), agrégale este comando como servidor MCP:"),
     ("With Claude Code:", "Con Claude Code:"),
-    ("With this switch on and the app open, the agent works in this window; otherwise the command opens a new one.", "Con este interruptor activado y la app abierta, el agente trabaja en esta ventana; si no, el comando abre una nueva."),
+    ("With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools.", "Con este interruptor activado y la app abierta, el agente trabaja en esta ventana. El comando nunca abre la app; ábrela antes de usar las herramientas."),
     ("AI assistant:", "Asistente de IA:"),
     ("Print", "Imprimir"),
     ("Choose a slicer first.", "Elige primero un laminador."),

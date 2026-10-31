@@ -35,16 +35,6 @@ pub fn caller(
     }
 }
 
-/// Serves MCP on stdin and stdout (started with `--mcp` and no app open).
-pub fn serve_stdio(call: impl Fn(&str, Value) -> Reply + Send + 'static) {
-    std::thread::spawn(move || {
-        // The agent disconnected; the window stays open for the user.
-        if let Err(e) = mcp::serve(std::io::stdin().lock(), std::io::stdout(), call) {
-            log::warn!("MCP server stopped: {e}");
-        }
-    });
-}
-
 impl App {
     /// Runs the agent's pending calls; call once a frame, after the UI's actions.
     pub(super) fn serve_agent(&mut self, ctx: &egui::Context) {
