@@ -189,7 +189,7 @@ fn weave(u: f32, v: f32, n: f32, seed: u32) -> (f32, f32) {
     let across = if over { fy } else { fx };
     let along = if over { fx } else { fy };
     let round = (across * PI).sin();
-    let fibre = vnoise(u, v, 256, 256, seed);
+    let fibre = grain(u, v, seed);
     let end = (along * PI).sin().sqrt();
     (round * (0.75 + 0.25 * end) * (0.8 + 0.2 * fibre), end)
 }

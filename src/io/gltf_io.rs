@@ -108,11 +108,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     let (doc, buffers, _) =
         gltf::import(path).with_context(|| format!("Could not read {}", path.display()))?;
     let from_gltf = to_gltf().inverse();
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object")
-        .to_string();
+    let stem = super::file_stem(path).to_string();
     let mut out = Vec::new();
     let scene = doc.default_scene().or_else(|| doc.scenes().next());
     let Some(scene) = scene else {

@@ -182,11 +182,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     zip.by_name(model_path.trim_start_matches('/'))
         .with_context(|| format!("{model_path} is missing from the 3MF"))?
         .read_to_string(&mut xml)?;
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object");
-    parse_model(&xml, stem)
+    parse_model(&xml, super::file_stem(path))
 }
 
 fn find_model_path<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Option<String> {
