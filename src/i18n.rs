@@ -110,7 +110,6 @@ const ES: &[(&str, &str)] = &[
     ("Search", "Buscar"),
     ("Estimated cost:", "Costo estimado:"),
     ("Not available", "No disponible"),
-    ("Order online", "Pedir en línea"),
     ("Printer", "Impresora"),
     ("Design", "Diseño"),
     (
@@ -123,10 +122,6 @@ const ES: &[(&str, &str)] = &[
     ),
     ("Printer selection", "Selección de impresora"),
     ("Select a printer", "Seleccionar una impresora"),
-    (
-        "Online 3D print service",
-        "Servicio de impresión 3D en línea",
-    ),
     ("Installed printers", "Impresoras instaladas"),
     ("None", "Ninguna"),
     ("Detected printers", "Impresoras detectadas"),
@@ -411,6 +406,7 @@ const ES: &[(&str, &str)] = &[
     ),
     ("Installed slicers", "Laminadores instalados"),
     ("Printer profile", "Perfil de impresora"),
+    ("Print profile", "Perfil de impresión"),
     ("Browse…", "Examinar…"),
     ("Opened in", "Abierto en"),
     ("Could not print:", "No se pudo imprimir:"),

@@ -134,6 +134,8 @@ pub struct Settings {
     pub slicer: Option<PathBuf>,
     /// The slicer's printer profile to print with; None for the slicer's current one.
     pub printer: Option<String>,
+    /// The print (process) profile for that printer; None for the printer's usual one.
+    pub process: Option<String>,
     /// The AI assistant; its API key is in the system keychain, not here.
     pub ai: crate::assistant::Config,
 }
@@ -153,6 +155,7 @@ impl Default for Settings {
             recent_colors: Vec::new(),
             slicer: None,
             printer: None,
+            process: None,
             ai: crate::assistant::Config::default(),
             libraries: Vec::new(),
         }

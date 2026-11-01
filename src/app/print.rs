@@ -60,13 +60,16 @@ impl App {
                 } else {
                     // Each colour prints with the filament slot chosen on the Material page.
                     let slot_of = |c: Rgba| self.filament_slot(c);
-                    // The chosen printer travels in the file, with its process and filaments.
-                    let settings = self
+                    // A chosen printer or process travels in the file, with the filaments.
+                    let process = self.settings.process.as_deref();
+                    let printer = self
                         .settings
                         .printer
                         .as_deref()
+                        .or(process.and(self.printers.first().map(String::as_str)));
+                    let settings = printer
                         .zip(self.chosen_slicer())
-                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p, None));
+                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p, process));
                     io::threemf::write_for_slicer(
                         &path,
                         &models,
@@ -96,7 +99,11 @@ impl App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         let was_focused = egui::Id::new("print_focused");
         if focused && !ctx.data(|d| d.get_temp(was_focused).unwrap_or(true)) {
-            self.load_filaments();
+            self.load_filaments(ctx);
+        }
+        if let Some(profiles) = self.profiles_job.as_ref().and_then(|r| r.try_recv().ok()) {
+            (self.printers, self.processes, self.filaments) = profiles;
+            self.profiles_job = None;
         }
         ctx.data_mut(|d| d.insert_temp(was_focused, focused));
 
@@ -132,8 +139,6 @@ impl App {
                         if self.settings.slicer.is_none() {
                             print.on_hover_text(tr(lang, "Choose a slicer first."));
                         }
-                        bar_button(ui, tr(lang, "Order online"), false)
-                            .on_hover_text(tr(lang, SOON));
                         style::separator(ui, 40.0, FIELD_BORDER);
                         if style::stacked(ui, Icon::Redo, tr(lang, "Redo"), self.history.can_redo())
                             .clicked()
@@ -197,7 +202,7 @@ impl App {
                     if nav_item(ui, icon, label, selected).clicked() {
                         match p {
                             Some(Page::Material) => {
-                                self.load_filaments();
+                                self.load_filaments(ui.ctx());
                                 self.print = p;
                             }
                             Some(p) => self.print = Some(p),
@@ -296,8 +301,6 @@ impl App {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Printer selection"));
         text(ui, tr(lang, "Choose the slicer that prints the model"));
-        ui.add_space(12.0);
-        card(ui, tr(lang, "Online 3D print service"), false).on_hover_text(tr(lang, SOON));
         ui.add_space(24.0);
         heading_info(ui, tr(lang, "Installed slicers"));
         ui.add_space(8.0);
@@ -331,23 +334,17 @@ impl App {
                 self.actions.push(Action::BrowseSlicer);
             }
         });
-        if self.printers.is_empty() {
-            return;
-        }
-        ui.add_space(32.0);
-        heading_info(ui, tr(lang, "Printer profile"));
-        ui.add_space(8.0);
-        // The slicer's current printer comes first.
-        let names: Vec<&str> = self.printers.iter().map(String::as_str).collect();
-        let mut k = self
-            .settings
-            .printer
-            .as_ref()
-            .and_then(|p| self.printers.iter().position(|n| n == p))
-            .unwrap_or(0);
-        if style::dropdown(ui, "print_printer", 320.0, &names, &mut k) {
+        // The slicer's current printer, and the printer's usual process, come first.
+        let printer = self.settings.printer.as_ref();
+        if let Some(k) = profile_dropdown(ui, tr(lang, "Printer profile"), &self.printers, printer)
+        {
             self.actions
                 .push(Action::ChoosePrinter(self.printers[k].clone()));
+        }
+        let process = self.settings.process.as_ref();
+        if let Some(k) = profile_dropdown(ui, tr(lang, "Print profile"), &self.processes, process) {
+            self.actions
+                .push(Action::ChooseProcess(self.processes[k].clone()));
         }
     }
 
@@ -358,15 +355,27 @@ impl App {
         Some(found.unwrap_or_else(|| crate::slicer::from_path(path)))
     }
 
-    /// Reads the chosen slicer's printer profiles and the chosen printer's filaments.
-    pub(super) fn load_filaments(&mut self) {
+    /// Reads the chosen slicer's printer profiles, and the chosen printer's processes and
+    /// filaments, off the UI thread: inside our Flatpak that takes about a second.
+    pub(super) fn load_filaments(&mut self, ctx: &egui::Context) {
         let Some(slicer) = self.chosen_slicer() else {
-            (self.printers, self.filaments) = (Vec::new(), Vec::new());
+            (self.printers, self.processes, self.filaments) = Default::default();
             return;
         };
-        self.printers = crate::slicer::printers(&slicer);
-        let printer = self.settings.printer.as_deref();
-        self.filaments = crate::slicer::filaments(&slicer, printer);
+        let printer = self.settings.printer.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let printers = crate::slicer::printers(&slicer);
+            let processes = printer
+                .as_ref()
+                .or(printers.first())
+                .map_or_else(Vec::new, |p| crate::slicer::processes(&slicer, p));
+            let filaments = crate::slicer::filaments(&slicer, printer.as_deref());
+            let _ = tx.send((printers, processes, filaments));
+            ctx.request_repaint();
+        });
+        self.profiles_job = Some(rx);
     }
 
     /// The filament slot that prints `color`: the one picked for it, else the closest.
@@ -415,10 +424,12 @@ impl App {
         let names: Vec<String> = self
             .filaments
             .iter()
-            .map(|f| match f.kind.as_str() {
-                "" => f.name.clone(),
-                kind if f.name.contains(kind) => f.name.clone(),
-                kind => format!("{} ({kind})", f.name),
+            .enumerate()
+            // Numbered like the slicer's slots, which may share a filament.
+            .map(|(i, f)| match f.kind.as_str() {
+                "" => format!("{}. {}", i + 1, f.name),
+                kind if f.name.contains(kind) => format!("{}. {}", i + 1, f.name),
+                kind => format!("{}. {} ({kind})", i + 1, f.name),
             })
             .collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -665,6 +676,27 @@ impl App {
             });
         self.print_status_open = open;
     }
+}
+
+/// A slicer profile drop-down under its heading; nothing when there are no profiles. The
+/// first is shown while none is chosen. Returns the one picked.
+fn profile_dropdown(
+    ui: &mut egui::Ui,
+    heading: &str,
+    profiles: &[String],
+    chosen: Option<&String>,
+) -> Option<usize> {
+    if profiles.is_empty() {
+        return None;
+    }
+    ui.add_space(32.0);
+    heading_info(ui, heading);
+    ui.add_space(8.0);
+    let names: Vec<&str> = profiles.iter().map(String::as_str).collect();
+    let mut k = chosen
+        .and_then(|c| profiles.iter().position(|p| p == c))
+        .unwrap_or(0);
+    style::dropdown(ui, heading, 320.0, &names, &mut k).then_some(k)
 }
 
 /// A printer or slicer the user can pick; the chosen one has a coloured border.

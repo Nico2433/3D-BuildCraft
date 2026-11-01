@@ -83,6 +83,8 @@ impl App {
             print: None,
             slicers: Vec::new(),
             printers: Vec::new(),
+            processes: Vec::new(),
+            profiles_job: None,
             filaments: Vec::new(),
             filament_of: Vec::new(),
             agent: agent_rx,

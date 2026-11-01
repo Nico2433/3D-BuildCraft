@@ -74,6 +74,8 @@ pub(super) enum Action {
     ChooseFilament(Rgba, usize),
     /// Print with this printer profile of the slicer.
     ChoosePrinter(String),
+    /// Print with this print (process) profile of the slicer.
+    ChooseProcess(String),
     /// Saves the scene as 3MF and opens it in the chosen slicer.
     SendToSlicer,
     ShowPrintStatus,
@@ -391,7 +393,7 @@ impl App {
                 if self.settings.slicer.is_none() {
                     self.settings.slicer = self.slicers.first().map(|s| s.path.clone());
                 }
-                self.load_filaments();
+                self.load_filaments(ctx);
             }
             Action::BrowseSlicer => {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -401,15 +403,24 @@ impl App {
             Action::ChooseSlicer(path) => {
                 if self.settings.slicer.as_ref() != Some(&path) {
                     self.settings.printer = None;
+                    self.settings.process = None;
                 }
                 self.settings.slicer = Some(path);
                 let _ = self.settings.save();
-                self.load_filaments();
+                self.load_filaments(ctx);
             }
             Action::ChoosePrinter(printer) => {
+                // Processes depend on the printer.
+                if self.settings.printer.as_ref() != Some(&printer) {
+                    self.settings.process = None;
+                }
                 self.settings.printer = Some(printer);
                 let _ = self.settings.save();
-                self.load_filaments();
+                self.load_filaments(ctx);
+            }
+            Action::ChooseProcess(process) => {
+                self.settings.process = Some(process);
+                let _ = self.settings.save();
             }
             Action::ChooseFilament(color, slot) => {
                 self.filament_of.retain(|(c, _)| *c != color);

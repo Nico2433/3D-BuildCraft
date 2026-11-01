@@ -328,6 +328,9 @@ pub struct App {
     slicers: Vec<crate::slicer::Slicer>,
     /// The chosen slicer's printer profiles and the chosen printer's filament slots.
     printers: Vec<String>,
+    processes: Vec<String>,
+    /// Profiles being read: printers, processes and filaments.
+    profiles_job: Option<std::sync::mpsc::Receiver<SlicerProfiles>>,
     filaments: Vec<crate::slicer::Filament>,
     /// The filament slot picked for a scene colour; other colours use the closest filament.
     filament_of: Vec<(Rgba, usize)>,
@@ -371,6 +374,9 @@ pub struct App {
     /// `--screenshot`: where to save the window and how many frames to wait first.
     screenshot: Option<(PathBuf, u32)>,
 }
+
+/// A slicer's printer profiles, and the chosen printer's processes and filament slots.
+type SlicerProfiles = (Vec<String>, Vec<String>, Vec<crate::slicer::Filament>);
 
 /// The scene before an interactive tool started: snapshot, undo depth and dirty flag.
 type Checkpoint = (Snapshot, usize, bool);
@@ -900,7 +906,7 @@ impl App {
             return;
         }
         // Wait for a preview that is still being computed.
-        if *frames > 0 && self.jobs.is_empty() && !smoothing {
+        if *frames > 0 && self.jobs.is_empty() && self.profiles_job.is_none() && !smoothing {
             *frames -= 1;
             if *frames == 0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
