@@ -56,6 +56,10 @@ lto = "thin"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
+# The print portal, as rfd already uses it: async-std flavour, driven by pollster.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

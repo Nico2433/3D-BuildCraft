@@ -97,7 +97,7 @@ impl App {
             printer_status: Vec::new(),
             printer_status_job: None,
             printer_status_at: None,
-            paper: None,
+            paper: Default::default(),
             design_edit: None,
             ribbon_hidden: false,
             items_open: true,
@@ -201,7 +201,6 @@ impl App {
             Some("custom") => Some(Action::StartCustom),
             Some("camera") => Some(Action::StartCamera),
             Some("print") => Some(Action::OpenPrint),
-            Some("paper") => Some(Action::OpenPaper),
             _ => None,
         };
         self.actions.extend(start);
