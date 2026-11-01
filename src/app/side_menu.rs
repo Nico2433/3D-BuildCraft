@@ -1,11 +1,32 @@
 //! Left menu (☰), a blue column over the window, and the dark panel it opens beside it for
-//! Settings or for recent files.
+//! Settings, recent files or the model's details.
 
 use super::icons::Icon;
 use super::style;
 use super::*;
 
+/// The dark panel beside the left menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Flyout {
+    Settings,
+    Recent,
+    About,
+}
+
 impl App {
+    /// Opens `f` beside the menu, or closes it when it is the one open.
+    pub(super) fn toggle_flyout(&mut self, f: Flyout) {
+        self.flyout = (self.flyout != Some(f)).then_some(f);
+        if f == Flyout::About {
+            self.about_draft = self.scene.file_info(&self.scene_title());
+        }
+    }
+
+    fn close_menu(&mut self) {
+        self.menu_open = false;
+        self.flyout = None;
+    }
+
     pub(super) fn side_menu(&mut self, ctx: &egui::Context) {
         if !self.menu_open {
             return;
@@ -57,7 +78,11 @@ impl App {
                         (Icon::Printer, tr(lang, "Print on paper"), None),
                     ],
                     &[
-                        (Icon::AboutModel, tr(lang, "About the model"), None),
+                        (
+                            Icon::AboutModel,
+                            tr(lang, "About the model"),
+                            Some(Action::AboutModel),
+                        ),
                         (
                             Icon::PrinterStatus,
                             tr(lang, "3D printer status"),
@@ -68,18 +93,22 @@ impl App {
                 for group in groups {
                     for (icon, label, action) in group {
                         // Open shows the recent files first, like the original's Open page.
-                        let opens = matches!(action, Some(Action::Open))
-                            && !self.settings.recent.is_empty();
+                        let flyout = match action {
+                            Some(Action::Open) if !self.settings.recent.is_empty() => {
+                                Some(Flyout::Recent)
+                            }
+                            Some(Action::AboutModel) => Some(Flyout::About),
+                            _ => None,
+                        };
                         let r = menu_item(
                             ui,
                             *icon,
                             label,
                             action.is_some(),
-                            opens && self.recent_open,
+                            flyout.is_some() && flyout == self.flyout,
                         );
-                        if r.clicked() && opens {
-                            self.recent_open = !self.recent_open;
-                            self.settings_open = false;
+                        if let Some(f) = flyout.filter(|_| r.clicked()) {
+                            self.toggle_flyout(f);
                         } else if r.clicked() {
                             pick = action.clone();
                         }
@@ -109,16 +138,15 @@ impl App {
                         Icon::Settings,
                         tr(lang, "Settings"),
                         true,
-                        self.settings_open,
+                        self.flyout == Some(Flyout::Settings),
                     )
                     .clicked()
                     {
-                        self.settings_open = !self.settings_open;
-                        self.recent_open = false;
+                        self.toggle_flyout(Flyout::Settings);
                     }
                 });
             });
-        if self.settings_open || self.recent_open {
+        if let Some(flyout) = self.flyout {
             let panel = egui::Rect::from_min_size(
                 egui::pos2(column.right(), top),
                 Vec2::new(style::FLYOUT_W, screen.bottom() - top),
@@ -134,12 +162,10 @@ impl App {
                         .rect_filled(panel, egui::CornerRadius::ZERO, style::FLYOUT);
                     egui::Frame::new()
                         .inner_margin(egui::Margin::symmetric(16, 20))
-                        .show(ui, |ui| {
-                            if self.settings_open {
-                                self.settings_panel(ui, ctx);
-                            } else {
-                                self.recent_panel(ui);
-                            }
+                        .show(ui, |ui| match flyout {
+                            Flyout::Settings => self.settings_panel(ui, ctx),
+                            Flyout::Recent => self.recent_panel(ui),
+                            Flyout::About => self.about_panel(ui),
                         });
                 });
         }
@@ -147,7 +173,7 @@ impl App {
         let outside = ctx.input(|i| {
             i.pointer.primary_clicked()
                 && i.pointer.interact_pos().is_some_and(|p| {
-                    let open_w = if self.settings_open || self.recent_open {
+                    let open_w = if self.flyout.is_some() {
                         style::MENU_W + style::FLYOUT_W
                     } else {
                         style::MENU_W
@@ -156,9 +182,7 @@ impl App {
                 })
         });
         if outside {
-            self.menu_open = false;
-            self.settings_open = false;
-            self.recent_open = false;
+            self.close_menu();
         }
     }
 
@@ -247,6 +271,41 @@ impl App {
         }
     }
 
+    /// The 3MF metadata of the scene, written into the file when it is saved.
+    fn about_panel(&mut self, ui: &mut egui::Ui) {
+        let lang = self.settings.lang();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let width = ui.available_width();
+        for (name, value) in self.about_draft.fields_mut() {
+            ui.label(
+                egui::RichText::new(tr(lang, about_label(name)))
+                    .size(style::MENU_FONT)
+                    .color(style::TEXT),
+            );
+            ui.add_space(4.0);
+            let edit = if name == "Description" {
+                egui::TextEdit::multiline(value).desired_rows(5)
+            } else {
+                egui::TextEdit::singleline(value)
+            };
+            ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)));
+            ui.add_space(14.0);
+        }
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let update = egui::Button::new(
+                egui::RichText::new(tr(lang, "Update"))
+                    .size(style::MENU_FONT)
+                    .color(style::TEXT),
+            );
+            let changed = self.about_draft != self.scene.file_info(&self.scene_title());
+            if ui.add_enabled(changed, update).clicked() {
+                self.scene.info = self.about_draft.clone();
+                self.scene.dirty = true;
+            }
+        });
+    }
+
     fn recent_panel(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         ui.label(
@@ -262,8 +321,7 @@ impl App {
         );
         if ui.add(browse).clicked() {
             self.actions.push(Action::Open);
-            self.menu_open = false;
-            self.recent_open = false;
+            self.close_menu();
         }
         ui.add_space(12.0);
         for r in self.settings.recent.clone().into_iter().take(12) {
@@ -279,8 +337,7 @@ impl App {
                 .on_hover_text(r.path.display().to_string());
             if resp.clicked() {
                 self.actions.push(Action::OpenPath(r.path));
-                self.menu_open = false;
-                self.recent_open = false;
+                self.close_menu();
             }
             ui.add_space(4.0);
         }
@@ -333,4 +390,15 @@ fn menu_item(
         color,
     );
     resp
+}
+
+/// The label of a 3MF metadata field, as the original names it.
+fn about_label(name: &str) -> &'static str {
+    match name {
+        "Title" => "Title",
+        "Designer" => "Designer",
+        "Copyright" => "Copyright",
+        "LicenseTerms" => "License terms",
+        _ => "Description",
+    }
 }

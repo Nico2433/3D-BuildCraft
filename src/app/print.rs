@@ -42,6 +42,7 @@ impl App {
             return;
         };
         let title = self.scene_title();
+        let info = self.scene.file_info(&title);
         let file: String = title
             .chars()
             .filter(|c| c.is_alphanumeric() || " -_".contains(*c))
@@ -56,7 +57,7 @@ impl App {
             .and_then(|()| {
                 let models = self.scene.to_models();
                 if self.filaments.is_empty() {
-                    io::save(&path, &models, Some(&title))
+                    io::save(&path, &models, &info)
                 } else {
                     // Each colour prints with the filament slot chosen on the Material page.
                     let slot_of = |c: Rgba| self.filament_slot(c);
@@ -73,7 +74,7 @@ impl App {
                     io::threemf::write_for_slicer(
                         &path,
                         &models,
-                        Some(&title),
+                        &info,
                         &slot_of,
                         settings.as_deref(),
                     )

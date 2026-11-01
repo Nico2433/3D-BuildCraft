@@ -181,13 +181,24 @@ pub struct Scene {
     pub objects: Vec<Object>,
     pub selection: BTreeSet<u64>,
     next_id: u64,
-    /// Name shown in the title bar; also written as the 3MF Title.
+    /// Name shown in the title bar; also the 3MF Title when `info` has none.
     pub name: Option<String>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
+    /// "About the model": title, designer, copyright, licence and description.
+    pub info: crate::io::ModelInfo,
 }
 
 impl Scene {
+    /// [`Scene::info`] as files get it: the title falls back to `name`.
+    pub fn file_info(&self, name: &str) -> crate::io::ModelInfo {
+        let mut info = self.info.clone();
+        if info.title.is_empty() {
+            info.title = name.to_string();
+        }
+        info
+    }
+
     pub fn add(&mut self, mut o: Object) -> u64 {
         self.next_id += 1;
         o.id = self.next_id;

@@ -128,7 +128,8 @@ impl App {
             trim_heap();
         }
         if self.autosave.due(self.scene.dirty) {
-            self.autosave.start(self.scene.objects.clone());
+            let info = self.scene.file_info(&self.scene_title());
+            self.autosave.start(self.scene.objects.clone(), info);
         }
         true
     }

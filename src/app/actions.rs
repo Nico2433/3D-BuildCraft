@@ -79,6 +79,8 @@ pub(super) enum Action {
     /// Saves the scene as 3MF and opens it in the chosen slicer.
     SendToSlicer,
     ShowPrintStatus,
+    /// Opens the "About the model" panel beside the left menu.
+    AboutModel,
     CancelTool,
     BeginEdit,
     MoveSelectionTo(Vec3),
@@ -428,6 +430,10 @@ impl App {
             }
             Action::SendToSlicer => self.send_to_slicer(),
             Action::ShowPrintStatus => self.print_status_open = true,
+            Action::AboutModel => {
+                self.menu_open = true;
+                self.toggle_flyout(side_menu::Flyout::About);
+            }
             Action::PaintArea(id, tri, color, coverage) => {
                 self.paint_area(id, tri, color, coverage)
             }

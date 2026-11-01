@@ -177,6 +177,12 @@ const ES: &[(&str, &str)] = &[
     ("To paint the surface with texture, click the Selected dropdown. To preview the selected texture on the object, hold the pointer over the object and click it to apply the selected texture.", "Para pintar la superficie con textura, haz clic en el menú desplegable Seleccionado. Para obtener una vista previa de la textura seleccionada en el objeto, mantén el puntero sobre el objeto y haz clic en él para aplicar la textura seleccionada."),
     ("Print on paper", "Imprimir en papel"),
     ("About the model", "Acerca del modelo"),
+    ("Title", "Título"),
+    ("Designer", "Diseñador"),
+    ("Copyright", "Copyright"),
+    ("License terms", "Términos de licencia"),
+    ("Description", "Descripción"),
+    ("Update", "Actualizar"),
     ("Special selection", "Selección especial"),
     (
         "One or more objects are not valid. Click here to repair them.",

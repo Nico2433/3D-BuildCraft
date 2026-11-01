@@ -1,5 +1,5 @@
 use buildcraft3d::io::threemf::{self, format_transform, parse_model, parse_transform};
-use buildcraft3d::io::ModelObject;
+use buildcraft3d::io::{ModelInfo, ModelObject};
 use buildcraft3d::primitives;
 use glam::{Mat4, Vec3};
 use std::io::Read;
@@ -241,12 +241,34 @@ fn sample() -> Vec<ModelObject> {
     }]
 }
 
+fn titled(title: &str) -> ModelInfo {
+    ModelInfo {
+        title: title.to_string(),
+        ..ModelInfo::default()
+    }
+}
+
+#[test]
+fn model_info_round_trips_through_3mf_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("i.3mf");
+    let info = ModelInfo {
+        title: "Bust & <base>".into(),
+        designer: "Someone".into(),
+        copyright: "(c) 2026".into(),
+        license_terms: "CC BY 4.0".into(),
+        description: "Two lines\nof text".into(),
+    };
+    threemf::write(&p, &sample(), &info).unwrap();
+    assert_eq!(threemf::read(&p).unwrap().1, info);
+}
+
 #[test]
 fn title_metadata_is_written_only_when_a_title_is_given() {
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = (dir.path().join("a.3mf"), dir.path().join("b.3mf"));
-    threemf::write(&a, &sample(), Some("My title")).unwrap();
-    threemf::write(&b, &sample(), None).unwrap();
+    threemf::write(&a, &sample(), &titled("My title")).unwrap();
+    threemf::write(&b, &sample(), &ModelInfo::default()).unwrap();
     let with = model_xml_in_zip(&a);
     let without = model_xml_in_zip(&b);
     assert!(
@@ -260,8 +282,8 @@ fn title_metadata_is_written_only_when_a_title_is_given() {
 fn write_escapes_the_title_and_object_names_so_the_file_reads_back() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("e.3mf");
-    threemf::write(&p, &sample(), Some("a < b & \"c\"")).unwrap();
-    let back = threemf::read(&p).unwrap();
+    threemf::write(&p, &sample(), &titled("a < b & \"c\"")).unwrap();
+    let back = threemf::read(&p).unwrap().0;
     assert_eq!(back[0].name, "Cube & <co>");
 }
 
@@ -270,8 +292,8 @@ fn write_then_read_keeps_name_colour_transform_and_mesh() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("r.3mf");
     let objs = sample();
-    threemf::write(&p, &objs, None).unwrap();
-    let back = threemf::read(&p).unwrap();
+    threemf::write(&p, &objs, &ModelInfo::default()).unwrap();
+    let back = threemf::read(&p).unwrap().0;
     assert_eq!(back.len(), 1);
     assert_eq!(back[0].color, objs[0].color);
     assert!(back[0].transform.abs_diff_eq(objs[0].transform, 1e-6));
@@ -283,8 +305,8 @@ fn write_then_read_keeps_name_colour_transform_and_mesh() {
 fn write_is_atomic_and_leaves_no_temporary_file() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("a.3mf");
-    threemf::write(&p, &sample(), None).unwrap();
-    threemf::write(&p, &sample(), Some("again")).unwrap();
+    threemf::write(&p, &sample(), &ModelInfo::default()).unwrap();
+    threemf::write(&p, &sample(), &titled("again")).unwrap();
     let names: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -296,11 +318,11 @@ fn write_is_atomic_and_leaves_no_temporary_file() {
 fn failed_write_keeps_the_previous_file_intact() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("keep.3mf");
-    threemf::write(&p, &sample(), Some("old")).unwrap();
+    threemf::write(&p, &sample(), &titled("old")).unwrap();
     let before = std::fs::read(&p).unwrap();
     // A target in a directory that does not exist cannot be created.
     let missing = dir.path().join("no_such_dir").join("x.3mf");
-    assert!(threemf::write(&missing, &sample(), None).is_err());
+    assert!(threemf::write(&missing, &sample(), &ModelInfo::default()).is_err());
     assert_eq!(std::fs::read(&p).unwrap(), before);
     assert!(!missing.exists());
 }
@@ -316,7 +338,7 @@ fn non_zip_file_is_an_error() {
 #[test]
 fn write_to_memory_produces_a_readable_package() {
     let mut buf = std::io::Cursor::new(Vec::new());
-    threemf::write_to(&mut buf, &sample(), Some("t")).unwrap();
+    threemf::write_to(&mut buf, &sample(), &titled("t")).unwrap();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(buf.into_inner())).unwrap();
     for name in ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"] {
         assert!(z.by_name(name).is_ok(), "{name}");
@@ -342,8 +364,8 @@ fn painted_triangles_round_trip_through_3mf() {
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("painted.3mf");
-    threemf::write(&path, std::slice::from_ref(&obj), None).unwrap();
-    let back = threemf::read(&path).unwrap();
+    threemf::write(&path, std::slice::from_ref(&obj), &ModelInfo::default()).unwrap();
+    let back = threemf::read(&path).unwrap().0;
     assert_eq!(back.len(), 1);
     let m = &back[0].mesh;
     for i in 0..m.triangles.len() {

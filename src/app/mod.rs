@@ -234,6 +234,8 @@ struct PendingImport {
     preview: Vec<std::sync::Arc<Mesh>>,
     units: Units,
     replace_scene: bool,
+    /// What the file says about the model; kept when it replaces the scene.
+    info: io::ModelInfo,
     /// Where on the floor it lands: under the pointer for a dropped file, else the centre.
     at: Vec3,
 }
@@ -350,8 +352,10 @@ pub struct App {
     /// The open tab was clicked again: only the tab bar shows.
     ribbon_hidden: bool,
     items_open: bool,
-    settings_open: bool,
-    recent_open: bool,
+    /// The panel the left menu opens beside it.
+    flyout: Option<side_menu::Flyout>,
+    /// The "About the model" fields being edited, applied by its Update button.
+    about_draft: io::ModelInfo,
     /// Bottom-bar field shown green: the last one used (0 = X).
     field: usize,
     about_open: bool,
@@ -666,6 +670,7 @@ impl App {
                         .map(|o| std::sync::Arc::new(o.mesh.clone()))
                         .collect(),
                     objects: m.objects,
+                    info: m.info,
                     units: Units::Millimeter,
                     replace_scene,
                     at,
@@ -707,6 +712,7 @@ impl App {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(str::to_string);
+            self.scene.info = p.info.clone();
             if Format::from_path(&p.path) == Some(Format::ThreeMf) {
                 self.scene.path = Some(p.path.clone());
             }
@@ -769,17 +775,14 @@ impl App {
         if Format::from_path(&path).is_none() {
             path.set_extension("3mf");
         }
-        let title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string);
-        match io::save(&path, &self.scene.to_models(), title.as_deref()) {
+        let info = self.scene.file_info(io::file_stem(&path));
+        match io::save(&path, &self.scene.to_models(), &info) {
             Ok(()) => {
                 if Format::from_path(&path) == Some(Format::ThreeMf) {
                     self.scene.path = Some(path.clone());
                     self.scene.dirty = false;
                 }
-                self.scene.name = title;
+                self.scene.name = Some(io::file_stem(&path).to_string());
                 self.settings.add_recent(&path);
                 let _ = self.settings.save();
                 self.toast(format!("{} {}", tr(lang, "Saved:"), path.display()), false);
@@ -1017,7 +1020,8 @@ impl eframe::App for App {
         self.chat_events();
 
         if self.autosave.due(self.scene.dirty) {
-            self.autosave.start(self.scene.objects.clone());
+            let info = self.scene.file_info(&self.scene_title());
+            self.autosave.start(self.scene.objects.clone(), info);
         }
         self.update_title(ctx);
         if self.fps {

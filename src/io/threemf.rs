@@ -2,7 +2,7 @@
 //! `pid`/`pindex`, placement in the build item `transform` (not baked) and an optional
 //! Title, as the original does (H32, H39, H40, H42). Reads components and units.
 
-use super::{color_name, ModelObject, Rgba};
+use super::{color_name, ModelInfo, ModelObject, Rgba};
 use crate::mesh::Mesh;
 use crate::scene::DEFAULT_COLOR;
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,8 +18,8 @@ const MODEL_REL: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3d
 
 /// Writes to a temporary file beside `path` and renames it over the target, so a failed
 /// or interrupted save (or autosave) never destroys the previous file.
-pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Result<()> {
-    write_file(path, objects, title, None, None)
+pub fn write(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()> {
+    write_file(path, objects, info, None, None)
 }
 
 /// [`write`] for a slicer: every colour prints with filament slot `slot_of(colour)`
@@ -28,17 +28,17 @@ pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Resul
 pub fn write_for_slicer(
     path: &Path,
     objects: &[ModelObject],
-    title: Option<&str>,
+    info: &ModelInfo,
     slot_of: &dyn Fn(Rgba) -> usize,
     settings: Option<&str>,
 ) -> Result<()> {
-    write_file(path, objects, title, Some(slot_of), settings)
+    write_file(path, objects, info, Some(slot_of), settings)
 }
 
 fn write_file(
     path: &Path,
     objects: &[ModelObject],
-    title: Option<&str>,
+    info: &ModelInfo,
     slot_of: Option<&dyn Fn(Rgba) -> usize>,
     settings: Option<&str>,
 ) -> Result<()> {
@@ -47,7 +47,7 @@ fn write_file(
     let tmp = std::path::PathBuf::from(tmp);
     let file = std::fs::File::create(&tmp)
         .with_context(|| format!("Could not create {}", tmp.display()))?;
-    let written = write_zip(file, objects, title, slot_of, settings)
+    let written = write_zip(file, objects, info, slot_of, settings)
         .and_then(|()| Ok(std::fs::rename(&tmp, path)?));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -58,15 +58,15 @@ fn write_file(
 pub fn write_to<W: Write + std::io::Seek>(
     out: W,
     objects: &[ModelObject],
-    title: Option<&str>,
+    info: &ModelInfo,
 ) -> Result<()> {
-    write_zip(out, objects, title, None, None)
+    write_zip(out, objects, info, None, None)
 }
 
 fn write_zip<W: Write + std::io::Seek>(
     out: W,
     objects: &[ModelObject],
-    title: Option<&str>,
+    info: &ModelInfo,
     slot_of: Option<&dyn Fn(Rgba) -> usize>,
     settings: Option<&str>,
 ) -> Result<()> {
@@ -89,11 +89,13 @@ fn write_zip<W: Write + std::io::Seek>(
     s.push_str(&format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">\n"
     ));
-    if let Some(t) = title {
-        s.push_str(&format!(
-            "  <metadata name=\"Title\">{}</metadata>\n",
-            escape(t)
-        ));
+    for (name, value) in info.fields() {
+        if !value.is_empty() {
+            s.push_str(&format!(
+                "  <metadata name=\"{name}\">{}</metadata>\n",
+                escape(value)
+            ));
+        }
     }
     s.push_str("  <resources>\n");
     let colors = super::unique_colors(objects);
@@ -239,7 +241,8 @@ struct ObjDef {
     components: Vec<(u32, Mat4)>,
 }
 
-pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
+/// The objects and what the file says about the model.
+pub fn read(path: &Path) -> Result<(Vec<ModelObject>, ModelInfo)> {
     let file =
         std::fs::File::open(path).with_context(|| format!("Could not open {}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("The 3MF is not a valid ZIP package")?;
@@ -248,7 +251,40 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     zip.by_name(model_path.trim_start_matches('/'))
         .with_context(|| format!("{model_path} is missing from the 3MF"))?
         .read_to_string(&mut xml)?;
-    parse_model(&xml, super::file_stem(path))
+    Ok((parse_model(&xml, super::file_stem(path))?, parse_info(&xml)))
+}
+
+/// The model's `<metadata name="…">` entries that [`ModelInfo`] holds.
+pub fn parse_info(xml: &str) -> ModelInfo {
+    let mut info = ModelInfo::default();
+    let mut r = Reader::from_str(xml);
+    let mut field: Option<&'static str> = None;
+    loop {
+        match r.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"metadata" => {
+                let name = attr(&e, "name").unwrap_or_default();
+                field = info
+                    .fields()
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .find(|n| *n == name);
+            }
+            Ok(Event::Text(t)) => {
+                if let (Some(name), Ok(text)) = (field.take(), t.unescape()) {
+                    if let Some((_, value)) =
+                        info.fields_mut().into_iter().find(|(n, _)| *n == name)
+                    {
+                        *value = text.trim().to_string();
+                    }
+                }
+            }
+            // The metadata comes before the resources.
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"resources" => break,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => field = None,
+        }
+    }
+    info
 }
 
 fn find_model_path<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Option<String> {
@@ -528,7 +564,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scene.3mf");
         std::fs::write(&path, b"old").unwrap();
-        write(&path, &[], Some("t")).unwrap();
+        write(&path, &[], &ModelInfo::default()).unwrap();
         assert!(zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).is_ok());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
@@ -556,7 +592,7 @@ mod tests {
         write_for_slicer(
             &path,
             &objects,
-            None,
+            &ModelInfo::default(),
             &|c| if c == red { 0 } else { 3 },
             Some("{}"),
         )
@@ -573,7 +609,7 @@ mod tests {
         let config = text("Metadata/model_settings.config");
         assert!(config.contains("<object id=\"2\">\n    <metadata key=\"name\" value=\"A\"/>\n    <metadata key=\"extruder\" value=\"1\"/>"));
         assert!(config.contains("<object id=\"3\">\n    <metadata key=\"name\" value=\"B\"/>\n    <metadata key=\"extruder\" value=\"4\"/>"));
-        assert_eq!(read(&path).unwrap()[0].mesh.face_color(1), Some(blue));
+        assert_eq!(read(&path).unwrap().0[0].mesh.face_color(1), Some(blue));
         let states: Vec<String> = (1..=5).map(paint_color).collect();
         assert_eq!(states, ["4", "8", "0C", "1C", "2C"]);
     }

@@ -96,8 +96,8 @@ impl App {
             design_edit: None,
             ribbon_hidden: false,
             items_open: true,
-            settings_open: false,
-            recent_open: false,
+            flyout: None,
+            about_draft: Default::default(),
             field: 0,
             about_open: false,
             confirm: None,
@@ -132,8 +132,13 @@ impl App {
         if launch.select_all {
             self.scene.select_all();
         }
-        self.settings_open = launch.tool.as_deref() == Some("settings");
-        self.menu_open = launch.menu || self.settings_open;
+        self.flyout = match launch.tool.as_deref() {
+            Some("settings") => Some(side_menu::Flyout::Settings),
+            Some("about") => Some(side_menu::Flyout::About),
+            _ => None,
+        };
+        self.menu_open = launch.menu || self.flyout.is_some();
+        self.about_draft = self.scene.file_info(&self.scene_title());
         self.add_open = launch.tool.as_deref() == Some("add");
         self.extra_libraries.extend(launch.library);
         self.mode = match launch.mode.as_deref() {

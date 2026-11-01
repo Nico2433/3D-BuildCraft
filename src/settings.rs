@@ -264,7 +264,7 @@ impl Autosave {
 
     /// Only object headers and mesh Arcs are copied by the caller. Geometry cloning and
     /// serialization happen on the worker, with at most one save in flight.
-    pub fn start(&mut self, objects: Vec<crate::scene::Object>) {
+    pub fn start(&mut self, objects: Vec<crate::scene::Object>, info: crate::io::ModelInfo) {
         if self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
             return;
         }
@@ -281,7 +281,7 @@ impl Autosave {
                 }
                 let models: Vec<_> = objects.iter().map(crate::scene::Object::to_model).collect();
                 let file = std::fs::File::create(&staging)?;
-                crate::io::threemf::write_to(file, &models, None)?;
+                crate::io::threemf::write_to(file, &models, &info)?;
                 // Only publishing the completed save shares a lock with shutdown.
                 // Serialization can finish on its detached thread without delaying exit.
                 let active = active.lock().unwrap();
@@ -328,7 +328,7 @@ mod tests {
             crate::primitives::Primitive::Cube.build(),
             crate::scene::DEFAULT_COLOR,
         );
-        save.start(vec![object]);
+        save.start(vec![object], Default::default());
         assert!(!save.due(true));
         let worker = save.worker.take().unwrap();
         save.clear();
