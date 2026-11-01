@@ -3,7 +3,7 @@
 
 use crate::host::{host_command, in_flatpak};
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -218,10 +218,22 @@ pub struct Filament {
     pub kind: String,
 }
 
-/// The filament slots of the slicer's current printer, in slot order. Empty when unknown.
-/// Read from OrcaSlicer's or Bambu Studio's configuration; other slicers give none.
-pub fn filaments(slicer: &Slicer) -> Vec<Filament> {
-    config_dir(slicer).map_or_else(Vec::new, |(dir, app)| read_filaments(&dir, app))
+/// The printer profiles the user has in the slicer, the current one first. Empty when unknown.
+pub fn printers(slicer: &Slicer) -> Vec<String> {
+    Config::of(slicer).map_or_else(Vec::new, |c| c.printers())
+}
+
+/// The filament slots of `printer` (None: the slicer's current printer), in slot order. Empty
+/// when unknown. Read from OrcaSlicer's or Bambu Studio's configuration; other slicers give none.
+pub fn filaments(slicer: &Slicer, printer: Option<&str>) -> Vec<Filament> {
+    Config::of(slicer).map_or_else(Vec::new, |c| c.filaments(printer))
+}
+
+/// OrcaSlicer's `Metadata/project_settings.config` for printing with `printer` and its filament
+/// slots: the printer, process and filament presets with everything they inherit, so the slicer
+/// opens the model with them. None when a preset cannot be read.
+pub fn project_settings(slicer: &Slicer, printer: &str) -> Option<String> {
+    Config::of(slicer)?.project_settings(printer)
 }
 
 /// The configuration folder of OrcaSlicer or Bambu Studio and its app name.
@@ -247,47 +259,410 @@ fn config_dir(slicer: &Slicer) -> Option<(PathBuf, &'static str)> {
     Some((base.join(app), app))
 }
 
-fn read_filaments(dir: &Path, app: &str) -> Vec<Filament> {
-    let Some(conf) = read_json(&dir.join(format!("{app}.conf"))) else {
-        return Vec::new();
-    };
-    let folder = conf["app"]["preset_folder"]
-        .as_str()
-        .filter(|f| !f.is_empty())
-        .unwrap_or("default");
-    let presets = conf["orca_presets"].as_array();
-    // Orca keeps one entry per printer; Bambu Studio keeps the slots in `presets`.
-    let slots = presets
-        .and_then(|p| {
-            p.iter()
-                .find(|e| e["machine"] == conf["presets"]["machine"])
-                .or(p.first())
+/// Preset keys that describe the preset rather than the print, and print host secrets.
+const NOT_SETTINGS: &[&str] = &[
+    "name",
+    "inherits",
+    "from",
+    "type",
+    "instantiation",
+    "setting_id",
+    "filament_id",
+    "version",
+    "is_custom_defined",
+    "description",
+    "renamed_from",
+    "base_id",
+    "compatible_printers",
+    "compatible_printers_condition",
+    "compatible_prints",
+    "compatible_prints_condition",
+    "print_host",
+    "print_host_webui",
+    "printhost_apikey",
+    "printhost_cafile",
+    "printhost_user",
+    "printhost_password",
+    "printhost_port",
+];
+
+/// The slicer's configuration file and where its presets are.
+struct Config {
+    dir: PathBuf,
+    conf: Value,
+    /// The folder of the user's presets under `user/`.
+    folder: String,
+    /// Folders with the system profiles: `<vendor>.json` indexes beside `<vendor>/` presets.
+    profiles: Vec<PathBuf>,
+}
+
+impl Config {
+    fn of(slicer: &Slicer) -> Option<Config> {
+        let (dir, app) = config_dir(slicer)?;
+        let mut profiles = vec![dir.join("system")];
+        profiles.extend(resource_dirs(&slicer.path, app));
+        Config::read(dir, app, profiles)
+    }
+
+    fn read(dir: PathBuf, app: &str, profiles: Vec<PathBuf>) -> Option<Config> {
+        let conf = read_json(&dir.join(format!("{app}.conf")))?;
+        let folder = conf["app"]["preset_folder"]
+            .as_str()
+            .filter(|f| !f.is_empty())
+            .unwrap_or("default")
+            .to_owned();
+        Some(Config {
+            dir,
+            conf,
+            folder,
+            profiles,
         })
-        .unwrap_or(&conf["presets"]);
-    let colors: Vec<&str> = slots["filament_colors"]
-        .as_str()
-        .unwrap_or("")
-        .split(',')
-        .collect();
-    std::iter::once("filament".to_owned())
-        .chain((1..).map(|i| format!("filament_{i:02}")))
-        .map_while(|key| slots[&key].as_str().map(str::to_owned))
-        .enumerate()
-        .map(|(i, name)| {
-            let user = dir.join(format!("user/{folder}/filament/{name}.json"));
-            let kind = read_json(&user)
-                .and_then(|p| p["filament_type"][0].as_str().map(str::to_owned))
-                .unwrap_or_else(|| kind_from_name(&name));
-            Filament {
-                color: colors
-                    .get(i)
-                    .and_then(|c| crate::io::threemf::parse_color(c))
-                    .unwrap_or([255; 4]),
-                name,
-                kind,
+    }
+
+    fn current(&self) -> Option<&str> {
+        self.conf["presets"]["machine"].as_str()
+    }
+
+    /// The names the slicer's printer drop-down shows: the user's printers and the system
+    /// printers of the models picked in its setup wizard.
+    fn printers(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut add = |name: &str| {
+            if !name.is_empty() && !names.iter().any(|n| n == name) {
+                names.push(name.to_owned());
             }
+        };
+        add(self.current().unwrap_or(""));
+        for name in list_json(&self.dir.join(format!("user/{}/machine", self.folder))) {
+            add(&name);
+        }
+        for model in self.conf["models"].as_array().into_iter().flatten() {
+            let (Some(vendor), Some(name)) = (model["vendor"].as_str(), model["model"].as_str())
+            else {
+                continue;
+            };
+            let nozzles: Vec<&str> = model["nozzle_diameter"]
+                .as_str()
+                .unwrap_or("")
+                .split(';')
+                .collect();
+            let Some((root, index)) = self.vendor(vendor) else {
+                continue;
+            };
+            for entry in index["machine_list"].as_array().into_iter().flatten() {
+                let (Some(preset), Some(sub)) =
+                    (entry["name"].as_str(), entry["sub_path"].as_str())
+                else {
+                    continue;
+                };
+                if !preset.starts_with(name) {
+                    continue;
+                }
+                let machine = read_json(&root.join(vendor).join(sub)).unwrap_or_default();
+                if machine["printer_model"] == name
+                    && nozzles.contains(&machine["printer_variant"].as_str().unwrap_or("-"))
+                {
+                    add(preset);
+                }
+            }
+        }
+        for entry in self.conf["orca_presets"].as_array().into_iter().flatten() {
+            add(entry["machine"].as_str().unwrap_or(""));
+        }
+        names
+    }
+
+    /// What the slicer remembers for `printer` (None: the current one): its filament slots,
+    /// colours and process.
+    fn slots(&self, printer: Option<&str>) -> Option<&Value> {
+        let current = self.current();
+        let printer = printer.or(current);
+        match self.conf["orca_presets"].as_array() {
+            // Orca keeps one entry per printer.
+            Some(p) => p
+                .iter()
+                .find(|e| e["machine"].as_str() == printer)
+                .or_else(|| p.first().filter(|_| printer == current)),
+            // Bambu Studio keeps the current printer's slots in `presets`.
+            None => (printer == current).then_some(&self.conf["presets"]),
+        }
+    }
+
+    /// The filament preset names of `printer`'s slots and their colours.
+    fn slot_names(&self, printer: Option<&str>) -> (Vec<String>, Vec<String>) {
+        let Some(slots) = self.slots(printer) else {
+            // A printer never used: the slicer starts it with its default filaments.
+            let names = printer
+                .and_then(|p| self.preset("machine", p))
+                .and_then(|(m, _)| {
+                    serde_json::from_value(m["default_filament_profile"].clone()).ok()
+                })
+                .unwrap_or_default();
+            return (names, Vec::new());
+        };
+        let names = std::iter::once("filament".to_owned())
+            .chain((1..).map(|i| format!("filament_{i:02}")))
+            .map_while(|key| slots[&key].as_str().map(str::to_owned))
+            .collect();
+        let colors = slots["filament_colors"]
+            .as_str()
+            .unwrap_or("")
+            .split(',')
+            .map(str::to_owned)
+            .collect();
+        (names, colors)
+    }
+
+    fn filaments(&self, printer: Option<&str>) -> Vec<Filament> {
+        let (names, colors) = self.slot_names(printer);
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let user = self
+                    .dir
+                    .join(format!("user/{}/filament/{name}.json", self.folder));
+                let kind = read_json(&user)
+                    .and_then(|p| p["filament_type"][0].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| kind_from_name(&name));
+                Filament {
+                    color: colors
+                        .get(i)
+                        .and_then(|c| crate::io::threemf::parse_color(c))
+                        .unwrap_or([255; 4]),
+                    name,
+                    kind,
+                }
+            })
+            .collect()
+    }
+
+    /// The index of a vendor's system profiles and the folder it is in.
+    fn vendor(&self, vendor: &str) -> Option<(&Path, Value)> {
+        self.profiles.iter().find_map(|root| {
+            Some((
+                root.as_path(),
+                read_json(&root.join(format!("{vendor}.json")))?,
+            ))
         })
-        .collect()
+    }
+
+    /// Preset `name` of `kind` ("machine", "process" or "filament") with everything it
+    /// inherits, and the keys a user preset changes (empty for a system preset).
+    fn preset(&self, kind: &str, name: &str) -> Option<(Value, Vec<String>)> {
+        let user = read_json(
+            &self
+                .dir
+                .join(format!("user/{}/{kind}/{name}.json", self.folder)),
+        );
+        let changed = user.as_ref().map_or_else(Vec::new, |u| {
+            u.as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, _)| k.clone())
+                .collect()
+        });
+        let mut chain = Vec::new();
+        let mut next = user.or_else(|| self.system_preset(kind, name));
+        // Inheritance is a few levels deep; the limit stops a loop.
+        while let Some(preset) = next.take().filter(|_| chain.len() < 16) {
+            let parent = preset["inherits"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned);
+            chain.push(preset);
+            if let Some(parent) = parent {
+                next = Some(self.system_preset(kind, &parent)?);
+            }
+        }
+        let mut settings = Map::new();
+        for preset in chain.into_iter().rev() {
+            settings.extend(preset.as_object()?.clone());
+        }
+        (!settings.is_empty()).then_some((Value::Object(settings), changed))
+    }
+
+    /// A system preset, looked up in the indexes of the vendors the user installed.
+    fn system_preset(&self, kind: &str, name: &str) -> Option<Value> {
+        let list = format!("{kind}_list");
+        let vendors = self.conf["models"].as_array().into_iter().flatten();
+        let vendors = vendors
+            .filter_map(|m| m["vendor"].as_str())
+            .chain(["OrcaFilamentLibrary"]);
+        vendors.into_iter().find_map(|vendor| {
+            let (root, index) = self.vendor(vendor)?;
+            let sub = index[&list]
+                .as_array()?
+                .iter()
+                .find(|e| e["name"] == name)?["sub_path"]
+                .as_str()?
+                .to_owned();
+            read_json(&root.join(vendor).join(sub))
+        })
+    }
+
+    fn project_settings(&self, printer: &str) -> Option<String> {
+        let (machine, machine_changed) = self.preset("machine", printer)?;
+        let slots = self.slots(Some(printer));
+        let process_name = slots
+            .and_then(|s| s["process"].as_str().or(s["print"].as_str()))
+            .or(machine["default_print_profile"].as_str())?
+            .to_owned();
+        let (process, process_changed) = self.preset("process", &process_name)?;
+        let (names, colors) = self.slot_names(Some(printer));
+        let filaments = names
+            .iter()
+            .map(|n| self.preset("filament", n))
+            .collect::<Option<Vec<_>>>()?;
+        let extruder = machine["printer_extruder_variant"][0].clone();
+        let inherits = |p: &Value, changed: &[String]| {
+            let base = p["inherits"].as_str().filter(|_| !changed.is_empty());
+            Value::from(base.unwrap_or(""))
+        };
+        let changed = |c: &[String]| {
+            let keys: Vec<&str> = c
+                .iter()
+                .map(String::as_str)
+                .filter(|k| !NOT_SETTINGS.contains(k))
+                .collect();
+            Value::from(keys.join(";"))
+        };
+
+        let mut out = Map::new();
+        let object = |v: &Value| v.as_object().cloned().unwrap_or_default();
+        for (key, value) in object(&process).into_iter().chain(object(&machine)) {
+            if !NOT_SETTINGS.contains(&key.as_str()) {
+                out.insert(key, value);
+            }
+        }
+        // Filament settings hold one value per slot: the value for this printer's extruder
+        // type when a preset lists one per type.
+        let per_slot: Vec<Map<String, Value>> = filaments
+            .iter()
+            .map(|(f, _)| {
+                let variants = f["filament_extruder_variant"].as_array();
+                let pick = variants.and_then(|v| v.iter().position(|x| *x == extruder));
+                let count = variants.map_or(0, Vec::len);
+                object(f)
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let v = match v {
+                            Value::Array(a) if count > 1 && a.len() == count => {
+                                Value::Array(vec![a[pick.unwrap_or(0)].clone()])
+                            }
+                            Value::Array(a) => Value::Array(a),
+                            other => Value::Array(vec![other]),
+                        };
+                        (k, v)
+                    })
+                    .collect()
+            })
+            .collect();
+        if let Some(first) = per_slot.first() {
+            for key in first.keys().filter(|k| !NOT_SETTINGS.contains(&k.as_str())) {
+                // shortcut: a key some slot lacks is left to the slicer's default.
+                let values: Option<Vec<Vec<Value>>> = per_slot
+                    .iter()
+                    .map(|f| f.get(key).and_then(Value::as_array).cloned())
+                    .collect();
+                if let Some(values) = values {
+                    out.insert(key.clone(), Value::Array(values.concat()));
+                }
+            }
+        }
+        let filament_colour: Vec<Value> = per_slot
+            .iter()
+            .enumerate()
+            .map(|(i, f)| match colors.get(i).filter(|c| !c.is_empty()) {
+                Some(c) => Value::from(c.as_str()),
+                None => f
+                    .get("default_filament_colour")
+                    .map_or("#FFFFFF".into(), |c| c[0].clone()),
+            })
+            .collect();
+        let mut group = vec![inherits(&process, &process_changed)];
+        let mut differ = vec![changed(&process_changed)];
+        for (f, c) in &filaments {
+            group.push(inherits(f, c));
+            differ.push(changed(c));
+        }
+        group.push(inherits(&machine, &machine_changed));
+        differ.push(changed(&machine_changed));
+        for (key, value) in [
+            ("printer_settings_id", Value::from(printer)),
+            ("print_settings_id", Value::from(process_name)),
+            ("filament_settings_id", Value::from(names)),
+            ("filament_colour", Value::from(filament_colour)),
+            ("inherits_group", Value::from(group)),
+            ("different_settings_to_system", Value::from(differ)),
+            ("from", Value::from("project")),
+            ("name", Value::from("project_settings")),
+        ] {
+            out.insert(key.to_owned(), value);
+        }
+        // How much to purge between filaments, which the slicer keeps per printer.
+        for key in ["flush_volumes_matrix", "flush_volumes_vector"] {
+            if let Some(v) = slots.and_then(|s| s[key].as_str()) {
+                out.insert(key.to_owned(), v.split('|').collect::<Vec<_>>().into());
+            }
+        }
+        serde_json::to_string_pretty(&out).ok()
+    }
+}
+
+/// Where the slicer keeps the system profiles it ships with, beside its program.
+fn resource_dirs(program: &Path, app: &str) -> Vec<PathBuf> {
+    let parent = program.parent().unwrap_or(Path::new(""));
+    let mut dirs = vec![
+        // Windows
+        parent.join("resources/profiles"),
+        // macOS app bundle
+        program.join("Contents/Resources/profiles"),
+        // Linux: bin/ beside share/
+        parent.join(format!("../share/{app}/profiles")),
+    ];
+    // A Flatpak export `<installation>/exports/bin/<id>` runs `<installation>/app/<id>`.
+    if let (Some(id), Some(installation)) =
+        (program.file_name(), parent.parent().and_then(Path::parent))
+    {
+        let app_dir = installation.join("app").join(id);
+        let files = format!("active/files/share/{app}/profiles");
+        dirs.push(app_dir.join("current").join(&files));
+        // shortcut: newer branches may ship packed profiles; the stable one has JSON.
+        dirs.push(
+            app_dir
+                .join(std::env::consts::ARCH)
+                .join("stable")
+                .join(files),
+        );
+    }
+    dirs
+}
+
+/// The names of the `.json` files in a folder, through the host when our sandbox hides it.
+fn list_json(dir: &Path) -> Vec<String> {
+    let names: Vec<String> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect(),
+        Err(_) if in_flatpak() => host_command("ls")
+            .arg(dir)
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let mut names: Vec<String> = names
+        .iter()
+        .filter_map(|n| n.strip_suffix(".json").map(str::to_owned))
+        .collect();
+    names.sort();
+    names
 }
 
 /// Reads a JSON file, through the host when our sandbox hides it (another app's `~/.var/app`).
@@ -342,7 +717,8 @@ mod tests {
             r#"{"filament_type": ["PLA+"]}"#,
         )
         .unwrap();
-        let f = read_filaments(dir.path(), "OrcaSlicer");
+        let config = Config::read(dir.path().into(), "OrcaSlicer", Vec::new()).unwrap();
+        let f = config.filaments(None);
         let got: Vec<(&str, [u8; 4], &str)> = f
             .iter()
             .map(|f| (f.name.as_str(), f.color, f.kind.as_str()))
@@ -357,6 +733,131 @@ mod tests {
         );
         assert_eq!(kind_from_name("Generic PETG-CF @System"), "PETG");
         assert_eq!(kind_from_name("PPS Pro"), "");
+    }
+
+    /// An Orca configuration in `dir`: a user printer "K1M" on system printer "M 0.4", and
+    /// the system profiles of vendor "V" in `dir/profiles`.
+    fn orca_config(dir: &Path) -> Config {
+        let files = [
+            (
+                "OrcaSlicer.conf",
+                r##"{"app": {"preset_folder": "42"}, "presets": {"machine": "K1M"},
+                "models": [{"vendor": "V", "model": "M", "nozzle_diameter": "0.4;0.6"}],
+                "orca_presets": [
+                    {"machine": "K1M", "process": "Fine", "filament": "Mine", "filament_01": "PLA",
+                     "filament_colors": "#FF0000,", "flush_volumes_matrix": "0|5|6|0"},
+                    {"machine": "Gone", "filament": "PLA"}
+                ]}"##,
+            ),
+            (
+                "user/42/machine/K1M.json",
+                r#"{"name": "K1M", "inherits": "M 0.4", "from": "User", "machine_start_gcode": "GO",
+                "print_host": "192.168.1.10"}"#,
+            ),
+            (
+                "user/42/filament/Mine.json",
+                r#"{"name": "Mine", "inherits": "PLA", "filament_type": ["PLA+"],
+                "filament_extruder_variant": ["Bowden", "Direct"], "nozzle_temperature": ["190", "215"]}"#,
+            ),
+            (
+                "profiles/V.json",
+                r#"{"machine_list": [
+                    {"name": "common", "sub_path": "machine/common.json"},
+                    {"name": "M 0.4", "sub_path": "machine/M 0.4.json"},
+                    {"name": "M 0.8", "sub_path": "machine/M 0.8.json"},
+                    {"name": "M Pro 0.4", "sub_path": "machine/M Pro 0.4.json"}],
+                "process_list": [{"name": "Fine", "sub_path": "process/Fine.json"}],
+                "filament_list": [{"name": "PLA", "sub_path": "filament/PLA.json"}]}"#,
+            ),
+            (
+                "profiles/V/machine/common.json",
+                r#"{"name": "common", "printer_extruder_variant": ["Direct"], "machine_start_gcode": "",
+                "nozzle_diameter": ["0.4"]}"#,
+            ),
+            (
+                "profiles/V/machine/M 0.4.json",
+                r#"{"name": "M 0.4", "inherits": "common", "printer_model": "M", "printer_variant": "0.4"}"#,
+            ),
+            (
+                "profiles/V/machine/M 0.8.json",
+                r#"{"name": "M 0.8", "printer_model": "M", "printer_variant": "0.8"}"#,
+            ),
+            (
+                "profiles/V/machine/M Pro 0.4.json",
+                r#"{"name": "M Pro 0.4", "printer_model": "M Pro", "printer_variant": "0.4"}"#,
+            ),
+            (
+                "profiles/V/process/Fine.json",
+                r#"{"name": "Fine", "layer_height": "0.1"}"#,
+            ),
+            (
+                "profiles/V/filament/PLA.json",
+                r##"{"name": "PLA", "filament_type": ["PLA"], "nozzle_temperature": ["210"],
+                "default_filament_colour": ["#00FF00"]}"##,
+            ),
+        ];
+        for (path, text) in files {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        Config::read(dir.into(), "OrcaSlicer", vec![dir.join("profiles")]).unwrap()
+    }
+
+    #[test]
+    fn lists_the_printers_the_slicer_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = orca_config(dir.path());
+        assert_eq!(config.printers(), ["K1M", "M 0.4", "Gone"]);
+        let names = |p| {
+            config
+                .filaments(p)
+                .into_iter()
+                .map(|f| f.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(None), ["Mine", "PLA"]);
+        assert_eq!(names(Some("Gone")), ["PLA"]);
+    }
+
+    #[test]
+    fn project_settings_resolve_the_chosen_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = orca_config(dir.path());
+        let s: Value = serde_json::from_str(&config.project_settings("K1M").unwrap()).unwrap();
+        assert_eq!(s["printer_settings_id"], "K1M");
+        assert_eq!(s["print_settings_id"], "Fine");
+        assert_eq!(s["layer_height"], "0.1");
+        // The user printer over the system one it inherits.
+        assert_eq!(s["machine_start_gcode"], "GO");
+        assert_eq!(s["nozzle_diameter"], serde_json::json!(["0.4"]));
+        assert!(s.get("print_host").is_none());
+        // One value per slot, the one for the printer's extruder type.
+        assert_eq!(
+            s["filament_settings_id"],
+            serde_json::json!(["Mine", "PLA"])
+        );
+        assert_eq!(s["filament_type"], serde_json::json!(["PLA+", "PLA"]));
+        assert_eq!(s["nozzle_temperature"], serde_json::json!(["215", "210"]));
+        assert_eq!(
+            s["filament_colour"],
+            serde_json::json!(["#FF0000", "#00FF00"])
+        );
+        assert_eq!(
+            s["flush_volumes_matrix"],
+            serde_json::json!(["0", "5", "6", "0"])
+        );
+        assert_eq!(
+            s["inherits_group"],
+            serde_json::json!(["", "PLA", "", "M 0.4"])
+        );
+        let differ = &s["different_settings_to_system"];
+        assert_eq!(
+            differ[1],
+            "filament_extruder_variant;filament_type;nozzle_temperature"
+        );
+        assert_eq!(differ[3], "machine_start_gcode");
+        assert!(config.project_settings("Unknown").is_none());
     }
 
     #[test]

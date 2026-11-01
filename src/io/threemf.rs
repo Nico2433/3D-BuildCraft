@@ -19,18 +19,20 @@ const MODEL_REL: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3d
 /// Writes to a temporary file beside `path` and renames it over the target, so a failed
 /// or interrupted save (or autosave) never destroys the previous file.
 pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Result<()> {
-    write_file(path, objects, title, None)
+    write_file(path, objects, title, None, None)
 }
 
 /// [`write`] for a slicer: every colour prints with filament slot `slot_of(colour)`
 /// (0-based), stored the way OrcaSlicer and Bambu Studio read it from other apps' files.
+/// `settings` is the slicer's project config to print with (see `slicer::project_settings`).
 pub fn write_for_slicer(
     path: &Path,
     objects: &[ModelObject],
     title: Option<&str>,
     slot_of: &dyn Fn(Rgba) -> usize,
+    settings: Option<&str>,
 ) -> Result<()> {
-    write_file(path, objects, title, Some(slot_of))
+    write_file(path, objects, title, Some(slot_of), settings)
 }
 
 fn write_file(
@@ -38,14 +40,15 @@ fn write_file(
     objects: &[ModelObject],
     title: Option<&str>,
     slot_of: Option<&dyn Fn(Rgba) -> usize>,
+    settings: Option<&str>,
 ) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     let file = std::fs::File::create(&tmp)
         .with_context(|| format!("Could not create {}", tmp.display()))?;
-    let written =
-        write_zip(file, objects, title, slot_of).and_then(|()| Ok(std::fs::rename(&tmp, path)?));
+    let written = write_zip(file, objects, title, slot_of, settings)
+        .and_then(|()| Ok(std::fs::rename(&tmp, path)?));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -57,7 +60,7 @@ pub fn write_to<W: Write + std::io::Seek>(
     objects: &[ModelObject],
     title: Option<&str>,
 ) -> Result<()> {
-    write_zip(out, objects, title, None)
+    write_zip(out, objects, title, None, None)
 }
 
 fn write_zip<W: Write + std::io::Seek>(
@@ -65,6 +68,7 @@ fn write_zip<W: Write + std::io::Seek>(
     objects: &[ModelObject],
     title: Option<&str>,
     slot_of: Option<&dyn Fn(Rgba) -> usize>,
+    settings: Option<&str>,
 ) -> Result<()> {
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default()
@@ -159,6 +163,10 @@ fn write_zip<W: Write + std::io::Seek>(
         }
         c.push_str("</config>\n");
         zip.write_all(c.as_bytes())?;
+    }
+    if let Some(settings) = settings {
+        zip.start_file("Metadata/project_settings.config", opts)?;
+        zip.write_all(settings.as_bytes())?;
     }
     zip.finish()?;
     Ok(())
@@ -545,7 +553,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("print.3mf");
         // Red prints with slot 0 (extruder 1), anything else with slot 3 (extruder 4).
-        write_for_slicer(&path, &objects, None, &|c| if c == red { 0 } else { 3 }).unwrap();
+        write_for_slicer(
+            &path,
+            &objects,
+            None,
+            &|c| if c == red { 0 } else { 3 },
+            Some("{}"),
+        )
+        .unwrap();
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
         let mut text = |name: &str| {
             let mut s = String::new();
@@ -554,6 +569,7 @@ mod tests {
         };
         let model = text("3D/3dmodel.model");
         assert_eq!(model.matches("paint_color=\"1C\"").count(), 1);
+        assert_eq!(text("Metadata/project_settings.config"), "{}");
         let config = text("Metadata/model_settings.config");
         assert!(config.contains("<object id=\"2\">\n    <metadata key=\"name\" value=\"A\"/>\n    <metadata key=\"extruder\" value=\"1\"/>"));
         assert!(config.contains("<object id=\"3\">\n    <metadata key=\"name\" value=\"B\"/>\n    <metadata key=\"extruder\" value=\"4\"/>"));
