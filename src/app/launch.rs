@@ -93,6 +93,7 @@ impl App {
             chat: Default::default(),
             agent_shot: None,
             print_status_open: false,
+            paper: None,
             design_edit: None,
             ribbon_hidden: false,
             items_open: true,
@@ -186,6 +187,7 @@ impl App {
             Some("custom") => Some(Action::StartCustom),
             Some("camera") => Some(Action::StartCamera),
             Some("print") => Some(Action::OpenPrint),
+            Some("paper") => Some(Action::OpenPaper),
             _ => None,
         };
         self.actions.extend(start);

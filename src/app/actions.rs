@@ -78,6 +78,8 @@ pub(super) enum Action {
     ChooseProcess(String),
     /// Saves the scene as 3MF and opens it in the chosen slicer.
     SendToSlicer,
+    /// Opens the print-on-paper window.
+    OpenPaper,
     ShowPrintStatus,
     CancelTool,
     BeginEdit,
@@ -428,6 +430,10 @@ impl App {
             }
             Action::SendToSlicer => self.send_to_slicer(),
             Action::ShowPrintStatus => self.print_status_open = true,
+            Action::OpenPaper => {
+                let title = self.scene_title();
+                self.paper = Some(paper::Dialog::open(title, &self.scene.objects, ctx));
+            }
             Action::PaintArea(id, tri, color, coverage) => {
                 self.paint_area(id, tri, color, coverage)
             }

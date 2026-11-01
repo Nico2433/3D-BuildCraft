@@ -13,6 +13,7 @@ pub mod io;
 pub mod library;
 pub mod mcp;
 pub mod mesh;
+pub mod paper;
 pub mod primitives;
 pub mod repair;
 pub mod scene;
