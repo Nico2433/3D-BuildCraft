@@ -326,6 +326,10 @@ pub struct App {
     print: Option<print::Page>,
     /// Slicers found on this computer, looked up when the print view opens.
     slicers: Vec<crate::slicer::Slicer>,
+    /// The chosen slicer's filament slots, read with the slicers.
+    filaments: Vec<crate::slicer::Filament>,
+    /// The filament slot picked for a scene colour; other colours use the closest filament.
+    filament_of: Vec<(Rgba, usize)>,
     /// Tool calls from the AI assistant: the chat, `--mcp` on stdio, or agents attached
     /// over the local port.
     agent: std::sync::mpsc::Receiver<agent::Request>,

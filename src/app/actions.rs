@@ -70,6 +70,8 @@ pub(super) enum Action {
     DetectSlicers,
     BrowseSlicer,
     ChooseSlicer(PathBuf),
+    /// Print with this filament slot wherever the scene has this colour.
+    ChooseFilament(Rgba, usize),
     /// Saves the scene as 3MF and opens it in the chosen slicer.
     SendToSlicer,
     ShowPrintStatus,
@@ -387,16 +389,21 @@ impl App {
                 if self.settings.slicer.is_none() {
                     self.settings.slicer = self.slicers.first().map(|s| s.path.clone());
                 }
+                self.load_filaments();
             }
             Action::BrowseSlicer => {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.settings.slicer = Some(path);
-                    let _ = self.settings.save();
+                    self.actions.push(Action::ChooseSlicer(path));
                 }
             }
             Action::ChooseSlicer(path) => {
                 self.settings.slicer = Some(path);
                 let _ = self.settings.save();
+                self.load_filaments();
+            }
+            Action::ChooseFilament(color, slot) => {
+                self.filament_of.retain(|(c, _)| *c != color);
+                self.filament_of.push((color, slot));
             }
             Action::SendToSlicer => self.send_to_slicer(),
             Action::ShowPrintStatus => self.print_status_open = true,

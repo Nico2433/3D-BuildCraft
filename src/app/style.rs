@@ -349,11 +349,13 @@ pub fn blue_fields(ui: &mut Ui) {
 /// Height of the fields in a blue tool bar.
 pub const FIELD_H: f32 = 33.0;
 
-/// The box of a tool bar field: dark blue with a light border.
+/// The box of a field in the colours the panel set ([`blue_fields`] in a tool bar).
 pub fn field_box(ui: &Ui, rect: Rect, hovered: bool) {
+    let v = ui.visuals();
+    let (fill, border) = (v.extreme_bg_color, v.widgets.inactive.bg_stroke.color);
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::ZERO, BLUE_FIELD);
-    let edge = if hovered { TEXT } else { BLUE_FIELD_BORDER };
+    p.rect_filled(rect, CornerRadius::ZERO, fill);
+    let edge = if hovered { TEXT } else { border };
     p.rect_stroke(
         rect,
         CornerRadius::ZERO,

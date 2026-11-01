@@ -46,16 +46,23 @@ impl App {
             .chars()
             .filter(|c| c.is_alphanumeric() || " -_".contains(*c))
             .collect();
-        let dir = crate::settings::dirs()
-            .map(|d| d.cache_dir().join("print"))
-            .unwrap_or_else(|| std::env::temp_dir().join("buildcraft3d-print"));
+        let dir = crate::slicer::print_dir();
         let path = dir.join(format!(
             "{}.3mf",
             if file.is_empty() { "print" } else { &file }
         ));
         let sent = std::fs::create_dir_all(&dir)
             .map_err(anyhow::Error::from)
-            .and_then(|()| io::save(&path, &self.scene.to_models(), Some(&title)))
+            .and_then(|()| {
+                let models = self.scene.to_models();
+                if self.filaments.is_empty() {
+                    io::save(&path, &models, Some(&title))
+                } else {
+                    // Each colour prints with the filament slot chosen on the Material page.
+                    let slot_of = |c: Rgba| self.filament_slot(c);
+                    io::threemf::write_for_slicer(&path, &models, Some(&title), &slot_of)
+                }
+            })
             .and_then(|()| crate::slicer::open(&slicer, &path));
         match sent {
             Ok(()) => {
@@ -272,9 +279,9 @@ impl App {
         ui.add_space(8.0);
         let mut shown = self.slicers.clone();
         // One picked by hand stays on the list even when it is not one we look for.
-        if let Some(chosen) = &self.settings.slicer {
-            if !shown.iter().any(|s| &s.path == chosen) {
-                shown.push(crate::slicer::from_path(chosen));
+        if let Some(chosen) = self.chosen_slicer() {
+            if !shown.contains(&chosen) {
+                shown.push(chosen);
             }
         }
         if shown.is_empty() {
@@ -302,18 +309,126 @@ impl App {
         });
     }
 
+    /// The chosen slicer, as found on this computer or named after its file.
+    fn chosen_slicer(&self) -> Option<crate::slicer::Slicer> {
+        let path = self.settings.slicer.as_ref()?;
+        let found = self.slicers.iter().find(|s| &s.path == path).cloned();
+        Some(found.unwrap_or_else(|| crate::slicer::from_path(path)))
+    }
+
+    pub(super) fn load_filaments(&mut self) {
+        self.filaments = self
+            .chosen_slicer()
+            .map_or_else(Vec::new, |s| crate::slicer::filaments(&s));
+    }
+
+    /// The filament slot that prints `color`: the one picked for it, else the closest.
+    fn filament_slot(&self, color: Rgba) -> usize {
+        if let Some((_, slot)) = self.filament_of.iter().find(|(c, _)| *c == color) {
+            return (*slot).min(self.filaments.len().saturating_sub(1));
+        }
+        let distance = |f: &crate::slicer::Filament| -> i32 {
+            (0..3)
+                .map(|i| (f.color[i] as i32 - color[i] as i32).pow(2))
+                .sum()
+        };
+        (0..self.filaments.len())
+            .min_by_key(|&i| distance(&self.filaments[i]))
+            .unwrap_or(0)
+    }
+
+    /// The colours in the scene: objects' and painted areas'.
+    fn scene_colors(&self) -> Vec<Rgba> {
+        let mut colors: Vec<Rgba> = Vec::new();
+        for o in &self.scene.objects {
+            let faces = (0..o.mesh.triangles.len()).filter_map(|i| o.mesh.face_color(i));
+            for c in std::iter::once(o.color).chain(faces) {
+                if !colors.contains(&c) {
+                    colors.push(c);
+                }
+            }
+        }
+        colors
+    }
+
+    /// The slicer's filaments: one for everything, or one per colour of the scene.
     fn material_page(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Material"));
+        if self.filaments.is_empty() {
+            text(ui, tr(lang, "No filaments found in the slicer profile."));
+            return;
+        }
+        let names: Vec<String> = self
+            .filaments
+            .iter()
+            .map(|f| match f.kind.as_str() {
+                "" => f.name.clone(),
+                kind if f.name.contains(kind) => f.name.clone(),
+                kind => format!("{} ({kind})", f.name),
+            })
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let colors = self.scene_colors();
+        let slots: Vec<usize> = colors.iter().map(|&c| self.filament_slot(c)).collect();
+
         text(ui, tr(lang, "Material type"));
-        ui.add_enabled_ui(false, |ui| {
-            egui::ComboBox::from_id_salt("print_material")
-                .width(248.0)
-                .selected_text("")
-                .show_ui(ui, |_| {});
-        });
+        // One filament for every colour; empty while the colours use different ones.
+        let mut all = match slots.first() {
+            Some(&s) if slots.iter().all(|&o| o == s) => s,
+            _ => names.len(),
+        };
+        if self.filament_row(ui, "print_material", None, &names, &mut all) {
+            for &c in &colors {
+                self.actions.push(Action::ChooseFilament(c, all));
+            }
+        }
         ui.add_space(40.0);
         text(ui, tr(lang, "Select finish and color"));
+        ui.add_space(8.0);
+        for (i, (&color, mut slot)) in colors.iter().zip(slots).enumerate() {
+            let id = format!("print_filament_{i}");
+            if self.filament_row(ui, &id, Some(color), &names, &mut slot) {
+                self.actions.push(Action::ChooseFilament(color, slot));
+            }
+            ui.add_space(8.0);
+        }
+    }
+
+    /// A filament drop-down with the filament's colour after it, and the scene colour it
+    /// is for before it. True when the choice changed.
+    fn filament_row(
+        &self,
+        ui: &mut egui::Ui,
+        id: &str,
+        scene: Option<Rgba>,
+        names: &[&str],
+        slot: &mut usize,
+    ) -> bool {
+        let chip = |ui: &mut egui::Ui, c: Rgba| {
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(style::FIELD_H), egui::Sense::hover());
+            ui.painter().rect_filled(
+                r.shrink(4.0),
+                egui::CornerRadius::ZERO,
+                Color32::from_rgb(c[0], c[1], c[2]),
+            );
+        };
+        ui.horizontal(|ui| {
+            if let Some(c) = scene {
+                chip(ui, c);
+            }
+            let width = if scene.is_some() {
+                248.0
+            } else {
+                248.0 + style::FIELD_H + 8.0
+            };
+            let changed = style::dropdown(ui, id, width, names, slot);
+            if let Some(f) = self.filaments.get(*slot) {
+                chip(ui, f.color);
+            }
+            changed
+        })
+        .inner
     }
 
     fn design_page(&mut self, ui: &mut egui::Ui) {

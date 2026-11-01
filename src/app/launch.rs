@@ -82,6 +82,8 @@ impl App {
             thumbs: thumbs::Thumbs::new(),
             print: None,
             slicers: Vec::new(),
+            filaments: Vec::new(),
+            filament_of: Vec::new(),
             agent: agent_rx,
             agent_tx,
             listener: None,
@@ -161,6 +163,7 @@ impl App {
             .and_then(|t| t.strip_prefix("print-"))
         {
             self.print = print::Page::from_name(page);
+            self.actions.push(Action::DetectSlicers);
         }
         if let Some(z) = launch.zoom {
             ctx.set_zoom_factor(z);

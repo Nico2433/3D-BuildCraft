@@ -402,6 +402,10 @@ const ES: &[(&str, &str)] = &[
     ("Print", "Imprimir"),
     ("Choose a slicer first.", "Elige primero un laminador."),
     (
+        "No filaments found in the slicer profile.",
+        "No se encontraron filamentos en el perfil del laminador.",
+    ),
+    (
         "Choose the slicer that prints the model",
         "Elige el laminador que imprime el modelo",
     ),
