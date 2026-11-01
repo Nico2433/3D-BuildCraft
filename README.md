@@ -2,12 +2,12 @@
 
 Build, repair, paint and prepare 3D models for printing. A Rust (egui + wgpu) desktop app for Windows and Linux that looks and works like Microsoft 3D Builder: its own title bar, tabs, ribbon, tool bars, side menu, selection strip and bottom bar.
 
-![Edit tab](docs/screenshots/editar.png)
+![Edit tab](docs/screenshots/edit.png)
 
 | | |
 |---|---|
-| ![Texture tool](docs/screenshots/textura.png) | ![3D print: printer](docs/screenshots/impresion-3d.png) |
-| ![Emboss](docs/screenshots/relieve.png) | ![AI assistant](docs/screenshots/asistente-chat.png) |
+| ![Texture tool](docs/screenshots/texture.png) | ![3D print: printer](docs/screenshots/print-printer.png) |
+| ![Emboss](docs/screenshots/emboss.png) | ![AI assistant](docs/screenshots/assistant-chat.png) |
 
 ## Download
 
@@ -94,7 +94,7 @@ Packages are built locally with the scripts in `packaging/`:
 The window can save itself as a PNG and quit, which is how the pictures in `docs/screenshots/` are made:
 
 ```bash
-cargo run --release -- model.3mf --select-all --lang es --size 1920x1080 --zoom 1.5 --tab edit --screenshot shot.png
+cargo run --release -- model.3mf --select-all --lang en --size 1920x1080 --zoom 1.5 --tab edit --screenshot shot.png
 ```
 
 Options that open a given state:
