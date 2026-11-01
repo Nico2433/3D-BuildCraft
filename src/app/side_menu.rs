@@ -15,7 +15,7 @@ impl App {
         let top = screen.top() + style::TITLE_H;
         // Two parts that never overlap, so neither covers the other's buttons: the top
         // groups, and the last group held at the bottom as in the original.
-        const BOTTOM_H: f32 = 170.0;
+        const BOTTOM_H: f32 = 60.0;
         let column = egui::Rect::from_min_max(
             egui::pos2(screen.left(), top),
             egui::pos2(screen.left() + style::MENU_W, screen.bottom() - BOTTOM_H),
@@ -54,7 +54,6 @@ impl App {
                     ],
                     &[
                         (Icon::Print3D, tr(lang, "3D print"), Some(Action::OpenPrint)),
-                        (Icon::Cart, tr(lang, "Order a print online"), None),
                         (Icon::Printer, tr(lang, "Print on paper"), None),
                     ],
                     &[
@@ -105,8 +104,6 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(6.0);
-                    menu_item(ui, Icon::Smile, tr(lang, "Rate this app"), false, false)
-                        .on_hover_text(tr(lang, SOON));
                     if menu_item(
                         ui,
                         Icon::Settings,
@@ -119,8 +116,6 @@ impl App {
                         self.settings_open = !self.settings_open;
                         self.recent_open = false;
                     }
-                    menu_item(ui, Icon::Feedback, tr(lang, "Feedback"), false, false)
-                        .on_hover_text(tr(lang, SOON));
                 });
             });
         if self.settings_open || self.recent_open {

@@ -84,14 +84,11 @@ pub enum Icon {
     // Menu
     NewScene,
     Open,
-    Cart,
     Printer,
     AboutModel,
     PrinterStatus,
-    Feedback,
     Assistant,
     Settings,
-    Smile,
     // Transform
     Move,
     Rotate,
@@ -637,18 +634,6 @@ impl Pen<'_> {
                 self.line(&[(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)]);
                 self.closed(&[(8.0, 21.0), (10.0, 14.0), (22.0, 14.0), (20.0, 21.0)]);
             }
-            Cart => {
-                self.line(&[
-                    (2.0, 4.0),
-                    (5.0, 4.0),
-                    (8.0, 16.0),
-                    (19.0, 16.0),
-                    (21.0, 8.0),
-                    (6.0, 8.0),
-                ]);
-                self.circle(9.0, 19.5, 1.5);
-                self.circle(18.0, 19.5, 1.5);
-            }
             Printer => {
                 self.rect(7.0, 3.0, 17.0, 8.0);
                 self.rect(3.0, 8.0, 21.0, 17.0);
@@ -665,12 +650,6 @@ impl Pen<'_> {
                 self.line(&[(10.0, 6.0), (21.0, 6.0)]);
                 self.line(&[(4.0, 12.0), (21.0, 12.0)]);
                 self.line(&[(4.0, 18.0), (21.0, 18.0)]);
-            }
-            Feedback => {
-                self.circle(9.0, 8.0, 4.0);
-                self.line(&[(2.0, 21.0), (3.0, 16.0), (9.0, 13.0), (13.0, 14.0)]);
-                self.rect(14.0, 12.0, 22.0, 18.0);
-                self.line(&[(16.0, 18.0), (15.0, 21.0), (19.0, 18.0)]);
             }
             Assistant => {
                 // A speech bubble with a spark in it.
@@ -704,12 +683,6 @@ impl Pen<'_> {
                     })
                     .collect();
                 self.closed(&pts);
-            }
-            Smile => {
-                self.circle(12.0, 12.0, 9.0);
-                self.dot(9.0, 10.0, 1.0);
-                self.dot(15.0, 10.0, 1.0);
-                self.arc(12.0, 12.0, 5.0, 0.4, PI - 0.4);
             }
             Move => {
                 self.rect(5.0, 12.0, 13.0, 20.0);
