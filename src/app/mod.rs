@@ -101,6 +101,8 @@ enum Tool {
     },
     Measure {
         points: Vec<Vec3>,
+        /// The surface point under the cursor.
+        hover: Option<Vec3>,
     },
     Cut {
         plane: CutPlane,
@@ -161,6 +163,27 @@ enum Tool {
 }
 
 impl Tool {
+    /// A measurement with its points preset, for screenshots: see `Launch::measure`.
+    fn measure_preset(spec: &str) -> Self {
+        let mut points = vec![];
+        let mut hover = None;
+        for entry in spec.split(';') {
+            let v: Vec<f32> = entry
+                .trim_start_matches('~')
+                .split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .collect();
+            if let [x, y, z] = v[..] {
+                if entry.starts_with('~') {
+                    hover = Some(Vec3::new(x, y, z));
+                } else {
+                    points.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        Tool::Measure { points, hover }
+    }
+
     /// "Load image" with its default settings.
     fn image(path: PathBuf) -> Self {
         Tool::Image {
@@ -408,6 +431,8 @@ pub struct Launch {
     pub mode: Option<String>,
     /// A handle drag in progress, for screenshots: `x:60` or `rot-z:45`.
     pub drag: Option<String>,
+    /// Measure points `x,y,z;x,y,z`; an entry starting with `~` is the hover point.
+    pub measure: Option<String>,
 }
 
 impl App {
@@ -535,7 +560,7 @@ impl App {
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
             Some("emboss") => Some(Action::StartEmboss),
-            Some("measure") => Some(Action::Measure),
+            Some("measure") if launch.measure.is_none() => Some(Action::Measure),
             Some("settle") => Some(Action::Settle),
             Some("paint" | "paint-colors" | "paint-more") => Some(Action::StartPaint),
             Some("custom") => Some(Action::StartCustom),
@@ -544,6 +569,9 @@ impl App {
             _ => None,
         };
         app.actions.extend(start);
+        if let Some(spec) = launch.measure {
+            app.tool = Some(Tool::measure_preset(&spec));
+        }
         match launch.tool.as_deref() {
             Some("paint-colors") => app.actions.push(Action::PaintMenu(false)),
             Some("paint-more") => app.actions.push(Action::PaintMenu(true)),
@@ -1136,7 +1164,12 @@ impl App {
                     self.scene.selection.insert(id);
                 }
             }
-            Action::Measure => self.tool = Some(Tool::Measure { points: vec![] }),
+            Action::Measure => {
+                self.tool = Some(Tool::Measure {
+                    points: vec![],
+                    hover: None,
+                })
+            }
             Action::StartCut => {
                 let mut plane = CutPlane::at_height(0.0);
                 plane.center = self.scene.selection_aabb().center();

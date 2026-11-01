@@ -61,6 +61,22 @@ impl App {
             .map(|(id, _, distance)| (id, origin + dir * distance))
     }
 
+    /// The point a measure click would take: the surface under the ray, or the floor.
+    fn measure_spot(&self, origin: Vec3, dir: Vec3) -> Option<Vec3> {
+        let p = match self.pick(origin, dir) {
+            Some((_, p)) => p,
+            None => {
+                let t = -origin.z / dir.z;
+                (t.is_finite() && t > 0.0).then(|| origin + dir * t)?
+            }
+        };
+        Some(if self.settings.snap {
+            (p * 10.0).round() / 10.0
+        } else {
+            p
+        })
+    }
+
     pub(super) fn viewport(&mut self, ctx: &egui::Context) {
         if self.rotate_selection != self.scene.selection
             || (self.handle.is_none()
@@ -361,6 +377,22 @@ impl App {
                     self.marquee = None;
                 }
 
+                if matches!(self.tool, Some(Tool::Measure { .. })) {
+                    // The marker takes the place of the cursor.
+                    let spot = resp.hover_pos().and_then(|p| {
+                        let (o, d) = self.camera.ray(to_ndc(p), aspect);
+                        self.measure_spot(o, d)
+                    });
+                    if let Some(Tool::Measure { hover, points }) = &mut self.tool {
+                        if spot.is_some() || ui.ctx().pointer_hover_pos().is_some() {
+                            *hover = spot;
+                        }
+                        if resp.hovered() && points.len() < 2 {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+                        }
+                    }
+                }
+
                 // A click on a handle picks it (and its field) instead of selecting.
                 let clicked_handle = resp
                     .clicked()
@@ -373,15 +405,13 @@ impl App {
                     if let Some(pos) = resp.interact_pointer_pos() {
                         let (o, d) = self.camera.ray(to_ndc(pos), aspect);
                         let hit = self.pick(o, d);
+                        let spot = self.measure_spot(o, d);
                         let face = matches!(self.tool, Some(Tool::Paint { .. }))
                             .then(|| self.pick_face(o, d))
                             .flatten();
                         match &mut self.tool {
-                            Some(Tool::Measure { points }) => {
-                                if let Some((_, mut p)) = hit {
-                                    if self.settings.snap {
-                                        p = (p * 10.0).round() / 10.0;
-                                    }
+                            Some(Tool::Measure { points, .. }) => {
+                                if let Some(p) = spot {
                                     if points.len() >= 2 {
                                         points.clear();
                                     }
@@ -661,16 +691,30 @@ impl App {
                         ));
                     }
                 }
-                if let Some(Tool::Measure { points }) = &self.tool {
-                    let pts: Vec<Pos2> = points.iter().filter_map(|p| to_screen(*p)).collect();
-                    for p in &pts {
-                        painter.circle_filled(*p, 5.0, Color32::from_rgb(0x4C, 0xE0, 0x4C));
+                if let Some(Tool::Measure { points, hover }) = &self.tool {
+                    // The placed points are blue and the live one green, as the original's.
+                    let live = if points.len() < 2 { *hover } else { None };
+                    let marks: Vec<(Vec3, Color32)> = points
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| (*p, if i == 0 { MEASURE_BLUE } else { MEASURE_GREEN }))
+                        .chain(live.map(|p| (p, MEASURE_GREEN)))
+                        .collect();
+                    if let [(a, _), (b, _)] = marks[..] {
+                        if let Some((a, b)) = to_screen(a).zip(to_screen(b)) {
+                            painter.line_segment(
+                                [a, b],
+                                Stroke::new(
+                                    5.0 / ctx.pixels_per_point(),
+                                    Color32::from_rgba_unmultiplied(0xD8, 0xD8, 0xD8, 190),
+                                ),
+                            );
+                        }
                     }
-                    if let [a, b] = pts[..] {
-                        painter.line_segment(
-                            [a, b],
-                            Stroke::new(2.0_f32, Color32::from_rgb(0x4C, 0xE0, 0x4C)),
-                        );
+                    for (p, color) in marks {
+                        if let Some(tip) = to_screen(p) {
+                            measure_arrow(&painter, tip, color, ctx.pixels_per_point());
+                        }
                     }
                 }
             });
@@ -1064,4 +1108,32 @@ fn camera_feed(
     }
     // New frames keep coming while the camera is open.
     ui.ctx().request_repaint_after(Duration::from_millis(33));
+}
+
+const MEASURE_GREEN: Color32 = Color32::from_rgb(0x50, 0xE8, 0x28);
+const MEASURE_BLUE: Color32 = Color32::from_rgb(0x20, 0xA8, 0xF0);
+
+/// The measure marker: a thick downward arrow about 25 px tall whose tip is `tip`, with a
+/// small red dot on the tip.
+fn measure_arrow(painter: &egui::Painter, tip: Pos2, color: Color32, ppp: f32) {
+    let u = 1.0 / ppp;
+    let head = Pos2::new(tip.x, tip.y - 10.0 * u);
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            Pos2::new(tip.x - 2.0 * u, tip.y - 25.0 * u),
+            Pos2::new(tip.x + 2.0 * u, head.y),
+        ),
+        0.0,
+        color,
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            tip,
+            Pos2::new(tip.x - 5.0 * u, head.y),
+            Pos2::new(tip.x + 5.0 * u, head.y),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+    painter.circle_filled(tip, 1.2 * u, Color32::from_rgb(0xE0, 0x20, 0x20));
 }

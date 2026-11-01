@@ -227,12 +227,12 @@ impl App {
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
-            Some(Tool::Measure { points }) => {
-                let d = if points.len() == 2 {
-                    points[0].distance(points[1]) / units.to_mm()
-                } else {
-                    0.0
-                };
+            Some(Tool::Measure { points, hover }) => {
+                let d = match (&points[..], hover) {
+                    ([a, b], _) => a.distance(*b),
+                    ([a], Some(h)) => a.distance(*h),
+                    _ => 0.0,
+                } / units.to_mm();
                 ui.add_space(12.0);
                 style::label(
                     ui,
