@@ -245,8 +245,14 @@ impl Scene {
         self.dirty = true;
     }
 
-    pub fn can_ungroup(&self) -> bool {
-        self.selected().any(|o| o.mesh.solids().len() > 1)
+    /// Whether a selected object has several solids; `None` while their statistics are
+    /// still being counted off the UI thread.
+    pub fn can_ungroup(&self) -> Option<bool> {
+        let mut any = false;
+        for o in self.selected() {
+            any |= cached_stats(&o.mesh)?.components > 1;
+        }
+        Some(any)
     }
 
     fn free_name(&self, base: &str) -> String {
@@ -588,12 +594,18 @@ mod tests {
             scene.selection.insert(id);
         }
         let before: Vec<_> = scene.objects.iter().map(Object::world_mesh).collect();
-        assert!(!scene.can_ungroup());
+        let ungroupable = |scene: &Scene| loop {
+            if let Some(any) = scene.can_ungroup() {
+                break any;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!ungroupable(&scene));
         scene.group_selected();
         assert_eq!(scene.objects.len(), 1);
         assert_eq!(scene.selection.len(), 1);
         assert_eq!(scene.objects[0].name, "Group");
-        assert!(scene.can_ungroup());
+        assert!(ungroupable(&scene));
         scene.ungroup_selected();
         assert_eq!(scene.objects.len(), 2);
         assert_eq!(scene.selection.len(), 2);

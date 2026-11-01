@@ -47,6 +47,8 @@ mod top_bar;
 mod transform;
 mod viewport;
 
+/// One frame at the 60 fps cap.
+const FRAME_TIME: Duration = Duration::from_micros(16_667);
 const SOON: &str = "Coming soon";
 
 /// Emboss settings and the one selected object they apply to: id, mesh pointer, transform.
@@ -1470,6 +1472,13 @@ impl eframe::App for App {
         // reports the window as minimized while it is being restored.
         if !matches!(self.confirm, Some(Action::Quit)) && self.power_update(ctx, frame) {
             return;
+        }
+        // Frames are capped at 60 fps instead of waiting for V-Sync; idle draws nothing.
+        if let Some(rest) = self
+            .last_frame
+            .and_then(|last| FRAME_TIME.checked_sub(last.elapsed()))
+        {
+            std::thread::sleep(rest);
         }
         let started = Instant::now();
         let interval = self

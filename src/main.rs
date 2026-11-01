@@ -62,8 +62,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            present_mode: eframe::wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: if cfg!(windows) { Some(1) } else { None },
+            present_mode: eframe::wgpu::PresentMode::AutoNoVsync,
             wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
                 device_descriptor: std::sync::Arc::new(move |adapter| {
                     let mut descriptor = device_descriptor(adapter);

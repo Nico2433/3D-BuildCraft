@@ -53,10 +53,14 @@ impl App {
                     ),
                     (Icon::SpecialSelect, tr(lang, "Special selection"), None),
                 ];
+                let ungroup = self.scene.can_ungroup();
+                if ungroup.is_none() {
+                    ctx.request_repaint_after(Duration::from_millis(50));
+                }
                 for (icon, label, action) in items {
                     let enabled = match &action {
                         Some(Action::Group) => self.scene.selection.len() >= 2,
-                        Some(Action::Ungroup) => self.scene.can_ungroup(),
+                        Some(Action::Ungroup) => ungroup.unwrap_or(false),
                         _ => action.is_some(),
                     };
                     // Object selection is the mode the original shows as current.
