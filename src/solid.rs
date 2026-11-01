@@ -3,6 +3,7 @@
 
 use crate::boolean::{from_manifold, to_manifold};
 use crate::mesh::{Dsu, Mesh};
+use crate::texture::FaceTex;
 use anyhow::{bail, Result};
 use glam::Vec3;
 use manifold_rust::linalg::Vec3 as MVec3;
@@ -56,11 +57,15 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
         .collect();
     let mut tris: Vec<[u32; 3]> = Vec::new();
     let mut colors: Vec<[u8; 4]> = Vec::new();
+    // Textures follow their faces too: a face split in four has the same picture, with
+    // the UVs of the new corners halfway between the old ones.
+    let mut texs: Vec<FaceTex> = Vec::new();
     for (i, t) in mesh.triangles.iter().enumerate() {
         let t = t.map(|v| remap[v as usize]);
         if t[0] != t[1] && t[1] != t[2] && t[0] != t[2] {
             tris.push(t);
             colors.push(mesh.colors.get(i).copied().unwrap_or([0; 4]));
+            texs.push(mesh.face_tex(i).unwrap_or_default());
         }
     }
     let key = |a: u32, b: u32| (a.min(b), a.max(b));
@@ -100,7 +105,8 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
         };
         let mut next = Vec::with_capacity(tris.len() * 4);
         let mut next_colors = Vec::with_capacity(tris.len() * 4);
-        for (t, c) in tris.iter().zip(&colors) {
+        let mut next_texs = Vec::with_capacity(tris.len() * 4);
+        for ((t, c), tex) in tris.iter().zip(&colors).zip(&texs) {
             let [a, b, c3] = *t;
             let (ab, bc, ca) = (
                 mid(a, b, &mut pos),
@@ -109,6 +115,18 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
             );
             next.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c3], [ab, bc, ca]]);
             next_colors.extend([*c; 4]);
+            let [ua, ub, uc] = tex.uv;
+            let half = |p: [f32; 2], q: [f32; 2]| [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
+            let (uab, ubc, uca) = (half(ua, ub), half(ub, uc), half(uc, ua));
+            next_texs.extend(
+                [
+                    [ua, uab, uca],
+                    [uab, ub, ubc],
+                    [uca, ubc, uc],
+                    [uab, ubc, uca],
+                ]
+                .map(|uv| FaceTex { uv, ..*tex }),
+            );
         }
         sharp = sharp
             .iter()
@@ -117,7 +135,7 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
                 [key(a, m), key(m, b)]
             })
             .collect();
-        (tris, colors) = (next, next_colors);
+        (tris, colors, texs) = (next, next_colors, next_texs);
     }
     let fixed: HashSet<u32> = sharp.iter().flat_map(|&(a, b)| [a, b]).collect();
     let mut near: Vec<Vec<u32>> = vec![Vec::new(); pos.len()];
@@ -150,6 +168,9 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
     let mut out = Mesh::new(pos, tris);
     if colors.iter().any(|c| c[3] != 0) {
         out.colors = colors;
+    }
+    if texs.iter().any(|t| t.layer > 0) {
+        out.tex = texs;
     }
     Ok(out)
 }

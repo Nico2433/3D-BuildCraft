@@ -152,6 +152,18 @@ impl Object {
         self.scale = Vec3::ONE;
     }
 
+    /// The world mesh for a boolean whose result takes colour `base`: where this object's
+    /// own colour differs, its unpainted faces are painted with it so the result keeps it.
+    pub fn world_mesh_for(&self, base: Rgba) -> Mesh {
+        let mut mesh = self.world_mesh();
+        if self.color != base {
+            mesh.colors = (0..mesh.triangles.len())
+                .map(|i| mesh.face_color(i).unwrap_or(self.color))
+                .collect();
+        }
+        mesh
+    }
+
     pub fn world_mesh(&self) -> Mesh {
         self.mesh.transformed(&self.matrix())
     }

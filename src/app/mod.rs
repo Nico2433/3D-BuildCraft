@@ -611,7 +611,8 @@ impl App {
             Some("settle") => Some(Action::Settle),
             Some("paint" | "paint-colors" | "paint-more") => Some(Action::StartPaint),
             Some(
-                "texture" | "texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush",
+                "texture" | "texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush"
+                | "texture-split",
             ) => Some(Action::StartTexture),
             Some("custom") => Some(Action::StartCustom),
             Some("camera") => Some(Action::StartCamera),
@@ -665,10 +666,12 @@ impl App {
         match launch.tool.as_deref() {
             Some("paint-colors") => app.actions.push(Action::PaintMenu(false)),
             Some("paint-more") => app.actions.push(Action::PaintMenu(true)),
-            Some(t @ ("texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush")) => {
-                app.actions
-                    .push(Action::TexturePreset(texture_ui::Preset::from_tool(t)))
-            }
+            Some(
+                t @ ("texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush"
+                | "texture-split"),
+            ) => app
+                .actions
+                .push(Action::TexturePreset(texture_ui::Preset::from_tool(t))),
             _ => {}
         }
         // The assistant's chat panel and its settings tab.
@@ -1216,8 +1219,8 @@ impl App {
                 // Selection order is scene order, so `Subtract` takes newer objects away
                 // from the oldest one.
                 let picked: Vec<&Object> = self.scene.selected().collect();
-                let meshes: Vec<_> = picked.iter().map(|o| o.world_mesh()).collect();
                 let (name, color) = (picked[0].name.clone(), picked[0].color);
+                let meshes: Vec<_> = picked.iter().map(|o| o.world_mesh_for(color)).collect();
                 match crate::boolean::apply(op, &meshes) {
                     Ok(mesh) => self.edit(|s| {
                         s.delete_selected();

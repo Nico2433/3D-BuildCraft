@@ -846,6 +846,8 @@ pub(super) enum Preset {
     Sticker,
     Edit,
     Brush,
+    /// Brush, then Split keeping the top half: textures must survive the cut.
+    Split,
 }
 
 impl Preset {
@@ -854,6 +856,7 @@ impl Preset {
             "texture-sticker" => Preset::Sticker,
             "texture-edit" => Preset::Edit,
             "texture-brush" => Preset::Brush,
+            "texture-split" => Preset::Split,
             _ => Preset::Menu,
         }
     }
@@ -911,7 +914,7 @@ impl App {
                     }
                 }
             }
-            (Preset::Brush, Some(hit)) => {
+            (Preset::Brush | Preset::Split, Some(hit)) => {
                 t.set_brush();
                 t.coverage = 0.3;
                 t.layer = texture::layer_of(Kind::Walnut).unwrap_or(t.layer);
@@ -942,6 +945,12 @@ impl App {
                 }
             }
             _ => {}
+        }
+        if matches!(preset, Preset::Split) {
+            let z = self.scene.selection_aabb().center().z;
+            let plane = crate::cut::CutPlane::at_height(z);
+            self.edit(|s| s.cut_selected(&plane, crate::cut::Keep::Top));
+            return;
         }
         self.tool = Some(Tool::Texture(t));
     }

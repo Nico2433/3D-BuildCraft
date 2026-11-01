@@ -40,6 +40,34 @@ impl FaceTex {
     }
 }
 
+impl FaceTex {
+    /// The picture coordinates at point `p` of a triangle with corners `tri`, found
+    /// barycentrically from this triangle's corner UVs.
+    fn uv_at(&self, tri: [Vec3; 3], p: Vec3) -> [f32; 2] {
+        let (v0, v1, v2) = (tri[1] - tri[0], tri[2] - tri[0], p - tri[0]);
+        let (d00, d01, d11) = (v0.dot(v0), v0.dot(v1), v1.dot(v1));
+        let (d20, d21) = (v2.dot(v0), v2.dot(v1));
+        let den = d00 * d11 - d01 * d01;
+        if den.abs() < 1e-20 {
+            return self.uv[0];
+        }
+        let v = (d11 * d20 - d01 * d21) / den;
+        let w = (d00 * d21 - d01 * d20) / den;
+        let u = 1.0 - v - w;
+        let at = |k: usize| u * self.uv[0][k] + v * self.uv[1][k] + w * self.uv[2][k];
+        [at(0), at(1)]
+    }
+
+    /// The same texture for a triangle `to` cut out of the one with corners `from`: each
+    /// new corner gets the UV the source has at that point, so the picture stays put.
+    pub fn within(self, from: [Vec3; 3], to: [Vec3; 3]) -> FaceTex {
+        FaceTex {
+            uv: to.map(|p| self.uv_at(from, p)),
+            ..self
+        }
+    }
+}
+
 #[derive(PartialEq)]
 enum Key {
     Kind(Kind),

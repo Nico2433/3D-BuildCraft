@@ -2,6 +2,7 @@
 //! gives two closed meshes.
 
 use crate::mesh::Mesh;
+use crate::texture::FaceTex;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use std::collections::HashMap;
 
@@ -89,15 +90,36 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         })
     };
 
-    let (mut top, mut bottom) = (Vec::new(), Vec::new());
+    // Each output triangle keeps the colour and texture of the one it was cut from; a
+    // piece cut out of it gets UVs found barycentrically, so the picture does not move.
+    let colored = mesh.colors.len() == mesh.triangles.len();
+    let textured = mesh.has_tex();
+    let (mut top, mut bottom): (Vec<Part>, Vec<Part>) = (Vec::new(), Vec::new());
     // Cap edges, directed the way the top half's cap must run.
     let mut cap_next: HashMap<u32, u32> = HashMap::new();
-    for t in &mesh.triangles {
+    for (ti, t) in mesh.triangles.iter().enumerate() {
+        let color = if colored { mesh.colors[ti] } else { [0; 4] };
+        let tex = mesh
+            .tex
+            .get(ti)
+            .copied()
+            .filter(|_| textured)
+            .unwrap_or_default();
         let side = t.map(|i| above[i as usize]);
         if side[0] == side[1] && side[1] == side[2] {
-            if side[0] { &mut top } else { &mut bottom }.push(*t);
+            if side[0] { &mut top } else { &mut bottom }.push(Part { t: *t, color, tex });
             continue;
         }
+        let from = t.map(|i| mesh.positions[i as usize]);
+        let part = |t: [u32; 3], positions: &[Vec3]| Part {
+            t,
+            color,
+            tex: if tex.layer > 0 {
+                tex.within(from, t.map(|i| positions[i as usize]))
+            } else {
+                tex
+            },
+        };
         // Rotate (keeping the winding) so the vertex alone on its side comes first.
         let k = (0..3)
             .find(|&k| side[(k + 1) % 3] == side[(k + 2) % 3])
@@ -112,8 +134,8 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         } else {
             (&mut bottom, &mut top)
         };
-        lone.push([l, i1, i2]);
-        rest.extend([[i1, x, y], [i1, y, i2]]);
+        lone.push(part([l, i1, i2], &positions));
+        rest.extend([part([i1, x, y], &positions), part([i1, y, i2], &positions)]);
         // The lone half has the edge i1→i2, so its cap needs i2→i1, and the other way round.
         if side[k] {
             cap_next.insert(i2, i1);
@@ -122,12 +144,39 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         }
     }
 
+    // Caps are new surface: no texture, and no colour of their own.
     for tri in cap(&positions, cap_next) {
-        top.push(tri);
-        bottom.push([tri[0], tri[2], tri[1]]);
+        top.push(Part::new(tri));
+        bottom.push(Part::new([tri[0], tri[2], tri[1]]));
     }
-    let half = |tris: Vec<[u32; 3]>| Mesh::new(positions.clone(), tris).welded();
+    let half = |parts: Vec<Part>| {
+        let mut m = Mesh::new(positions.clone(), parts.iter().map(|p| p.t).collect());
+        if colored && parts.iter().any(|p| p.color[3] > 0) {
+            m.colors = parts.iter().map(|p| p.color).collect();
+        }
+        if textured && parts.iter().any(|p| p.tex.layer > 0) {
+            m.tex = parts.iter().map(|p| p.tex).collect();
+        }
+        m.welded()
+    };
     (half(top), half(bottom))
+}
+
+/// An output triangle of a cut with the attributes it inherits.
+struct Part {
+    t: [u32; 3],
+    color: [u8; 4],
+    tex: FaceTex,
+}
+
+impl Part {
+    fn new(t: [u32; 3]) -> Self {
+        Self {
+            t,
+            color: [0; 4],
+            tex: FaceTex::default(),
+        }
+    }
 }
 
 /// Triangulates the closed contours of a cut, facing down (the top half's cap).
@@ -286,6 +335,39 @@ mod tests {
                 (sum - total).abs() / total < 1e-4,
                 "{p:?}: {sum} vs {total}"
             );
+        }
+    }
+
+    #[test]
+    fn cut_keeps_textures_and_colors_with_uvs_inside_the_source_range() {
+        use crate::texture::apply_box;
+        let cube = primitives::cube(10.0);
+        let all: Vec<usize> = (0..cube.triangles.len()).collect();
+        let mut textured = apply_box(&cube, &Mat4::IDENTITY, &all, 1, 10.0);
+        textured.colors = vec![[10, 20, 30, 255]; cube.triangles.len()];
+        let src: Vec<[f32; 2]> = textured.tex.iter().flat_map(|t| t.uv).collect();
+        let lo = src
+            .iter()
+            .fold([f32::MAX; 2], |a, u| [a[0].min(u[0]), a[1].min(u[1])]);
+        let hi = src
+            .iter()
+            .fold([f32::MIN; 2], |a, u| [a[0].max(u[0]), a[1].max(u[1])]);
+        let mut plane = CutPlane::at_height(0.0);
+        plane.center = cube.aabb().center();
+        plane.turn(Quat::from_rotation_y(30f32.to_radians()));
+        let (top, bottom) = cut_plane(&textured, &plane);
+        for half in [&top, &bottom] {
+            let n = half.triangles.len();
+            assert_eq!((half.tex.len(), half.colors.len()), (n, n));
+            let with = (0..n).filter(|&i| half.face_tex(i).is_some()).count();
+            // Everything but the cap keeps its picture; the cap has none.
+            assert!(with > n / 2 && with < n, "{with} of {n}");
+            for t in half.tex.iter().filter(|t| t.layer > 0) {
+                for u in t.uv {
+                    assert!(u[0] >= lo[0] - 1e-3 && u[0] <= hi[0] + 1e-3);
+                    assert!(u[1] >= lo[1] - 1e-3 && u[1] <= hi[1] + 1e-3);
+                }
+            }
         }
     }
 

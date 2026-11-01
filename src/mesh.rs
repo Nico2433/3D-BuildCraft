@@ -131,12 +131,29 @@ impl Mesh {
         }
     }
 
-    /// Merges vertices with identical coordinates and drops triangles that collapse.
+    /// Merges vertices with identical coordinates and drops triangles that collapse. Face
+    /// colours and textures stay with their triangles.
     pub fn welded(&self) -> Mesh {
         let soup: Vec<[Vec3; 3]> = self.triangle_positions().collect();
         let mut m = Mesh::from_triangle_soup(&soup);
-        m.triangles
-            .retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+        let keep: Vec<bool> = m
+            .triangles
+            .iter()
+            .map(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+            .collect();
+        fn pick<T>(v: &mut Vec<T>, keep: &[bool]) {
+            let mut k = keep.iter();
+            v.retain(|_| *k.next().unwrap());
+        }
+        if self.colors.len() == self.triangles.len() {
+            m.colors = self.colors.clone();
+            pick(&mut m.colors, &keep);
+        }
+        if self.tex.len() == self.triangles.len() {
+            m.tex = self.tex.clone();
+            pick(&mut m.tex, &keep);
+        }
+        pick(&mut m.triangles, &keep);
         m
     }
 
