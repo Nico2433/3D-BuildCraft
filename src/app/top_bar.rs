@@ -116,20 +116,15 @@ impl App {
                         {
                             self.actions.push(Action::Save);
                         }
-                        if self.settings.ai.enabled {
-                            ui.add_space(8.0);
-                            if style::icon_button(
-                                ui,
-                                Icon::Assistant,
-                                square,
-                                true,
-                                style::BLUE_HOVER,
-                            )
+                        // Always shown: the switch that turns the assistant on is in its window.
+                        ui.add_space(8.0);
+                        if style::icon_button(ui, Icon::Assistant, square, true, style::BLUE_HOVER)
                             .on_hover_text(tr(lang, "AI assistant"))
                             .clicked()
-                            {
-                                self.chat.open = !self.chat.open;
-                            }
+                        {
+                            self.chat.open = !self.chat.open;
+                            // Off, it opens where it can be turned on.
+                            self.chat.settings_tab |= !self.settings.ai.enabled;
                         }
                         ui.add_space(8.0);
                         if style::ribbon_button(
