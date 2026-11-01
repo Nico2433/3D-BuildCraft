@@ -93,6 +93,9 @@ impl App {
             chat: Default::default(),
             agent_shot: None,
             print_status_open: false,
+            printer_status: Vec::new(),
+            printer_status_job: None,
+            printer_status_at: None,
             design_edit: None,
             ribbon_hidden: false,
             items_open: true,
@@ -171,7 +174,12 @@ impl App {
             .and_then(|t| t.strip_prefix("print-"))
         {
             self.print = print::Page::from_name(page);
-            self.actions.push(Action::DetectSlicers);
+            // The status window alone: it looks for the slicer itself.
+            if page == "status" {
+                self.print_status_open = true;
+            } else {
+                self.actions.push(Action::DetectSlicers);
+            }
         }
         if let Some(z) = launch.zoom {
             ctx.set_zoom_factor(z);
