@@ -535,11 +535,20 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
-        if let Some(spec) = &launch.drag {
-            // A drag in the Split tool moves its plane, so the tool opens first.
-            if launch.tool.as_deref() == Some("cut") {
-                app.apply(Action::StartCut, &cc.egui_ctx);
+        // A drag in the Split tool moves its plane, so the tool opens first.
+        let cut_now = match launch.tool.as_deref() {
+            Some("cut") => launch.drag.is_some(),
+            tool => tool == Some("cut-bottom"),
+        };
+        if cut_now {
+            app.apply(Action::StartCut, &cc.egui_ctx);
+            if let Some(Tool::Cut { keep, .. }) = &mut app.tool {
+                if launch.tool.as_deref() == Some("cut-bottom") {
+                    *keep = Keep::Bottom;
+                }
             }
+        }
+        if let Some(spec) = &launch.drag {
             app.simulate_drag(spec);
         }
         if let Some(path) = launch.image {
@@ -556,7 +565,7 @@ impl App {
             cc.egui_ctx.set_zoom_factor(z);
         }
         let start = match launch.tool.as_deref() {
-            Some("cut") if launch.drag.is_none() => Some(Action::StartCut),
+            Some("cut") if !cut_now => Some(Action::StartCut),
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
             Some("emboss") => Some(Action::StartEmboss),
@@ -1172,7 +1181,10 @@ impl App {
             }
             Action::StartCut => {
                 let mut plane = CutPlane::at_height(0.0);
-                plane.center = self.scene.selection_aabb().center();
+                // It starts at the bottom of the selection, so the offset reads 0 there.
+                let b = self.scene.selection_aabb();
+                plane.center = b.center();
+                plane.center.z = b.min.z;
                 self.tool = Some(Tool::Cut {
                     plane,
                     keep: Keep::Top,

@@ -552,6 +552,26 @@ impl App {
                     eye: self.camera.eye(),
                     viewport: glam::Vec2::new(rect.width(), rect.height())
                         * ui.ctx().pixels_per_point(),
+                    // The cutting plane, green to move and blue to turn.
+                    slab: match &self.tool {
+                        Some(Tool::Cut { plane, .. }) => {
+                            let c = self.cut_slab(plane);
+                            let m = glam::Mat4::from_cols(
+                                ((c[1] - c[0]) * 0.5).extend(0.0),
+                                ((c[3] - c[0]) * 0.5).extend(0.0),
+                                Vec3::Z.extend(0.0),
+                                ((c[0] + c[2]) * 0.5).extend(1.0),
+                            );
+                            let (r, g, b) = if self.mode == TransformMode::Rotate {
+                                (0x1E, 0xA0, 0xE8)
+                            } else {
+                                (0x4C, 0xC0, 0x4C)
+                            };
+                            let to_f = |x: u8| x as f32 / 255.0;
+                            Some((m, [to_f(r), to_f(g), to_f(b), 0.35]))
+                        }
+                        _ => None,
+                    },
                     // The Split preview shows only the part that will be kept.
                     clip: match &self.tool {
                         Some(Tool::Cut { plane, keep }) if *keep != Keep::Both => {
@@ -672,25 +692,6 @@ impl App {
                         );
                     }
                 }
-                if let Some(Tool::Cut { plane, .. }) = &self.tool {
-                    // The cutting plane: green to move, blue to turn.
-                    let pts: Vec<Pos2> = self
-                        .cut_slab(plane)
-                        .iter()
-                        .filter_map(|p| to_screen(*p))
-                        .collect();
-                    if pts.len() == 4 {
-                        let (fill, line) = match self.mode {
-                            TransformMode::Rotate => (gizmo::BLUE, gizmo::BLUE),
-                            _ => (Color32::from_rgb(0x4C, 0xC0, 0x4C), gizmo::GREEN),
-                        };
-                        painter.add(egui::Shape::convex_polygon(
-                            pts,
-                            fill.gamma_multiply(0.35),
-                            Stroke::new(1.5_f32, line),
-                        ));
-                    }
-                }
                 if let Some(Tool::Measure { points, hover }) = &self.tool {
                     // The placed points are blue and the live one green, as the original's.
                     let live = if points.len() < 2 { *hover } else { None };
@@ -758,13 +759,20 @@ impl App {
                     .filter_map(|p| Some((p, to_screen(p)?.y)))
                     .max_by(|a, b| a.1.total_cmp(&b.1))
                     .map_or(plane.point(), |e| e.0);
-                let guide = drag.map(|_| [plane.center, plane.point()]);
-                return Some(gizmo::plane_arrow(edge, plane.normal(), guide, &to_screen));
+                return Some(gizmo::plane_arrow(edge, plane.normal(), &to_screen));
             }
+        }
+        // The Split rings turn about the plane's centre.
+        let mut around = self.scene.selection_aabb();
+        if let Some(Tool::Cut { plane, .. }) = &self.tool {
+            around = Aabb {
+                min: plane.center,
+                max: plane.center,
+            };
         }
         Some(gizmo::build(
             self.mode,
-            &self.scene.selection_aabb(),
+            &around,
             self.scene.selection_radius(),
             self.camera.eye(),
             angles,

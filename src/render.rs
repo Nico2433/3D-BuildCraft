@@ -84,6 +84,9 @@ pub struct FrameCallback {
     pub viewport: glam::Vec2,
     /// A plane (normal, distance) whose positive side is cut away, as in the Split preview.
     pub clip: Option<(Vec3, f32)>,
+    /// A translucent square (the Split plane): the unit square -1..1 in XY under this
+    /// matrix, with its colour. Depth tested, so objects hide it.
+    pub slab: Option<(Mat4, [f32; 4])>,
 }
 
 struct GpuMesh {
@@ -123,6 +126,7 @@ pub struct Renderer {
     selection: Option<SelectionMask>,
     shadow: wgpu::RenderPipeline,
     floor: wgpu::RenderPipeline,
+    slab: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -249,6 +253,23 @@ struct SOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
 @fragment fn fs_wire() -> @location(0) vec4<f32> {
     return vec4<f32>(0.05, 0.08, 0.12, 0.85);
+}
+
+struct SlabOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs_slab(@builtin(vertex_index) i: u32) -> SlabOut {
+    var corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    var out: SlabOut;
+    out.pos = g.view_proj * o.model * vec4<f32>(corners[i], 0.0, 1.0);
+    out.uv = corners[i];
+    return out;
+}
+
+// Translucent fill with a solid edge line a pixel or two wide.
+@fragment fn fs_slab(in: SlabOut) -> @location(0) vec4<f32> {
+    let edge = (1.0 - abs(in.uv)) / fwidth(in.uv);
+    if (min(edge.x, edge.y) < 1.5) { return vec4<f32>(o.color.rgb, 1.0); }
+    return vec4<f32>(o.color.rgb, o.color.a);
 }
 
 struct FOut { @builtin(position) pos: vec4<f32>, @location(0) w: vec2<f32> };
@@ -506,6 +527,17 @@ impl Renderer {
             Some(wgpu::CompareFunction::LessEqual),
         );
 
+        let slab = pipeline(
+            "slab",
+            &mesh_layout,
+            "vs_slab",
+            "fs_slab",
+            &[],
+            tri,
+            false,
+            Some(wgpu::CompareFunction::LessEqual),
+        );
+
         let object_capacity = 64;
         let (object_buf, object_bg) = Self::object_buffer(device, &object_layout, object_capacity);
         Self {
@@ -519,6 +551,7 @@ impl Renderer {
             selection: None,
             shadow,
             floor,
+            slab,
             globals_buf,
             globals_bg,
             object_layout,
@@ -643,15 +676,15 @@ impl CallbackTrait for FrameCallback {
         };
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&globals));
 
-        // Three slots per item: the object, its reflection and its shadow.
+        // Three slots per item: the object, its reflection and its shadow; then the slab.
         let n = self.items.len();
-        if 3 * n as u64 > r.object_capacity {
-            r.object_capacity = (3 * n as u64).next_power_of_two();
+        if 3 * n as u64 + 1 > r.object_capacity {
+            r.object_capacity = (3 * n as u64 + 1).next_power_of_two();
             let (b, bg) = Renderer::object_buffer(device, &r.object_layout, r.object_capacity);
             r.object_buf = b;
             r.object_bg = bg;
         }
-        let mut bytes = vec![0u8; 3 * n * OBJECT_STRIDE as usize];
+        let mut bytes = vec![0u8; (3 * n + 1) * OBJECT_STRIDE as usize];
         let mut live = HashSet::new();
         for (i, it) in self.items.iter().enumerate() {
             let key = Arc::as_ptr(&it.mesh) as usize;
@@ -701,6 +734,17 @@ impl CallbackTrait for FrameCallback {
                 });
                 gm.lines = Some((buf, idx.len() as u32));
             }
+        }
+        if let Some((model, color)) = self.slab {
+            let u = ObjectUniform {
+                model: mat(model),
+                normal: mat(Mat4::IDENTITY),
+                color,
+                extra: [0.0; 4],
+            };
+            let o = 3 * n * OBJECT_STRIDE as usize;
+            bytes[o..o + std::mem::size_of::<ObjectUniform>()]
+                .copy_from_slice(bytemuck::bytes_of(&u));
         }
         if !bytes.is_empty() {
             queue.write_buffer(&r.object_buf, 0, &bytes);
@@ -899,6 +943,11 @@ impl CallbackTrait for FrameCallback {
             pass.set_vertex_buffer(0, gm.vbuf.slice(..));
             pass.set_index_buffer(gm.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..gm.index_count, 0, 0..1);
+        }
+        if self.slab.is_some() {
+            pass.set_pipeline(&r.slab);
+            pass.set_bind_group(1, &r.object_bg, &slot(3 * n));
+            pass.draw(0..6, 0..1);
         }
         if self.flags.wireframe {
             pass.set_pipeline(&r.wire);
