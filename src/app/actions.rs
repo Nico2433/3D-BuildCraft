@@ -72,6 +72,8 @@ pub(super) enum Action {
     ChooseSlicer(PathBuf),
     /// Print with this filament slot wherever the scene has this colour.
     ChooseFilament(Rgba, usize),
+    /// Print with this printer profile of the slicer.
+    ChoosePrinter(String),
     /// Saves the scene as 3MF and opens it in the chosen slicer.
     SendToSlicer,
     ShowPrintStatus,
@@ -397,7 +399,15 @@ impl App {
                 }
             }
             Action::ChooseSlicer(path) => {
+                if self.settings.slicer.as_ref() != Some(&path) {
+                    self.settings.printer = None;
+                }
                 self.settings.slicer = Some(path);
+                let _ = self.settings.save();
+                self.load_filaments();
+            }
+            Action::ChoosePrinter(printer) => {
+                self.settings.printer = Some(printer);
                 let _ = self.settings.save();
                 self.load_filaments();
             }

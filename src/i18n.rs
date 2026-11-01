@@ -410,6 +410,7 @@ const ES: &[(&str, &str)] = &[
         "Elige el laminador que imprime el modelo",
     ),
     ("Installed slicers", "Laminadores instalados"),
+    ("Printer profile", "Perfil de impresora"),
     ("Browse…", "Examinar…"),
     ("Opened in", "Abierto en"),
     ("Could not print:", "No se pudo imprimir:"),

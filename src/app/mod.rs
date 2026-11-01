@@ -326,7 +326,8 @@ pub struct App {
     print: Option<print::Page>,
     /// Slicers found on this computer, looked up when the print view opens.
     slicers: Vec<crate::slicer::Slicer>,
-    /// The chosen slicer's filament slots, read with the slicers.
+    /// The chosen slicer's printer profiles and the chosen printer's filament slots.
+    printers: Vec<String>,
     filaments: Vec<crate::slicer::Filament>,
     /// The filament slot picked for a scene colour; other colours use the closest filament.
     filament_of: Vec<(Rgba, usize)>,

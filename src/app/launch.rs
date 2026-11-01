@@ -82,6 +82,7 @@ impl App {
             thumbs: thumbs::Thumbs::new(),
             print: None,
             slicers: Vec::new(),
+            printers: Vec::new(),
             filaments: Vec::new(),
             filament_of: Vec::new(),
             agent: agent_rx,

@@ -60,7 +60,20 @@ impl App {
                 } else {
                     // Each colour prints with the filament slot chosen on the Material page.
                     let slot_of = |c: Rgba| self.filament_slot(c);
-                    io::threemf::write_for_slicer(&path, &models, Some(&title), &slot_of, None)
+                    // The chosen printer travels in the file, with its process and filaments.
+                    let settings = self
+                        .settings
+                        .printer
+                        .as_deref()
+                        .zip(self.chosen_slicer())
+                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p));
+                    io::threemf::write_for_slicer(
+                        &path,
+                        &models,
+                        Some(&title),
+                        &slot_of,
+                        settings.as_deref(),
+                    )
                 }
             })
             .and_then(|()| crate::slicer::open(&slicer, &path));
@@ -318,6 +331,24 @@ impl App {
                 self.actions.push(Action::BrowseSlicer);
             }
         });
+        if self.printers.is_empty() {
+            return;
+        }
+        ui.add_space(32.0);
+        heading_info(ui, tr(lang, "Printer profile"));
+        ui.add_space(8.0);
+        // The slicer's current printer comes first.
+        let names: Vec<&str> = self.printers.iter().map(String::as_str).collect();
+        let mut k = self
+            .settings
+            .printer
+            .as_ref()
+            .and_then(|p| self.printers.iter().position(|n| n == p))
+            .unwrap_or(0);
+        if style::dropdown(ui, "print_printer", 320.0, &names, &mut k) {
+            self.actions
+                .push(Action::ChoosePrinter(self.printers[k].clone()));
+        }
     }
 
     /// The chosen slicer, as found on this computer or named after its file.
@@ -327,10 +358,15 @@ impl App {
         Some(found.unwrap_or_else(|| crate::slicer::from_path(path)))
     }
 
+    /// Reads the chosen slicer's printer profiles and the chosen printer's filaments.
     pub(super) fn load_filaments(&mut self) {
-        self.filaments = self
-            .chosen_slicer()
-            .map_or_else(Vec::new, |s| crate::slicer::filaments(&s, None));
+        let Some(slicer) = self.chosen_slicer() else {
+            (self.printers, self.filaments) = (Vec::new(), Vec::new());
+            return;
+        };
+        self.printers = crate::slicer::printers(&slicer);
+        let printer = self.settings.printer.as_deref();
+        self.filaments = crate::slicer::filaments(&slicer, printer);
     }
 
     /// The filament slot that prints `color`: the one picked for it, else the closest.
