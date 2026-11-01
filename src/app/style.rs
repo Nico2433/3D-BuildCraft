@@ -554,17 +554,18 @@ pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Res
     // Kept while the × is pressed, as the press takes the focus away from the box.
     let was_shown = ui.data(|d| d.get_temp::<bool>(shown_id)).unwrap_or(false);
     let focused = ui.memory(|m| m.has_focus(id));
+    let margin = egui::Margin {
+        left: 8,
+        right: 28,
+        top: 6,
+        bottom: 6,
+    };
     let edit = egui::TextEdit::singleline(text)
         .id(id)
         .hint_text(hint)
         .font(FontId::proportional(MENU_FONT))
         .desired_width(width)
-        .margin(egui::Margin {
-            left: 8,
-            right: 28,
-            top: 6,
-            bottom: 6,
-        });
+        .margin(margin);
     let mut resp = if focused {
         let before = ui.visuals().clone();
         let v = ui.visuals_mut();
@@ -584,8 +585,9 @@ pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Res
     let shown = !text.is_empty() && (resp.has_focus() || (was_shown && pressing));
     ui.data_mut(|d| d.insert_temp(shown_id, shown));
     if shown {
+        // The response is the text area inside the margin; the × sits at the box's end.
         let x = Rect::from_center_size(
-            resp.rect.right_center() - Vec2::new(14.0, 0.0),
+            resp.rect.right_center() + Vec2::new(margin.right as f32 - 14.0, 0.0),
             Vec2::splat(20.0),
         );
         let clear = ui.interact(x, shown_id, Sense::click());
