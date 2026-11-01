@@ -13,6 +13,11 @@ use std::time::Instant;
 pub(super) enum Done {
     /// New meshes for objects, with the mesh each one had when the job started.
     Repaired(Vec<(u64, Arc<Mesh>, Mesh)>),
+    /// The Smooth tool's preview, by object id; `gen` tells which request it answers.
+    Smoothed {
+        gen: u64,
+        result: Result<Vec<(u64, Mesh)>, String>,
+    },
     Loaded {
         path: PathBuf,
         replace_scene: bool,

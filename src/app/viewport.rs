@@ -406,7 +406,7 @@ impl App {
                         let (o, d) = self.camera.ray(to_ndc(pos), aspect);
                         let hit = self.pick(o, d);
                         let spot = self.measure_spot(o, d);
-                        let face = matches!(self.tool, Some(Tool::Paint { .. }))
+                        let face = matches!(self.tool, Some(Tool::Paint { .. } | Tool::Material { .. }))
                             .then(|| self.pick_face(o, d))
                             .flatten();
                         match &mut self.tool {
@@ -437,10 +437,16 @@ impl App {
                                     }
                                 }
                             }
+                            Some(Tool::Material { dropper, .. }) => {
+                                if let Some((id, tri)) = face.filter(|_| *dropper) {
+                                    self.pick_material(id, tri);
+                                }
+                            }
                             Some(
                                 Tool::Settle { .. }
                                 | Tool::Cut { .. }
                                 | Tool::Simplify { .. }
+                                | Tool::Smooth { .. }
                                 | Tool::Hollow { .. }
                                 | Tool::Emboss { .. }
                                 | Tool::Custom { .. }
@@ -489,9 +495,12 @@ impl App {
                         model: o.matrix(),
                         color: if ghost {
                             [0x8A, 0xA8, 0xF0, 110]
+                        } else if o.material == Material::Translucent {
+                            [o.color[0], o.color[1], o.color[2], TRANSLUCENT_ALPHA]
                         } else {
                             o.color
                         },
+                        material: o.material,
                         selected: self.scene.selection.contains(&o.id)
                             && !ghost
                             && !matches!(self.tool, Some(Tool::Settle { .. })),
@@ -514,6 +523,7 @@ impl App {
                             model: glam::Mat4::IDENTITY,
                             color: [0xC8, 0xC8, 0xC8, 0xFF],
                             selected: false,
+                            material: Material::None,
                         },
                     );
                 }
@@ -527,6 +537,7 @@ impl App {
                             model,
                             color,
                             selected: false,
+                            material: Material::None,
                         }),
                     );
                 }
@@ -544,6 +555,7 @@ impl App {
                             .filter(|_| !params.engrave)
                             .unwrap_or([0xF7, 0x8B, 0x1F, 0xFF]),
                         selected: false,
+                        material: Material::None,
                     });
                 }
                 let cb = FrameCallback {
@@ -787,6 +799,33 @@ impl App {
             Some(Tool::Cut { plane, .. }) => Some(*plane),
             _ => None,
         }
+    }
+
+    /// Keeps the Split plane's middle inside the selection along the plane's normal, so
+    /// it cannot be dragged or typed past the object. True when it moved.
+    pub(super) fn clamp_cut_plane(&mut self) -> bool {
+        let Some(Tool::Cut { plane, .. }) = &self.tool else {
+            return false;
+        };
+        let n = plane.normal();
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for o in self.scene.selected() {
+            let m = o.matrix();
+            for p in &o.mesh.positions {
+                let d = n.dot(m.transform_point3(*p));
+                lo = lo.min(d);
+                hi = hi.max(d);
+            }
+        }
+        let d = n.dot(plane.point());
+        if lo > hi || (d.clamp(lo, hi) - d).abs() < 1e-4 {
+            return false;
+        }
+        let target = d.clamp(lo, hi);
+        if let Some(Tool::Cut { plane, .. }) = &mut self.tool {
+            plane.offset += target - d;
+        }
+        true
     }
 
     /// The corners of the square slab drawn for the Split plane, as wide as the rings.
