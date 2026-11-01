@@ -87,15 +87,18 @@ impl Format {
 
 pub const OPEN_EXTENSIONS: [&str; 6] = ["3mf", "stl", "obj", "ply", "gltf", "glb"];
 
+/// The file name without extension, "Object" when it has none.
+pub(crate) fn file_stem(path: &Path) -> &str {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Object")
+}
+
 pub fn load(path: &Path) -> Result<LoadedModel> {
     let Some(format) = Format::from_path(path) else {
         bail!("Unsupported format: {}", path.display());
     };
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object")
-        .to_string();
+    let stem = file_stem(path).to_string();
     let objects = match format {
         Format::ThreeMf => threemf::read(path)?,
         Format::Stl => vec![stl::read(path, &stem)?],
