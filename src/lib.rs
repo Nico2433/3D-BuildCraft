@@ -6,6 +6,7 @@ pub mod camera;
 pub mod cut;
 pub mod emboss;
 pub mod history;
+pub mod host;
 pub mod i18n;
 pub mod image3d;
 pub mod io;

@@ -19,12 +19,33 @@ const MODEL_REL: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3d
 /// Writes to a temporary file beside `path` and renames it over the target, so a failed
 /// or interrupted save (or autosave) never destroys the previous file.
 pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Result<()> {
+    write_file(path, objects, title, None)
+}
+
+/// [`write`] for a slicer: every colour prints with filament slot `slot_of(colour)`
+/// (0-based), stored the way OrcaSlicer and Bambu Studio read it from other apps' files.
+pub fn write_for_slicer(
+    path: &Path,
+    objects: &[ModelObject],
+    title: Option<&str>,
+    slot_of: &dyn Fn(Rgba) -> usize,
+) -> Result<()> {
+    write_file(path, objects, title, Some(slot_of))
+}
+
+fn write_file(
+    path: &Path,
+    objects: &[ModelObject],
+    title: Option<&str>,
+    slot_of: Option<&dyn Fn(Rgba) -> usize>,
+) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     let file = std::fs::File::create(&tmp)
         .with_context(|| format!("Could not create {}", tmp.display()))?;
-    let written = write_to(file, objects, title).and_then(|()| Ok(std::fs::rename(&tmp, path)?));
+    let written =
+        write_zip(file, objects, title, slot_of).and_then(|()| Ok(std::fs::rename(&tmp, path)?));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -35,6 +56,15 @@ pub fn write_to<W: Write + std::io::Seek>(
     out: W,
     objects: &[ModelObject],
     title: Option<&str>,
+) -> Result<()> {
+    write_zip(out, objects, title, None)
+}
+
+fn write_zip<W: Write + std::io::Seek>(
+    out: W,
+    objects: &[ModelObject],
+    title: Option<&str>,
+    slot_of: Option<&dyn Fn(Rgba) -> usize>,
 ) -> Result<()> {
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default()
@@ -93,7 +123,10 @@ pub fn write_to<W: Write + std::io::Seek>(
             // A painted triangle names its own material.
             let paint = o.mesh.face_color(ti).map_or(String::new(), |c| {
                 let i = colors.iter().position(|k| *k == c).unwrap();
-                format!(" pid=\"1\" p1=\"{i}\"")
+                let paint = slot_of.map_or(String::new(), |slot| {
+                    format!(" paint_color=\"{}\"", paint_color(slot(c) + 1))
+                });
+                format!(" pid=\"1\" p1=\"{i}\"{paint}")
             });
             s.push_str(&format!(
                 "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"{paint} />\n",
@@ -112,8 +145,33 @@ pub fn write_to<W: Write + std::io::Seek>(
     }
     s.push_str("  </build>\n</model>\n");
     zip.write_all(s.as_bytes())?;
+    if let Some(slot) = slot_of {
+        // Object extruders (1-based), keyed by the object ids above.
+        zip.start_file("Metadata/model_settings.config", opts)?;
+        let mut c = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
+        for (i, o) in objects.iter().enumerate() {
+            c.push_str(&format!(
+                "  <object id=\"{}\">\n    <metadata key=\"name\" value=\"{}\"/>\n    <metadata key=\"extruder\" value=\"{}\"/>\n  </object>\n",
+                i + 2,
+                escape(&o.name),
+                slot(o.color) + 1
+            ));
+        }
+        c.push_str("</config>\n");
+        zip.write_all(c.as_bytes())?;
+    }
     zip.finish()?;
     Ok(())
+}
+
+/// A whole triangle painted with `extruder` (1-based) in the hex bitstream of Orca's
+/// `TriangleSelector::serialize`: 2 bits of state, or `11` then 4 bits of state − 3.
+fn paint_color(extruder: usize) -> String {
+    // Orca paints with at most 16 extruders.
+    match extruder.clamp(1, 16) {
+        n @ 1..=2 => format!("{:X}", n << 2),
+        n => format!("{:X}C", n - 3),
+    }
 }
 
 /// 3MF stores the 4×3 affine part column by column, which is glam's column-major order.
@@ -212,7 +270,7 @@ fn attr(e: &BytesStart, name: &str) -> Option<String> {
         .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
-fn parse_color(s: &str) -> Option<Rgba> {
+pub(crate) fn parse_color(s: &str) -> Option<Rgba> {
     let h = s.trim_start_matches('#');
     let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
     match h.len() {
@@ -465,6 +523,43 @@ mod tests {
         write(&path, &[], Some("t")).unwrap();
         assert!(zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).is_ok());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn slicer_export_assigns_filament_slots() {
+        let red = [255, 0, 0, 255];
+        let blue = [0, 0, 255, 255];
+        let mut painted = crate::primitives::Primitive::Cube.build();
+        painted.colors = vec![[0; 4]; painted.triangles.len()];
+        painted.colors[1] = blue;
+        let object = |name: &str, mesh: Mesh, color| ModelObject {
+            name: name.into(),
+            mesh,
+            transform: Mat4::IDENTITY,
+            color,
+        };
+        let objects = [
+            object("A", painted, red),
+            object("B", crate::primitives::Primitive::Cube.build(), blue),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("print.3mf");
+        // Red prints with slot 0 (extruder 1), anything else with slot 3 (extruder 4).
+        write_for_slicer(&path, &objects, None, &|c| if c == red { 0 } else { 3 }).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut text = |name: &str| {
+            let mut s = String::new();
+            zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+            s
+        };
+        let model = text("3D/3dmodel.model");
+        assert_eq!(model.matches("paint_color=\"1C\"").count(), 1);
+        let config = text("Metadata/model_settings.config");
+        assert!(config.contains("<object id=\"2\">\n    <metadata key=\"name\" value=\"A\"/>\n    <metadata key=\"extruder\" value=\"1\"/>"));
+        assert!(config.contains("<object id=\"3\">\n    <metadata key=\"name\" value=\"B\"/>\n    <metadata key=\"extruder\" value=\"4\"/>"));
+        assert_eq!(read(&path).unwrap()[0].mesh.face_color(1), Some(blue));
+        let states: Vec<String> = (1..=5).map(paint_color).collect();
+        assert_eq!(states, ["4", "8", "0C", "1C", "2C"]);
     }
 
     #[test]
