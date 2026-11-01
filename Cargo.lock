@@ -652,6 +652,7 @@ name = "buildcraft3d"
 version = "0.1.11"
 dependencies = [
  "anyhow",
+ "ashpd",
  "bytemuck",
  "directories",
  "earcutr",
@@ -668,8 +669,10 @@ dependencies = [
  "manifold-rust",
  "meshopt",
  "nokhwa",
+ "pollster",
  "qrcode",
  "quick-xml 0.37.5",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
