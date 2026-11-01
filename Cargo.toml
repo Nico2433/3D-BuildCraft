@@ -1,6 +1,6 @@
 [package]
 name = "buildcraft3d"
-version = "0.1.0"
+version = "0.1.12"
 edition = "2021"
 description = "3D BuildCraft: build, repair and prepare 3D models for printing"
 license = "MIT"
@@ -38,6 +38,7 @@ ureq = { version = "3", features = ["json"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 nokhwa = { version = "0.10", features = ["input-native"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
@@ -53,4 +54,12 @@ lto = "thin"
 
 # Same winit as eframe, to pick X11 on Linux: winit cannot take dropped files on Wayland.
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
+# The print portal, as rfd already uses it: async-std flavour, driven by pollster.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

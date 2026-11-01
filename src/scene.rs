@@ -25,6 +25,38 @@ pub const PALETTE: [(&str, Rgba); 10] = [
     ("Black", [0x26, 0x26, 0x26, 0xFF]),
 ];
 
+/// How an object's surface is drawn (Paint's "Material").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// No override: drawn as Simple.
+    #[default]
+    None,
+    Simple,
+    /// Glossy, with a stronger highlight and a sheen at grazing angles.
+    Realistic,
+    /// See-through: drawn after the opaque objects, without writing depth.
+    Translucent,
+}
+
+impl Material {
+    pub const ALL: [Material; 4] = [
+        Material::None,
+        Material::Simple,
+        Material::Realistic,
+        Material::Translucent,
+    ];
+
+    /// The i18n key of its name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Material::None => "No material",
+            Material::Simple => "Simple",
+            Material::Realistic => "Realistic",
+            Material::Translucent => "Translucent",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Object {
     pub id: u64,
@@ -35,6 +67,7 @@ pub struct Object {
     pub rotation: Vec3,
     pub scale: Vec3,
     pub color: Rgba,
+    pub material: Material,
 }
 
 impl Object {
@@ -47,6 +80,7 @@ impl Object {
             rotation: Vec3::ZERO,
             scale: Vec3::ONE,
             color,
+            material: Material::None,
         }
     }
 
@@ -94,9 +128,12 @@ impl Object {
     }
 
     pub fn to_model(&self) -> ModelObject {
+        // Files cannot hold textures, so tiled ones leave as their average colour.
+        let mut mesh = (*self.mesh).clone();
+        crate::texture::paint_average_colors(&mut mesh);
         ModelObject {
             name: self.name.clone(),
-            mesh: (*self.mesh).clone(),
+            mesh,
             transform: self.matrix(),
             color: self.color,
         }
@@ -113,6 +150,18 @@ impl Object {
         self.translation = Vec3::ZERO;
         self.rotation = Vec3::ZERO;
         self.scale = Vec3::ONE;
+    }
+
+    /// The world mesh for a boolean whose result takes colour `base`: where this object's
+    /// own colour differs, its unpainted faces are painted with it so the result keeps it.
+    pub fn world_mesh_for(&self, base: Rgba) -> Mesh {
+        let mut mesh = self.world_mesh();
+        if self.color != base {
+            mesh.colors = (0..mesh.triangles.len())
+                .map(|i| mesh.face_color(i).unwrap_or(self.color))
+                .collect();
+        }
+        mesh
     }
 
     pub fn world_mesh(&self) -> Mesh {
@@ -132,13 +181,24 @@ pub struct Scene {
     pub objects: Vec<Object>,
     pub selection: BTreeSet<u64>,
     next_id: u64,
-    /// Name shown in the title bar; also written as the 3MF Title.
+    /// Name shown in the title bar; also the 3MF Title when `info` has none.
     pub name: Option<String>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
+    /// "About the model": title, designer, copyright, licence and description.
+    pub info: crate::io::ModelInfo,
 }
 
 impl Scene {
+    /// [`Scene::info`] as files get it: the title falls back to `name`.
+    pub fn file_info(&self, name: &str) -> crate::io::ModelInfo {
+        let mut info = self.info.clone();
+        if info.title.is_empty() {
+            info.title = name.to_string();
+        }
+        info
+    }
+
     pub fn add(&mut self, mut o: Object) -> u64 {
         self.next_id += 1;
         o.id = self.next_id;
@@ -180,6 +240,25 @@ impl Scene {
         self.selected()
             .map(|o| o.world_aabb())
             .fold(Aabb::empty(), Aabb::union)
+    }
+
+    /// Radius of a sphere around the selection that stays the same as it turns: the objects'
+    /// scaled local bounds, placed round the middle of their centres.
+    pub fn selection_radius(&self) -> f32 {
+        let spheres: Vec<(Vec3, f32)> = self
+            .selected()
+            .filter(|o| !o.mesh.is_empty())
+            .map(|o| {
+                let local = cached_aabb_local(&o.mesh);
+                let r = (local.size() * o.scale.abs()).length() * 0.5;
+                (o.matrix().transform_point3(local.center()), r)
+            })
+            .collect();
+        let mid = spheres.iter().map(|s| s.0).sum::<Vec3>() / spheres.len().max(1) as f32;
+        spheres
+            .iter()
+            .map(|(c, r)| c.distance(mid) + r)
+            .fold(0.0, f32::max)
     }
 
     pub fn scene_aabb(&self) -> Aabb {
@@ -243,6 +322,65 @@ impl Scene {
         self.objects.retain(|o| !self.selection.contains(&o.id));
         self.selection.clear();
         self.dirty = true;
+    }
+
+    /// Whether a selected object has several solids; `None` while their statistics are
+    /// still being counted off the UI thread.
+    pub fn can_ungroup(&self) -> Option<bool> {
+        let mut any = false;
+        for o in self.selected() {
+            any |= cached_stats(&o.mesh)?.components > 1;
+        }
+        Some(any)
+    }
+
+    fn free_name(&self, base: &str) -> String {
+        let mut name = base.to_owned();
+        let mut n = 2;
+        while self.objects.iter().any(|o| o.name == name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        name
+    }
+
+    /// Joins world-space meshes without welding or applying a boolean union.
+    pub fn group_selected(&mut self) {
+        if self.selected().count() < 2 {
+            return;
+        }
+        let name = self.free_name("Group");
+        let mut mesh = Mesh::default();
+        for o in self.selected() {
+            let mut part = o.world_mesh();
+            part.colors = (0..part.triangles.len())
+                .map(|i| part.face_color(i).unwrap_or(o.color))
+                .collect();
+            mesh.append(&part);
+        }
+        self.delete_selected();
+        let id = self.add(Object::new(name, mesh, DEFAULT_COLOR));
+        self.selection.insert(id);
+    }
+
+    /// Splits selected multi-solid objects, preserving world placement and face colours.
+    pub fn ungroup_selected(&mut self) {
+        let parts: Vec<_> = self
+            .selected()
+            .filter_map(|o| {
+                let solids = o.world_mesh().solids();
+                (solids.len() > 1).then(|| (o.id, o.name.clone(), o.color, solids))
+            })
+            .collect();
+        for (id, name, color, solids) in parts {
+            self.objects.retain(|o| o.id != id);
+            self.selection.remove(&id);
+            for mesh in solids {
+                let name = self.free_name(&name);
+                let id = self.add(Object::new(name, mesh, color));
+                self.selection.insert(id);
+            }
+        }
     }
 
     /// Copies the selection and places the copies beside it.
@@ -337,21 +475,25 @@ impl Scene {
     }
 
     /// "Simplify": keeps about `keep` (0..1) of each selected object's triangles.
-    pub fn simplify_selected(&mut self, keep: f32) {
-        for id in self.selected_ids() {
-            let o = self.get_mut(id).unwrap();
-            o.mesh = Arc::new(o.mesh.simplified(keep));
+    pub fn simplify_selected(&mut self, keep: f32) -> anyhow::Result<()> {
+        let meshes: anyhow::Result<Vec<_>> = self
+            .selected()
+            .map(|o| Ok((o.id, o.mesh.try_simplified(keep)?)))
+            .collect();
+        for (id, mesh) in meshes? {
+            self.get_mut(id).unwrap().mesh = Arc::new(mesh);
         }
         self.dirty = true;
+        Ok(())
     }
 
-    /// "Split": cuts the selected objects at height `z` and keeps the chosen halves
-    /// where they are, selected.
-    pub fn cut_selected(&mut self, z: f32, keep: Keep) {
+    /// "Split": cuts the selected objects by `plane` and keeps the chosen halves where
+    /// they are, selected.
+    pub fn cut_selected(&mut self, plane: &crate::cut::CutPlane, keep: Keep) {
         let picked: Vec<Object> = self.selected().cloned().collect();
         self.delete_selected();
         for o in picked {
-            let (top, bottom) = crate::cut::cut(&o.world_mesh(), z);
+            let (top, bottom) = crate::cut::cut_plane(&o.world_mesh(), plane);
             for (half, wanted) in [(top, keep != Keep::Bottom), (bottom, keep != Keep::Top)] {
                 if wanted && !half.is_empty() {
                     let id = self.add(Object::new(o.name.clone(), half, o.color));
@@ -370,19 +512,32 @@ impl Scene {
     }
 }
 
+use std::sync::{mpsc, Weak};
+type StatsEntry = (Weak<Mesh>, Option<crate::mesh::MeshStats>);
+type StatsPending = (Weak<Mesh>, mpsc::Receiver<crate::mesh::MeshStats>);
+#[derive(Default)]
+struct StatsCache {
+    ready: Vec<StatsEntry>,
+    pending: Option<StatsPending>,
+}
+thread_local! { static STATS: std::cell::RefCell<StatsCache> = std::cell::RefCell::new(StatsCache::default()); }
+
+thread_local! {
+    static LOCAL: std::cell::RefCell<Vec<(std::sync::Weak<Mesh>, Aabb)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static BOUNDS: std::cell::RefCell<Vec<(std::sync::Weak<Mesh>, Mat4, Aabb)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Releases rebuildable caches on the calling (UI) thread.
+pub fn clear_caches() {
+    STATS.with(|c| *c.borrow_mut() = StatsCache::default());
+    LOCAL.with(|c| *c.borrow_mut() = Vec::new());
+    BOUNDS.with(|c| *c.borrow_mut() = Vec::new());
+}
+
 /// Topology statistics are computed off the UI thread. Weak keys do not retain
 /// obsolete geometry, and a single worker bounds concurrent topology allocations.
 pub fn cached_stats(mesh: &Arc<Mesh>) -> Option<crate::mesh::MeshStats> {
-    use std::sync::{mpsc, Weak};
-    type Entry = (Weak<Mesh>, Option<crate::mesh::MeshStats>);
-    type Pending = (Weak<Mesh>, mpsc::Receiver<crate::mesh::MeshStats>);
-    #[derive(Default)]
-    struct Cache {
-        ready: Vec<Entry>,
-        pending: Option<Pending>,
-    }
-    thread_local! { static CACHE: std::cell::RefCell<Cache> = std::cell::RefCell::new(Cache::default()); }
-    CACHE.with(|cache| {
+    STATS.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.ready.retain(|(m, _)| m.strong_count() > 0);
         if let Some((key, rx)) = cache.pending.take() {
@@ -412,8 +567,6 @@ pub fn cached_stats(mesh: &Arc<Mesh>) -> Option<crate::mesh::MeshStats> {
 }
 
 fn cached_aabb_local(mesh: &Arc<Mesh>) -> Aabb {
-    type Entry = (std::sync::Weak<Mesh>, Aabb);
-    thread_local! { static LOCAL: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) }; }
     LOCAL.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.retain(|(m, _)| m.strong_count() > 0);
@@ -434,14 +587,15 @@ fn cached_aabb_local(mesh: &Arc<Mesh>) -> Aabb {
 /// is applied afterwards, so moving an object never scans its vertices again.
 /// Weak keys avoid retaining old meshes solely for cached bounds.
 pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
+    if mesh.is_empty() {
+        return Aabb::empty();
+    }
     use std::sync::Weak;
-    type Entry = (Weak<Mesh>, Mat4, Aabb);
-    thread_local! { static CACHE: std::cell::RefCell<Vec<Entry>> = const { std::cell::RefCell::new(Vec::new()) }; }
     let translation = matrix.w_axis.truncate();
     let mut linear = *matrix;
     linear.w_axis = glam::Vec4::W;
     let key = Arc::downgrade(mesh);
-    let bounds = CACHE.with(|cache| {
+    let bounds = BOUNDS.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.retain(|(m, _, _)| m.strong_count() > 0);
         if let Some((_, _, bounds)) = cache
@@ -484,6 +638,69 @@ pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
 mod tests {
     use super::*;
     use crate::primitives::Primitive;
+
+    #[test]
+    fn empty_mesh_world_bounds_remain_invalid() {
+        let mut object = Object::new("empty", Mesh::default(), DEFAULT_COLOR);
+        object.scale = Vec3::new(0.0, -1.0, 2.0);
+        object.translation = Vec3::splat(10.0);
+        let bounds = object.world_aabb();
+        assert!(!bounds.is_valid());
+        assert_eq!(bounds.center(), Vec3::ZERO);
+        assert_eq!(bounds.size(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn failed_simplification_preserves_every_selected_mesh() {
+        let mut scene = Scene::default();
+        let good = scene.add(Object::new("cube", Primitive::Cube.build(), DEFAULT_COLOR));
+        let bad = scene.add(Object::new("empty", Mesh::default(), DEFAULT_COLOR));
+        scene.selection.extend([good, bad]);
+        let original = scene.get(good).unwrap().mesh.clone();
+        assert!(scene.simplify_selected(0.0).is_err());
+        assert!(Arc::ptr_eq(&original, &scene.get(good).unwrap().mesh));
+    }
+
+    #[test]
+    fn group_ungroup_preserves_world_geometry_and_colours() {
+        let mut scene = Scene::default();
+        for (i, color) in [DEFAULT_COLOR, PALETTE[1].1].into_iter().enumerate() {
+            let mut o = Object::new("part", Primitive::Cube.build(), color);
+            o.translation = Vec3::new(i as f32 * 80.0, 7.0, -25.0);
+            o.rotation.z = 25.0;
+            o.scale = Vec3::new(1.0, 2.0, 0.5);
+            let id = scene.add(o);
+            scene.selection.insert(id);
+        }
+        let before: Vec<_> = scene.objects.iter().map(Object::world_mesh).collect();
+        let ungroupable = |scene: &Scene| loop {
+            if let Some(any) = scene.can_ungroup() {
+                break any;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!ungroupable(&scene));
+        scene.group_selected();
+        assert_eq!(scene.objects.len(), 1);
+        assert_eq!(scene.selection.len(), 1);
+        assert_eq!(scene.objects[0].name, "Group");
+        assert!(ungroupable(&scene));
+        scene.ungroup_selected();
+        assert_eq!(scene.objects.len(), 2);
+        assert_eq!(scene.selection.len(), 2);
+        for (i, (o, original)) in scene.objects.iter().zip(before).enumerate() {
+            let mesh = o.world_mesh();
+            assert_eq!(mesh.triangles.len(), original.triangles.len());
+            assert_eq!(
+                mesh.triangle_positions().collect::<Vec<_>>(),
+                original.triangle_positions().collect::<Vec<_>>()
+            );
+            assert!(mesh
+                .colors
+                .iter()
+                .all(|c| *c == [DEFAULT_COLOR, PALETTE[1].1][i]));
+        }
+    }
 
     #[test]
     fn drop_rests_on_highest_support_and_leaves_instant_settle_on_floor() {
@@ -589,7 +806,7 @@ mod tests {
             let mut s = Scene::default();
             let id = s.insert_on_floor(Object::new("c", Primitive::Cube.build(), DEFAULT_COLOR));
             s.selection.insert(id);
-            s.cut_selected(10.0, keep);
+            s.cut_selected(&crate::cut::CutPlane::at_height(10.0), keep);
             assert_eq!((s.objects.len(), s.selection.len()), (count, count));
             let v: f64 = s.objects.iter().map(|o| o.mesh.stats().volume).sum();
             assert!((v - volume).abs() < 1e-2, "{keep:?}: {v}");

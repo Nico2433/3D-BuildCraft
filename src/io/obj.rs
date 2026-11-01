@@ -19,11 +19,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     // (name, colour, triangles with global indices)
     let mut groups: Vec<(String, Rgba, Vec<[u32; 3]>)> = Vec::new();
     let mut color = DEFAULT_COLOR;
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object")
-        .to_string();
+    let stem = super::file_stem(path).to_string();
 
     for line in text.lines() {
         let line = line.trim();

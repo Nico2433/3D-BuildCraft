@@ -5,6 +5,10 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
+/// What a tool call answers when no app window takes MCP calls.
+pub const NOT_OPEN: &str =
+    "3D BuildCraft is not open, or external agents (MCP) are off in its AI assistant settings. Open the app, turn them on and try again.";
+
 /// Protocol versions we speak, newest first.
 const VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -102,7 +106,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 const INSTRUCTIONS: &str = concat!(
-    "3D BuildCraft is open on the user's screen; every change shows there and can be undone. ",
+    "Open 3D BuildCraft and enable external agents to use the tools. Every change shows in the app and can be undone. ",
     "Call screenshot to see the result.\n",
     crate::rules!()
 );
@@ -289,26 +293,52 @@ impl Drop for Listener {
     }
 }
 
-/// With an app already listening, relays this process's stdio to it and returns when the
-/// agent is done. `None` when no app is listening, so the caller opens one.
-pub fn bridge() -> Option<anyhow::Result<()>> {
-    let text = std::fs::read_to_string(endpoint_file()?).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
-    let port = u16::try_from(v["port"].as_u64()?).ok()?;
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let stream =
-        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).ok()?;
-    Some((|| {
-        let mut up = stream.try_clone()?;
-        writeln!(up, "{}", v["token"].as_str().unwrap_or(""))?;
-        std::thread::spawn(move || {
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut up);
-            let _ = up.shutdown(std::net::Shutdown::Write);
-        });
-        let mut down = stream;
-        std::io::copy(&mut down, &mut std::io::stdout().lock())?;
-        Ok(())
-    })())
+/// Runs a windowless stdio server, finding the running app anew for every tool call.
+pub fn bridge() -> std::io::Result<()> {
+    serve(
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+        |name, args| {
+            let file = endpoint_file().ok_or(NOT_OPEN)?;
+            call_app(&file, name, args)
+        },
+    )
+}
+
+/// Forwards one tool call through the app's authenticated local endpoint.
+pub fn call_app(file: &std::path::Path, name: &str, args: Value) -> Reply {
+    let forward = || -> anyhow::Result<Reply> {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(file)?)?;
+        let port = u16::try_from(
+            v["port"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("invalid port"))?,
+        )?;
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut stream =
+            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1))?;
+        writeln!(stream, "{}", v["token"].as_str().unwrap_or(""))?;
+        writeln!(
+            stream,
+            "{}",
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}})
+        )?;
+        let mut line = String::new();
+        std::io::BufReader::new(stream).read_line(&mut line)?;
+        let reply: Value = serde_json::from_str(&line)?;
+        let result = &reply["result"];
+        if result["isError"] == true {
+            return Ok(Err(result["content"][0]["text"]
+                .as_str()
+                .unwrap_or("Tool failed")
+                .to_owned()));
+        }
+        Ok(Ok(result["content"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("invalid reply"))?
+            .clone()))
+    };
+    forward().unwrap_or_else(|_| Err(NOT_OPEN.into()))
 }
 
 /// Computes measurements without modifying the scene.

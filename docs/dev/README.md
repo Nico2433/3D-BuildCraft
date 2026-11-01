@@ -8,7 +8,8 @@ Notes kept while building 3D BuildCraft, for anyone who wants to work on it.
   [ADR-0002 GPT reviews, Claude writes code](decisions/ADR-0002-gpt-reviews-claude-writes-code.md),
   [ADR-0003 the UI copies the original](decisions/ADR-0003-ui-copies-the-original.md),
   [ADR-0004 an AI agent can drive the tools](decisions/ADR-0004-ai-agent-can-drive-the-tools.md).
-- Progress log: [2026-10-27](log/2026-10-27.md), [2026-10-28](log/2026-10-28.md).
+- Progress log: [2026-10-27](log/2026-10-27.md), [2026-10-28](log/2026-10-28.md),
+  [2026-10-29 to 2026-11-01](log/2026-11-01.md).
 - The original Microsoft 3D Builder, as studied before the port (behaviour, file formats,
   UI measurements; no Microsoft code or assets): [overview](original/overview.md),
   [architecture](original/architecture.md), [data model](original/data-model.md),
@@ -21,8 +22,11 @@ of 3D BuildCraft.
 
 ## Working on it
 
-- Branches: `main` is stable, work happens on `development`; pull requests go to `development`.
+- Branches: `main` is stable, `development` is what releases are built from, and new work
+  lands on `experimental` first; pull requests go to `development`.
 - Before a commit: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+- Packages: `packaging/windows/build-msi.sh` (MSI and exe), the Flatpak manifest in
+  `packaging/flatpak/`, `packaging/appimage/build-appimage.sh`; see the README.
 - Code, comments and UI strings are in English; the Spanish translation is the table in
   `src/i18n.rs`, and a test fails when a UI string has no entry.
 - Screenshots for comparing with the original: `--screenshot out.png --size 1920x1080 --zoom 1.5`

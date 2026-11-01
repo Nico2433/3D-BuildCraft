@@ -6,6 +6,10 @@ use std::f32::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    #[cfg(windows)]
+    OpenHand,
+    #[cfg(windows)]
+    ClosedHand,
     Menu,
     Print3D,
     Save,
@@ -80,14 +84,11 @@ pub enum Icon {
     // Menu
     NewScene,
     Open,
-    Cart,
     Printer,
     AboutModel,
     PrinterStatus,
-    Feedback,
     Assistant,
     Settings,
-    Smile,
     // Transform
     Move,
     Rotate,
@@ -104,7 +105,14 @@ pub enum Icon {
     ZoomIn,
     ZoomOut,
     Pencil,
+    Eyedropper,
     More,
+    /// A square note with a folded corner and a smile: the Texture tool's sticker.
+    Sticker,
+    /// Four squares: the Texture tool's brush.
+    Brush,
+    /// A hand with a pointing finger: edit the sticker.
+    Hand,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -207,6 +215,71 @@ impl Pen<'_> {
     fn draw(&self, icon: Icon) {
         use Icon::*;
         match icon {
+            #[cfg(windows)]
+            OpenHand | ClosedHand => {
+                let points: &[(f32, f32)] = if icon == OpenHand {
+                    &[
+                        (7., 21.),
+                        (4., 15.),
+                        (2., 12.),
+                        (3., 10.),
+                        (5., 11.),
+                        (7., 14.),
+                        (6., 5.),
+                        (7., 3.),
+                        (9., 4.),
+                        (10., 11.),
+                        (10., 2.),
+                        (12., 1.),
+                        (13., 3.),
+                        (13., 11.),
+                        (14., 3.),
+                        (16., 3.),
+                        (17., 5.),
+                        (16., 12.),
+                        (18., 6.),
+                        (20., 6.),
+                        (21., 8.),
+                        (19., 17.),
+                        (17., 21.),
+                    ]
+                } else {
+                    &[
+                        (7., 21.),
+                        (3., 14.),
+                        (3., 11.),
+                        (5., 10.),
+                        (7., 13.),
+                        (6., 8.),
+                        (7., 6.),
+                        (10., 6.),
+                        (11., 5.),
+                        (14., 5.),
+                        (15., 6.),
+                        (18., 6.),
+                        (20., 8.),
+                        (20., 16.),
+                        (17., 21.),
+                    ]
+                };
+                // A concave outline is filled with an explicitly triangulated mesh.
+                let mut mesh = eframe::egui::Mesh::default();
+                for &(x, y) in points {
+                    mesh.colored_vertex(self.p(x, y), self.color);
+                }
+                let coords: Vec<f64> = points
+                    .iter()
+                    .flat_map(|&(x, y)| [x as f64, y as f64])
+                    .collect();
+                if let Ok(indices) = earcutr::earcut(&coords, &[], 2) {
+                    mesh.indices = indices.into_iter().map(|i| i as u32).collect();
+                }
+                self.painter.add(Shape::mesh(mesh));
+                self.painter.add(Shape::closed_line(
+                    points.iter().map(|&(x, y)| self.p(x, y)).collect(),
+                    Stroke::new(1.2_f32, Color32::from_gray(35)),
+                ));
+            }
             Menu => {
                 for y in [7.0, 12.0, 17.0] {
                     self.line(&[(3.0, y), (21.0, y)]);
@@ -561,18 +634,6 @@ impl Pen<'_> {
                 self.line(&[(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)]);
                 self.closed(&[(8.0, 21.0), (10.0, 14.0), (22.0, 14.0), (20.0, 21.0)]);
             }
-            Cart => {
-                self.line(&[
-                    (2.0, 4.0),
-                    (5.0, 4.0),
-                    (8.0, 16.0),
-                    (19.0, 16.0),
-                    (21.0, 8.0),
-                    (6.0, 8.0),
-                ]);
-                self.circle(9.0, 19.5, 1.5);
-                self.circle(18.0, 19.5, 1.5);
-            }
             Printer => {
                 self.rect(7.0, 3.0, 17.0, 8.0);
                 self.rect(3.0, 8.0, 21.0, 17.0);
@@ -589,12 +650,6 @@ impl Pen<'_> {
                 self.line(&[(10.0, 6.0), (21.0, 6.0)]);
                 self.line(&[(4.0, 12.0), (21.0, 12.0)]);
                 self.line(&[(4.0, 18.0), (21.0, 18.0)]);
-            }
-            Feedback => {
-                self.circle(9.0, 8.0, 4.0);
-                self.line(&[(2.0, 21.0), (3.0, 16.0), (9.0, 13.0), (13.0, 14.0)]);
-                self.rect(14.0, 12.0, 22.0, 18.0);
-                self.line(&[(16.0, 18.0), (15.0, 21.0), (19.0, 18.0)]);
             }
             Assistant => {
                 // A speech bubble with a spark in it.
@@ -628,12 +683,6 @@ impl Pen<'_> {
                     })
                     .collect();
                 self.closed(&pts);
-            }
-            Smile => {
-                self.circle(12.0, 12.0, 9.0);
-                self.dot(9.0, 10.0, 1.0);
-                self.dot(15.0, 10.0, 1.0);
-                self.arc(12.0, 12.0, 5.0, 0.4, PI - 0.4);
             }
             Move => {
                 self.rect(5.0, 12.0, 13.0, 20.0);
@@ -721,6 +770,56 @@ impl Pen<'_> {
                 ]);
                 self.line(&[(14.0, 6.0), (18.0, 10.0)]);
             }
+            Sticker => {
+                self.closed(&[
+                    (4.0, 4.0),
+                    (20.0, 4.0),
+                    (20.0, 14.0),
+                    (14.0, 20.0),
+                    (4.0, 20.0),
+                ]);
+                self.line(&[(20.0, 14.0), (15.0, 14.0), (14.0, 15.0), (14.0, 20.0)]);
+                self.dot(9.0, 9.0, 1.1);
+                self.dot(14.0, 9.0, 1.1);
+                self.arc(11.5, 10.5, 4.5, 0.5, 2.6);
+            }
+            Brush => {
+                for (x, y) in [(3.0, 3.0), (13.0, 3.0), (3.0, 13.0), (13.0, 13.0)] {
+                    self.rect(x, y, x + 8.0, y + 8.0);
+                }
+            }
+            Hand => {
+                self.line(&[
+                    (8.0, 21.0),
+                    (4.0, 14.0),
+                    (4.0, 12.0),
+                    (6.0, 12.0),
+                    (8.0, 15.0),
+                    (8.0, 4.0),
+                    (10.0, 3.0),
+                    (12.0, 4.0),
+                    (12.0, 11.0),
+                    (14.0, 10.0),
+                    (16.0, 11.0),
+                    (16.0, 12.0),
+                    (18.0, 11.0),
+                    (20.0, 12.0),
+                    (20.0, 17.0),
+                    (17.0, 21.0),
+                    (8.0, 21.0),
+                ]);
+            }
+            Eyedropper => {
+                self.closed(&[(15.0, 3.0), (21.0, 9.0), (18.0, 12.0), (12.0, 6.0)]);
+                self.closed(&[
+                    (13.0, 8.0),
+                    (16.0, 11.0),
+                    (8.0, 19.0),
+                    (4.0, 20.0),
+                    (5.0, 16.0),
+                ]);
+                self.line(&[(9.0, 14.0), (12.0, 17.0)]);
+            }
             More => {
                 for x in [5.0, 12.0, 19.0] {
                     self.dot(x, 12.0, 1.4);
@@ -731,6 +830,36 @@ impl Pen<'_> {
                 self.line(&[(7.0, 15.0), (17.0, 15.0)]);
                 self.line(&[(5.0, 19.0), (19.0, 19.0)]);
             }
+        }
+    }
+}
+
+/// Keep native hands where supported; Windows substitutes a move cross for them.
+pub fn hand_cursor(ctx: &eframe::egui::Context, closed: bool) {
+    #[cfg(not(windows))]
+    ctx.set_cursor_icon(if closed {
+        eframe::egui::CursorIcon::Grabbing
+    } else {
+        eframe::egui::CursorIcon::Grab
+    });
+    #[cfg(windows)]
+    {
+        use eframe::egui::{Id, LayerId, Order};
+        ctx.set_cursor_icon(eframe::egui::CursorIcon::None);
+        if let Some(pos) = ctx.pointer_hover_pos() {
+            let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("hand_cursor")));
+            // The palm centre (12, 15) is the hotspot.
+            let rect = Rect::from_min_size(pos - Vec2::new(10.0, 12.5), Vec2::splat(20.0));
+            paint(
+                &painter,
+                rect,
+                if closed {
+                    Icon::ClosedHand
+                } else {
+                    Icon::OpenHand
+                },
+                Color32::WHITE,
+            );
         }
     }
 }

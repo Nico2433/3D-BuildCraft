@@ -118,6 +118,32 @@ impl App {
                 None,
             ));
         }
+        if let Some(Tool::Texture(t)) = &self.tool {
+            if t.hint {
+                cards.push((
+                    Icon::Info,
+                    tr(
+                        lang,
+                        "To paint the surface with texture, click the Selected dropdown. To preview the selected texture on the object, hold the pointer over the object and click it to apply the selected texture.",
+                    )
+                    .to_owned(),
+                    style::CARD_INFO,
+                    None,
+                ));
+            }
+        }
+        if let Some(Tool::Material { .. }) = self.tool {
+            cards.push((
+                Icon::Info,
+                tr(
+                    lang,
+                    "Changes the material of the whole object to a material of a specific color. To choose the color, click Color.",
+                )
+                .to_owned(),
+                style::CARD_INFO,
+                None,
+            ));
+        }
         for t in &self.toasts {
             let edge = if t.error {
                 style::CARD_ERROR

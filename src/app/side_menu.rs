@@ -1,11 +1,32 @@
 //! Left menu (☰), a blue column over the window, and the dark panel it opens beside it for
-//! Settings or for recent files.
+//! Settings, recent files or the model's details.
 
 use super::icons::Icon;
 use super::style;
 use super::*;
 
+/// The dark panel beside the left menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Flyout {
+    Settings,
+    Recent,
+    About,
+}
+
 impl App {
+    /// Opens `f` beside the menu, or closes it when it is the one open.
+    pub(super) fn toggle_flyout(&mut self, f: Flyout) {
+        self.flyout = (self.flyout != Some(f)).then_some(f);
+        if f == Flyout::About {
+            self.about_draft = self.scene.file_info(&self.scene_title());
+        }
+    }
+
+    fn close_menu(&mut self) {
+        self.menu_open = false;
+        self.flyout = None;
+    }
+
     pub(super) fn side_menu(&mut self, ctx: &egui::Context) {
         if !self.menu_open {
             return;
@@ -15,7 +36,7 @@ impl App {
         let top = screen.top() + style::TITLE_H;
         // Two parts that never overlap, so neither covers the other's buttons: the top
         // groups, and the last group held at the bottom as in the original.
-        const BOTTOM_H: f32 = 170.0;
+        const BOTTOM_H: f32 = 60.0;
         let column = egui::Rect::from_min_max(
             egui::pos2(screen.left(), top),
             egui::pos2(screen.left() + style::MENU_W, screen.bottom() - BOTTOM_H),
@@ -54,11 +75,18 @@ impl App {
                     ],
                     &[
                         (Icon::Print3D, tr(lang, "3D print"), Some(Action::OpenPrint)),
-                        (Icon::Cart, tr(lang, "Order a print online"), None),
-                        (Icon::Printer, tr(lang, "Print on paper"), None),
+                        (
+                            Icon::Printer,
+                            tr(lang, "Print on paper"),
+                            Some(Action::OpenPaper),
+                        ),
                     ],
                     &[
-                        (Icon::AboutModel, tr(lang, "About the model"), None),
+                        (
+                            Icon::AboutModel,
+                            tr(lang, "About the model"),
+                            Some(Action::AboutModel),
+                        ),
                         (
                             Icon::PrinterStatus,
                             tr(lang, "3D printer status"),
@@ -69,19 +97,22 @@ impl App {
                 for group in groups {
                     for (icon, label, action) in group {
                         // Open shows the recent files first, like the original's Open page.
-                        let opens = matches!(action, Some(Action::Open))
-                            && !self.settings.recent.is_empty();
+                        let flyout = match action {
+                            Some(Action::Open) if !self.settings.recent.is_empty() => {
+                                Some(Flyout::Recent)
+                            }
+                            Some(Action::AboutModel) => Some(Flyout::About),
+                            _ => None,
+                        };
                         let r = menu_item(
                             ui,
                             *icon,
                             label,
                             action.is_some(),
-                            opens && self.recent_open,
+                            flyout.is_some() && flyout == self.flyout,
                         );
-                        if r.clicked() && opens {
-                            self.recent_open = !self.recent_open;
-                            self.settings_open = false;
-                            self.ai_open = false;
+                        if let Some(f) = flyout.filter(|_| r.clicked()) {
+                            self.toggle_flyout(f);
                         } else if r.clicked() {
                             pick = action.clone();
                         }
@@ -106,48 +137,23 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(6.0);
-                    menu_item(ui, Icon::Smile, tr(lang, "Rate this app"), false, false)
-                        .on_hover_text(tr(lang, SOON));
-                    if menu_item(
-                        ui,
-                        Icon::Assistant,
-                        tr(lang, "AI assistant"),
-                        true,
-                        self.ai_open,
-                    )
-                    .clicked()
-                    {
-                        self.ai_open = !self.ai_open;
-                        self.settings_open = false;
-                        self.recent_open = false;
-                    }
                     if menu_item(
                         ui,
                         Icon::Settings,
                         tr(lang, "Settings"),
                         true,
-                        self.settings_open,
+                        self.flyout == Some(Flyout::Settings),
                     )
                     .clicked()
                     {
-                        self.settings_open = !self.settings_open;
-                        self.recent_open = false;
-                        self.ai_open = false;
+                        self.toggle_flyout(Flyout::Settings);
                     }
-                    menu_item(ui, Icon::Feedback, tr(lang, "Feedback"), false, false)
-                        .on_hover_text(tr(lang, SOON));
                 });
             });
-        // The assistant's page has forms, so it is wider.
-        let flyout_w = if self.ai_open {
-            style::FLYOUT_W + 160.0
-        } else {
-            style::FLYOUT_W
-        };
-        if self.settings_open || self.recent_open || self.ai_open {
+        if let Some(flyout) = self.flyout {
             let panel = egui::Rect::from_min_size(
                 egui::pos2(column.right(), top),
-                Vec2::new(flyout_w, screen.bottom() - top),
+                Vec2::new(style::FLYOUT_W, screen.bottom() - top),
             );
             egui::Area::new(egui::Id::new("menu_flyout"))
                 .fixed_pos(panel.min)
@@ -159,15 +165,11 @@ impl App {
                     ui.painter()
                         .rect_filled(panel, egui::CornerRadius::ZERO, style::FLYOUT);
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(24, 20))
-                        .show(ui, |ui| {
-                            if self.ai_open {
-                                self.ai_panel(ui);
-                            } else if self.settings_open {
-                                self.settings_panel(ui, ctx);
-                            } else {
-                                self.recent_panel(ui);
-                            }
+                        .inner_margin(egui::Margin::symmetric(16, 20))
+                        .show(ui, |ui| match flyout {
+                            Flyout::Settings => self.settings_panel(ui, ctx),
+                            Flyout::Recent => self.recent_panel(ui),
+                            Flyout::About => self.about_panel(ui),
                         });
                 });
         }
@@ -175,8 +177,8 @@ impl App {
         let outside = ctx.input(|i| {
             i.pointer.primary_clicked()
                 && i.pointer.interact_pos().is_some_and(|p| {
-                    let open_w = if self.settings_open || self.recent_open || self.ai_open {
-                        style::MENU_W + flyout_w
+                    let open_w = if self.flyout.is_some() {
+                        style::MENU_W + style::FLYOUT_W
                     } else {
                         style::MENU_W
                     };
@@ -184,18 +186,16 @@ impl App {
                 })
         });
         if outside {
-            self.menu_open = false;
-            self.settings_open = false;
-            self.recent_open = false;
-            self.ai_open = false;
+            self.close_menu();
         }
     }
 
     fn settings_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let lang = self.settings.lang();
         let before = self.settings.clone();
+        ui.spacing_mut().item_spacing.y = 0.0;
         let heading = |ui: &mut egui::Ui, t: &str| {
-            ui.add_space(10.0);
+            ui.add_space(20.0);
             ui.label(
                 egui::RichText::new(t)
                     .size(style::MENU_FONT)
@@ -203,21 +203,19 @@ impl App {
             );
             ui.add_space(4.0);
         };
-        let radio = |ui: &mut egui::Ui, on: bool, t: &str| {
-            ui.radio(
-                on,
-                egui::RichText::new(t)
-                    .size(style::MENU_FONT)
-                    .color(style::TEXT),
-            )
-        };
-        heading(ui, tr(lang, "Units"));
+        ui.label(
+            egui::RichText::new(tr(lang, "Units"))
+                .size(style::MENU_FONT)
+                .color(style::TEXT),
+        );
+        ui.add_space(4.0);
         egui::Grid::new("units")
             .num_columns(2)
-            .min_col_width(110.0)
+            .min_col_width(112.0)
+            .spacing(Vec2::new(8.0, 0.0))
             .show(ui, |ui| {
                 for (i, u) in Units::ALL.into_iter().enumerate() {
-                    if radio(ui, self.settings.units == u, tr(lang, u.label())).clicked() {
+                    if style::radio(ui, self.settings.units == u, tr(lang, u.label())).clicked() {
                         self.settings.units = u;
                     }
                     if i % 2 == 1 {
@@ -231,13 +229,13 @@ impl App {
             (ColorMode::Light, tr(lang, "Light")),
             (ColorMode::Dark, tr(lang, "Dark")),
         ] {
-            if radio(ui, self.settings.color_mode == m, t).clicked() {
+            if style::radio(ui, self.settings.color_mode == m, t).clicked() {
                 self.settings.color_mode = m;
             }
         }
         heading(ui, tr(lang, "Language"));
         for l in Lang::ALL {
-            if radio(ui, self.settings.lang() == l, l.label()).clicked() {
+            if style::radio(ui, self.settings.lang() == l, l.label()).clicked() {
                 self.settings.lang = Some(l);
             }
         }
@@ -277,6 +275,41 @@ impl App {
         }
     }
 
+    /// The 3MF metadata of the scene, written into the file when it is saved.
+    fn about_panel(&mut self, ui: &mut egui::Ui) {
+        let lang = self.settings.lang();
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let width = ui.available_width();
+        for (name, value) in self.about_draft.fields_mut() {
+            ui.label(
+                egui::RichText::new(tr(lang, about_label(name)))
+                    .size(style::MENU_FONT)
+                    .color(style::TEXT),
+            );
+            ui.add_space(4.0);
+            if name == "Description" {
+                let edit = egui::TextEdit::multiline(value).desired_rows(5);
+                ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)));
+            } else {
+                style::text_field(ui, value, width, "");
+            }
+            ui.add_space(14.0);
+        }
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let update = egui::Button::new(
+                egui::RichText::new(tr(lang, "Update"))
+                    .size(style::MENU_FONT)
+                    .color(style::TEXT),
+            );
+            let changed = self.about_draft != self.scene.file_info(&self.scene_title());
+            if ui.add_enabled(changed, update).clicked() {
+                self.scene.info = self.about_draft.clone();
+                self.scene.dirty = true;
+            }
+        });
+    }
+
     fn recent_panel(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         ui.label(
@@ -292,8 +325,7 @@ impl App {
         );
         if ui.add(browse).clicked() {
             self.actions.push(Action::Open);
-            self.menu_open = false;
-            self.recent_open = false;
+            self.close_menu();
         }
         ui.add_space(12.0);
         for r in self.settings.recent.clone().into_iter().take(12) {
@@ -309,8 +341,7 @@ impl App {
                 .on_hover_text(r.path.display().to_string());
             if resp.clicked() {
                 self.actions.push(Action::OpenPath(r.path));
-                self.menu_open = false;
-                self.recent_open = false;
+                self.close_menu();
             }
             ui.add_space(4.0);
         }
@@ -343,13 +374,11 @@ fn menu_item(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(style::MENU_W, height), sense);
-    if active {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, style::BLUE_ACTIVE);
-    } else if enabled && resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::ZERO, style::BLUE_HOVER);
-    }
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::ZERO,
+        style::interaction_fill(&resp, enabled, active, style::TAB_BAR),
+    );
     super::icons::paint(
         ui.painter(),
         egui::Rect::from_center_size(
@@ -365,4 +394,15 @@ fn menu_item(
         color,
     );
     resp
+}
+
+/// The label of a 3MF metadata field, as the original names it.
+fn about_label(name: &str) -> &'static str {
+    match name {
+        "Title" => "Title",
+        "Designer" => "Designer",
+        "Copyright" => "Copyright",
+        "LicenseTerms" => "License terms",
+        _ => "Description",
+    }
 }

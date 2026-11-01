@@ -23,8 +23,43 @@ pub struct ModelObject {
     pub color: Rgba,
 }
 
+/// What a file says about the model ("About the model"); 3MF keeps it as metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub title: String,
+    pub designer: String,
+    pub copyright: String,
+    pub license_terms: String,
+    pub description: String,
+}
+
+impl ModelInfo {
+    /// The 3MF metadata names, each with its field.
+    pub fn fields_mut(&mut self) -> [(&'static str, &mut String); 5] {
+        [
+            ("Title", &mut self.title),
+            ("Designer", &mut self.designer),
+            ("Copyright", &mut self.copyright),
+            ("LicenseTerms", &mut self.license_terms),
+            ("Description", &mut self.description),
+        ]
+    }
+
+    pub fn fields(&self) -> [(&'static str, &str); 5] {
+        [
+            ("Title", &self.title),
+            ("Designer", &self.designer),
+            ("Copyright", &self.copyright),
+            ("LicenseTerms", &self.license_terms),
+            ("Description", &self.description),
+        ]
+    }
+}
+
 pub struct LoadedModel {
     pub objects: Vec<ModelObject>,
+    /// Empty for formats without it.
+    pub info: ModelInfo,
     /// False for formats without units (STL, OBJ, PLY): the import screen asks the user.
     pub units_known: bool,
 }
@@ -87,17 +122,25 @@ impl Format {
 
 pub const OPEN_EXTENSIONS: [&str; 6] = ["3mf", "stl", "obj", "ply", "gltf", "glb"];
 
+/// The file name without extension, "Object" when it has none.
+pub fn file_stem(path: &Path) -> &str {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Object")
+}
+
 pub fn load(path: &Path) -> Result<LoadedModel> {
     let Some(format) = Format::from_path(path) else {
         bail!("Unsupported format: {}", path.display());
     };
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object")
-        .to_string();
+    let stem = file_stem(path).to_string();
+    let mut info = ModelInfo::default();
     let objects = match format {
-        Format::ThreeMf => threemf::read(path)?,
+        Format::ThreeMf => {
+            let (objects, read) = threemf::read(path)?;
+            info = read;
+            objects
+        }
         Format::Stl => vec![stl::read(path, &stem)?],
         Format::Obj => obj::read(path)?,
         Format::Ply => vec![ply::read(path, &stem)?],
@@ -106,16 +149,17 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
     let units_known = matches!(format, Format::ThreeMf | Format::Gltf | Format::Glb);
     Ok(LoadedModel {
         objects,
+        info,
         units_known,
     })
 }
 
-pub fn save(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Result<()> {
+pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()> {
     let Some(format) = Format::from_path(path) else {
         bail!("Unsupported format: {}", path.display());
     };
     match format {
-        Format::ThreeMf => threemf::write(path, objects, title),
+        Format::ThreeMf => threemf::write(path, objects, info),
         Format::Stl => stl::write(path, objects),
         Format::Obj => obj::write(path, objects),
         Format::Ply => ply::write(path, objects),
@@ -220,7 +264,7 @@ mod tests {
         let expected = world_volume(&objs);
         for f in Format::SAVE {
             let path = dir.path().join(format!("roundtrip.{}", f.extension()));
-            save(&path, &objs, Some("roundtrip")).unwrap();
+            save(&path, &objs, &ModelInfo::default()).unwrap();
             let loaded = load(&path).unwrap();
             let got = world_volume(&loaded.objects);
             assert!(

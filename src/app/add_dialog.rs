@@ -222,11 +222,8 @@ impl App {
             });
         });
         ui.add_space(8.0);
-        let search = egui::TextEdit::singleline(&mut self.library.query)
-            .hint_text(tr(lang, "Search"))
-            .desired_width(f32::INFINITY)
-            .font(egui::FontId::proportional(style::MENU_FONT));
-        ui.add(search);
+        let width = ui.available_width();
+        style::text_field(ui, &mut self.library.query, width, tr(lang, "Search"));
         ui.add_space(10.0);
 
         if self.libraries().is_empty() {

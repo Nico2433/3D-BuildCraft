@@ -2,6 +2,7 @@
 //! picked by the preset). It works on the scene through the same tools an external agent
 //! gets over MCP (`crate::mcp`); agents such as Claude Code or Codex attach that way.
 
+use crate::host::{host_command, in_flatpak};
 use crate::mcp::{self, Reply};
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -156,22 +157,6 @@ pub struct InstalledAgent {
 pub struct Detected {
     pub servers: Vec<LocalServer>,
     pub agents: Vec<InstalledAgent>,
-}
-
-/// Whether agent programs must run outside the sandbox.
-pub fn in_flatpak() -> bool {
-    std::path::Path::new("/.flatpak-info").exists() || std::env::var_os("FLATPAK_ID").is_some()
-}
-
-/// Builds every agent command in the same execution environment.
-fn host_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    if in_flatpak() {
-        let mut command = std::process::Command::new("flatpak-spawn");
-        command.args(["--host"]).arg(program);
-        command
-    } else {
-        std::process::Command::new(program)
-    }
 }
 
 /// The command registered with host agents.

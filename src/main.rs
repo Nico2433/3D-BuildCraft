@@ -4,7 +4,7 @@
 mod app;
 mod render;
 
-// Re-exported at the binary's root so app.rs and render.rs can write `crate::mesh`, etc.
+// Re-exported at the binary's root so app/ and render/ can write `crate::mesh`, etc.
 use buildcraft3d::*;
 
 use eframe::egui;
@@ -14,10 +14,10 @@ const APP_ID: &str = "io.github.nico2433.BuildCraft3D";
 
 const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size WxH] \
 [--tab insert|object|edit|paint|view|help] [--lang es|en] [--select-all] [--menu] \
-[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--tool settle|cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
+[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|smooth|material|cut|cut-bottom|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|texture-split|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about|print-status|about]";
 
-fn main() -> eframe::Result<()> {
-    env_logger::init();
+/// Reads the command line: the launch options and the window size.
+fn parse_args() -> (app::Launch, [f32; 2]) {
     let mut launch = app::Launch::default();
     let mut size = [1280.0, 800.0];
     let mut args = std::env::args_os().skip(1);
@@ -44,6 +44,8 @@ fn main() -> eframe::Result<()> {
             Some("--library") => launch.library = value().map(PathBuf::from),
             Some("--mcp") => launch.mcp = true,
             Some("--mode") => launch.mode = value(),
+            Some("--drag") => launch.drag = value(),
+            Some("--measure") => launch.measure = value(),
             Some(s) if s.starts_with("--") => {
                 eprintln!("{USAGE}");
                 std::process::exit(2);
@@ -51,18 +53,65 @@ fn main() -> eframe::Result<()> {
             _ => launch.file = Some(PathBuf::from(arg)),
         }
     }
-    // With the app already open, an agent's `--mcp` works on that window.
-    if launch.mcp {
-        if let Some(done) = mcp::bridge() {
-            if let Err(e) = done {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-            return Ok(());
-        }
-    }
-    let options = eframe::NativeOptions {
+    (launch, size)
+}
+
+fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
+    let device_descriptor = eframe::egui_wgpu::WgpuSetupCreateNew::default().device_descriptor;
+    eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            present_mode: eframe::wgpu::PresentMode::AutoNoVsync,
+            wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
+                device_descriptor: std::sync::Arc::new(move |adapter| {
+                    let mut descriptor = device_descriptor(adapter);
+                    // Small scenes should not reserve large performance-oriented heaps.
+                    descriptor.memory_hints = eframe::wgpu::MemoryHints::MemoryUsage;
+                    descriptor
+                }),
+                instance_descriptor: eframe::wgpu::InstanceDescriptor {
+                    backends: if cfg!(windows) {
+                        eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN
+                    } else {
+                        eframe::wgpu::Backends::PRIMARY | eframe::wgpu::Backends::GL
+                    },
+                    ..Default::default()
+                },
+                power_preference: eframe::wgpu::PowerPreference::HighPerformance,
+                native_adapter_selector: Some(std::sync::Arc::new(|adapters, surface| {
+                    use eframe::wgpu::{Backend, DeviceType};
+                    let adapter = adapters
+                        .iter()
+                        .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+                        .min_by_key(|a| {
+                            let info = a.get_info();
+                            let device = match info.device_type {
+                                DeviceType::DiscreteGpu => 0,
+                                DeviceType::IntegratedGpu => 1,
+                                DeviceType::VirtualGpu => 2,
+                                DeviceType::Other => 3,
+                                DeviceType::Cpu => 4,
+                            };
+                            let backend = if cfg!(windows) {
+                                match info.backend {
+                                    Backend::Dx12 => 0,
+                                    Backend::Vulkan => 1,
+                                    _ => 2,
+                                }
+                            } else {
+                                0
+                            };
+                            (device, backend)
+                        })
+                        .ok_or_else(|| "No compatible graphics adapter".to_owned())?;
+                    log::info!("Graphics adapter: {:?}", adapter.get_info());
+                    Ok(adapter.clone())
+                })),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
         multisampling: render::MSAA_SAMPLES as u16,
         depth_buffer: 24,
         viewport: egui::ViewportBuilder::default()
@@ -94,7 +143,20 @@ fn main() -> eframe::Result<()> {
             let _ = builder;
         })),
         ..Default::default()
-    };
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    env_logger::init();
+    let (launch, size) = parse_args();
+    if launch.mcp {
+        if let Err(e) = mcp::bridge() {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let options = native_options(size);
     eframe::run_native(
         "3D BuildCraft",
         options,

@@ -76,6 +76,9 @@ impl App {
                             Some(Tool::Simplify { .. }) => {
                                 Some((tr(lang, "Reduce faces"), Action::ApplySimplify, true))
                             }
+                            Some(Tool::Smooth { .. }) => {
+                                Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
+                            }
                             Some(Tool::Hollow { .. }) => {
                                 Some((tr(lang, "Hollow"), Action::ApplyHollow, true))
                             }
@@ -87,6 +90,12 @@ impl App {
                             }
                             Some(Tool::Paint { .. }) => {
                                 Some((tr(lang, "Color"), Action::ApplyPaint, true))
+                            }
+                            Some(Tool::Texture(_)) => {
+                                Some((tr(lang, "Apply"), Action::ApplyTexture, true))
+                            }
+                            Some(Tool::Material { .. }) => {
+                                Some((tr(lang, "Apply"), Action::ApplyMaterial, true))
                             }
                             Some(Tool::Custom { preview, .. }) => {
                                 Some((tr(lang, "Add"), Action::ApplyCustom, preview.is_ok()))
@@ -125,6 +134,7 @@ impl App {
                                 | Tool::Emboss { .. }
                                 | Tool::Settle { .. }
                                 | Tool::Paint { .. }
+                                | Tool::Texture(_)
                                 | Tool::Custom { .. }
                         )
                     ) && self.pending_import.is_empty();
@@ -196,10 +206,20 @@ impl App {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Reduction level"));
                 ui.spacing_mut().slider_width = 360.0;
-                ui.add(egui::Slider::new(level, 0.0..=0.99).show_value(false));
+                let max_level = self
+                    .scene
+                    .selected()
+                    .map(|o| 1.0 - 4.0 / o.mesh.triangles.len().max(4) as f32)
+                    .fold(0.99_f32, f32::min);
+                *level = level.clamp(0.0, max_level);
+                ui.add(egui::Slider::new(level, 0.0..=max_level).show_value(false));
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let faces: usize = self.scene.selected().map(|o| o.mesh.triangles.len()).sum();
-                let kept = (faces as f32 * (1.0 - *level)) as usize;
+                let kept: usize = self
+                    .scene
+                    .selected()
+                    .map(|o| o.mesh.simplify_target(1.0 - *level))
+                    .sum();
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     style::label(ui, &format!("{}   {kept}", tr(lang, "Number of faces")));
@@ -209,6 +229,14 @@ impl App {
                     );
                 });
             }
+            Some(Tool::Smooth { amount, edges, .. }) => {
+                ui.add_space(12.0);
+                style::label(ui, tr(lang, "Smoothness"));
+                style::slider(ui, amount, 0.0..=1.0, 250.0, 0);
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::label(ui, tr(lang, "Smooth edges"));
+                style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"));
+            }
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Minimum wall thickness"));
@@ -217,12 +245,12 @@ impl App {
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
-            Some(Tool::Measure { points }) => {
-                let d = if points.len() == 2 {
-                    points[0].distance(points[1]) / units.to_mm()
-                } else {
-                    0.0
-                };
+            Some(Tool::Measure { points, hover }) => {
+                let d = match (&points[..], hover) {
+                    ([a, b], _) => a.distance(*b),
+                    ([a], Some(h)) => a.distance(*h),
+                    _ => 0.0,
+                } / units.to_mm();
                 ui.add_space(12.0);
                 style::label(
                     ui,
@@ -351,12 +379,31 @@ impl App {
             }) => {
                 ui.add_space(8.0);
                 let recent = &self.settings.recent_colors;
-                if super::paint_menu::selected_color(ui, lang, color, menu, recent) {
+                if super::paint_menu::selected_color(ui, lang, color, menu, recent, false) {
                     *dropper = true;
                 }
                 style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, tr(lang, "Coverage"));
                 style::slider(ui, coverage, 0.0..=1.0, 148.0, 0);
+            }
+            Some(Tool::Material {
+                kind,
+                color,
+                menu,
+                type_open,
+                dropper,
+                ..
+            }) => {
+                ui.add_space(12.0);
+                style::label(ui, tr(lang, "Type"));
+                super::material::type_dropdown(ui, lang, kind, *color, type_open);
+                ui.add_space(12.0);
+                super::paint_menu::selected_color(ui, lang, color, menu, &[], true);
+                if style::option(ui, Icon::Eyedropper, tr(lang, "Select material"), *dropper)
+                    .clicked()
+                {
+                    *dropper = !*dropper;
+                }
             }
             Some(Tool::Emboss {
                 params,
@@ -364,41 +411,36 @@ impl App {
                 built,
             }) => {
                 style::label(ui, tr(lang, "Pattern"));
-                let pattern_name = match &params.pattern {
-                    Pattern::Text => tr(lang, "Text"),
-                    Pattern::Shape(s) => tr(lang, s.label()),
-                    Pattern::Image(_) => tr(lang, "Image"),
+                // Text, the shapes, then Image, which asks for the picture.
+                let mut patterns: Vec<&str> = vec![tr(lang, "Text")];
+                patterns.extend(Shape::ALL.map(|s| tr(lang, s.label())));
+                patterns.push(tr(lang, "Image"));
+                let mut k = match &params.pattern {
+                    Pattern::Text => 0,
+                    Pattern::Shape(s) => 1 + Shape::ALL.iter().position(|o| o == s).unwrap_or(0),
+                    Pattern::Image(_) => patterns.len() - 1,
                 };
-                egui::ComboBox::from_id_salt("emboss_pattern")
-                    .selected_text(pattern_name)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut params.pattern, Pattern::Text, tr(lang, "Text"));
-                        for s in Shape::ALL {
-                            ui.selectable_value(
-                                &mut params.pattern,
-                                Pattern::Shape(s),
-                                tr(lang, s.label()),
-                            );
-                        }
-                        let image = matches!(params.pattern, Pattern::Image(_));
-                        if ui.selectable_label(image, tr(lang, "Image")).clicked() {
-                            if let Some(p) = rfd::FileDialog::new()
-                                .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
-                                .pick_file()
-                            {
-                                params.pattern = Pattern::Image(p);
-                            }
-                        }
-                    });
+                if style::dropdown(ui, "emboss_pattern", 150.0, &patterns, &mut k) {
+                    if k == 0 {
+                        params.pattern = Pattern::Text;
+                    } else if let Some(&s) = Shape::ALL.get(k - 1) {
+                        params.pattern = Pattern::Shape(s);
+                    } else if let Some(p) = rfd::FileDialog::new()
+                        .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                        .pick_file()
+                    {
+                        params.pattern = Pattern::Image(p);
+                    }
+                }
                 style::label(ui, tr(lang, "Projection"));
-                egui::ComboBox::from_id_salt("emboss_projection")
-                    .width(150.0)
-                    .selected_text(tr(lang, params.projection.label()))
-                    .show_ui(ui, |ui| {
-                        for p in Projection::ALL {
-                            ui.selectable_value(&mut params.projection, p, tr(lang, p.label()));
-                        }
-                    });
+                let names = Projection::ALL.map(|p| tr(lang, p.label()));
+                let mut k = Projection::ALL
+                    .iter()
+                    .position(|&p| p == params.projection)
+                    .unwrap_or(0);
+                if style::dropdown(ui, "emboss_projection", 150.0, &names, &mut k) {
+                    params.projection = Projection::ALL[k];
+                }
                 if style::option(ui, Icon::Pyramid, tr(lang, "Bevel"), params.bevel).clicked() {
                     params.bevel = !params.bevel;
                 }
@@ -413,15 +455,16 @@ impl App {
                     let fonts = self
                         .font_list
                         .get_or_insert_with(crate::emboss::font_families);
-                    egui::ComboBox::from_id_salt("emboss_font")
-                        .width(160.0)
-                        .selected_text(params.font.as_deref().unwrap_or(tr(lang, "Built-in")))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut params.font, None, tr(lang, "Built-in"));
-                            for f in fonts.iter() {
-                                ui.selectable_value(&mut params.font, Some(f.clone()), f);
-                            }
-                        });
+                    let mut names = vec![tr(lang, "Built-in")];
+                    names.extend(fonts.iter().map(String::as_str));
+                    let mut k = params
+                        .font
+                        .as_ref()
+                        .and_then(|f| fonts.iter().position(|o| o == f))
+                        .map_or(0, |k| k + 1);
+                    if style::dropdown(ui, "emboss_font", 200.0, &names, &mut k) {
+                        params.font = k.checked_sub(1).map(|k| fonts[k].clone());
+                    }
                 }
                 if !params.engrave {
                     style::label(ui, tr(lang, "Color"));
@@ -451,6 +494,7 @@ impl App {
                     *built = Some(key);
                 }
             }
+            Some(Tool::Texture(_)) => self.texture_settings(ui),
             Some(Tool::Camera { .. } | Tool::Settle { .. }) | None => {}
         }
     }
@@ -485,22 +529,14 @@ fn unit_choice(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response 
 
 /// A colour picker for an emboss part: the object's colour or one from the palette.
 fn color_combo(ui: &mut egui::Ui, salt: &str, lang: Lang, color: &mut Option<Rgba>) {
-    let name = |c: &Option<Rgba>| match c {
-        None => tr(lang, "Object color"),
-        Some(c) => PALETTE
-            .iter()
-            .find(|(_, rgba)| rgba == c)
-            .map_or("?", |(n, _)| tr(lang, n)),
-    };
-    egui::ComboBox::from_id_salt(salt)
-        .width(130.0)
-        .selected_text(name(color))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(color, None, tr(lang, "Object color"));
-            for (n, c) in PALETTE {
-                ui.selectable_value(color, Some(c), tr(lang, n));
-            }
-        });
+    let mut names = vec![tr(lang, "Object color")];
+    names.extend(PALETTE.iter().map(|(n, _)| tr(lang, n)));
+    let mut k = color
+        .and_then(|c| PALETTE.iter().position(|(_, rgba)| *rgba == c))
+        .map_or(0, |k| k + 1);
+    if style::dropdown(ui, salt, 130.0, &names, &mut k) {
+        *color = k.checked_sub(1).map(|k| PALETTE[k].1);
+    }
 }
 
 /// The shapes Custom offers, in the original's order.

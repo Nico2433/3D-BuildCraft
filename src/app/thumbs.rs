@@ -83,6 +83,16 @@ impl Thumbs {
         }
     }
 
+    pub fn release(&mut self) {
+        let bytes: usize = self.ready.values().flatten().map(|t| t.byte_size()).sum();
+        log::info!(
+            "power: releasing {} thumbnails, {} texture bytes",
+            self.ready.len(),
+            bytes
+        );
+        *self = Self::new();
+    }
+
     /// Takes finished thumbnails; call once a frame.
     pub fn collect(&mut self, ctx: &egui::Context) {
         for (key, outcome) in self.done.try_iter() {

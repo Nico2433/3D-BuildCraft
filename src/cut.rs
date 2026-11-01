@@ -1,8 +1,9 @@
-//! Plane cut ("Split"): splits a mesh with a horizontal plane and caps both halves, so
-//! a closed mesh gives two closed meshes.
+//! Plane cut ("Split"): splits a mesh with a plane and caps both halves, so a closed mesh
+//! gives two closed meshes.
 
 use crate::mesh::Mesh;
-use glam::{Vec2, Vec3};
+use crate::texture::FaceTex;
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use std::collections::HashMap;
 
 /// Which halves "Split" keeps.
@@ -13,10 +14,68 @@ pub enum Keep {
     Both,
 }
 
+/// The cutting plane of the Split tool: through `center`, moved `offset` along its normal,
+/// turned by `rotation` degrees (roll about X, pitch about Y, yaw about Z, as an object's).
+/// Unturned, the normal is +Z.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutPlane {
+    pub center: Vec3,
+    pub offset: f32,
+    pub rotation: Vec3,
+}
+
+impl CutPlane {
+    /// The horizontal plane at height `z`.
+    pub fn at_height(z: f32) -> Self {
+        Self {
+            center: Vec3::new(0.0, 0.0, z),
+            offset: 0.0,
+            rotation: Vec3::ZERO,
+        }
+    }
+
+    pub fn quat(&self) -> Quat {
+        let r = self.rotation * (std::f32::consts::PI / 180.0);
+        Quat::from_euler(EulerRot::ZYX, r.z, r.y, r.x)
+    }
+
+    pub fn normal(&self) -> Vec3 {
+        self.quat() * Vec3::Z
+    }
+
+    /// The plane's middle.
+    pub fn point(&self) -> Vec3 {
+        self.center + self.normal() * self.offset
+    }
+
+    /// Turns the plane by `q` (world space) about its middle `point()`. The centre stays
+    /// put and the offset follows, so the middle stays over the object instead of
+    /// drifting sideways after a few moves and turns.
+    pub fn turn(&mut self, q: Quat) {
+        let middle = self.point();
+        let (z, y, x) = (q * self.quat()).normalize().to_euler(EulerRot::ZYX);
+        self.rotation = Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI);
+        self.offset = self.normal().dot(middle - self.center);
+    }
+}
+
+/// Splits `mesh` (world coordinates) by `plane`. Returns (above, below), above being the
+/// side the normal points to; either can be empty.
+pub fn cut_plane(mesh: &Mesh, plane: &CutPlane) -> (Mesh, Mesh) {
+    // Turn the plane level, cut there and turn the halves back.
+    let q = plane.quat();
+    let level = Mat4::from_quat(q.inverse());
+    let z = level.transform_point3(plane.point()).z;
+    let back = Mat4::from_quat(q);
+    let (top, bottom) = cut(&mesh.transformed(&level), z);
+    (
+        top.transformed(&back).welded(),
+        bottom.transformed(&back).welded(),
+    )
+}
+
 /// Splits `mesh` (world coordinates) at height `z`. Returns (above, below); either can be
 /// empty. Only closed cut contours are capped, so an open input stays open.
-// shortcut: horizontal planes only; rotate the object first for other angles. A rotatable
-// plane comes with the cut gizmo.
 pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
     let mut positions = mesh.positions.clone();
     let above: Vec<bool> = positions.iter().map(|p| p.z >= z).collect();
@@ -31,15 +90,36 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         })
     };
 
-    let (mut top, mut bottom) = (Vec::new(), Vec::new());
+    // Each output triangle keeps the colour and texture of the one it was cut from; a
+    // piece cut out of it gets UVs found barycentrically, so the picture does not move.
+    let colored = mesh.colors.len() == mesh.triangles.len();
+    let textured = mesh.has_tex();
+    let (mut top, mut bottom): (Vec<Part>, Vec<Part>) = (Vec::new(), Vec::new());
     // Cap edges, directed the way the top half's cap must run.
     let mut cap_next: HashMap<u32, u32> = HashMap::new();
-    for t in &mesh.triangles {
+    for (ti, t) in mesh.triangles.iter().enumerate() {
+        let color = if colored { mesh.colors[ti] } else { [0; 4] };
+        let tex = mesh
+            .tex
+            .get(ti)
+            .copied()
+            .filter(|_| textured)
+            .unwrap_or_default();
         let side = t.map(|i| above[i as usize]);
         if side[0] == side[1] && side[1] == side[2] {
-            if side[0] { &mut top } else { &mut bottom }.push(*t);
+            if side[0] { &mut top } else { &mut bottom }.push(Part { t: *t, color, tex });
             continue;
         }
+        let from = t.map(|i| mesh.positions[i as usize]);
+        let part = |t: [u32; 3], positions: &[Vec3]| Part {
+            t,
+            color,
+            tex: if tex.layer > 0 {
+                tex.within(from, t.map(|i| positions[i as usize]))
+            } else {
+                tex
+            },
+        };
         // Rotate (keeping the winding) so the vertex alone on its side comes first.
         let k = (0..3)
             .find(|&k| side[(k + 1) % 3] == side[(k + 2) % 3])
@@ -54,8 +134,8 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         } else {
             (&mut bottom, &mut top)
         };
-        lone.push([l, i1, i2]);
-        rest.extend([[i1, x, y], [i1, y, i2]]);
+        lone.push(part([l, i1, i2], &positions));
+        rest.extend([part([i1, x, y], &positions), part([i1, y, i2], &positions)]);
         // The lone half has the edge i1→i2, so its cap needs i2→i1, and the other way round.
         if side[k] {
             cap_next.insert(i2, i1);
@@ -64,12 +144,39 @@ pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
         }
     }
 
+    // Caps are new surface: no texture, and no colour of their own.
     for tri in cap(&positions, cap_next) {
-        top.push(tri);
-        bottom.push([tri[0], tri[2], tri[1]]);
+        top.push(Part::new(tri));
+        bottom.push(Part::new([tri[0], tri[2], tri[1]]));
     }
-    let half = |tris: Vec<[u32; 3]>| Mesh::new(positions.clone(), tris).welded();
+    let half = |parts: Vec<Part>| {
+        let mut m = Mesh::new(positions.clone(), parts.iter().map(|p| p.t).collect());
+        if colored && parts.iter().any(|p| p.color[3] > 0) {
+            m.colors = parts.iter().map(|p| p.color).collect();
+        }
+        if textured && parts.iter().any(|p| p.tex.layer > 0) {
+            m.tex = parts.iter().map(|p| p.tex).collect();
+        }
+        m.welded()
+    };
     (half(top), half(bottom))
+}
+
+/// An output triangle of a cut with the attributes it inherits.
+struct Part {
+    t: [u32; 3],
+    color: [u8; 4],
+    tex: FaceTex,
+}
+
+impl Part {
+    fn new(t: [u32; 3]) -> Self {
+        Self {
+            t,
+            color: [0; 4],
+            tex: FaceTex::default(),
+        }
+    }
 }
 
 /// Triangulates the closed contours of a cut, facing down (the top half's cap).
@@ -180,6 +287,31 @@ mod tests {
     }
 
     #[test]
+    fn oblique_cut_splits_a_cube_through_its_center_in_halves() {
+        let cube = primitives::cube(10.0);
+        let mut plane = CutPlane::at_height(0.0);
+        plane.center = cube.aabb().center();
+        plane.turn(Quat::from_rotation_y(30f32.to_radians()));
+        let (top, bottom) = cut_plane(&cube, &plane);
+        assert!((closed_volume(&top) - 500.0).abs() < 1e-2);
+        assert!((closed_volume(&bottom) - 500.0).abs() < 1e-2);
+        // The upper half lies on the normal's side.
+        let n = plane.normal();
+        let side = |m: &Mesh| {
+            m.positions
+                .iter()
+                .map(|p| (*p - plane.point()).dot(n))
+                .sum::<f32>()
+        };
+        assert!(side(&top) > 0.0 && side(&bottom) < 0.0);
+        // Moving the plane along its normal takes a slice off one side only.
+        plane.offset = 2.0;
+        let (top, bottom) = cut_plane(&cube, &plane);
+        assert!(closed_volume(&top) < 500.0 && closed_volume(&bottom) > 500.0);
+        assert!((closed_volume(&top) + closed_volume(&bottom) - 1000.0).abs() < 1e-2);
+    }
+
+    #[test]
     fn torus_cut_caps_a_ring_with_a_hole() {
         let m = Primitive::Torus.build();
         let z = m.aabb().center().z + 0.37;
@@ -203,6 +335,39 @@ mod tests {
                 (sum - total).abs() / total < 1e-4,
                 "{p:?}: {sum} vs {total}"
             );
+        }
+    }
+
+    #[test]
+    fn cut_keeps_textures_and_colors_with_uvs_inside_the_source_range() {
+        use crate::texture::apply_box;
+        let cube = primitives::cube(10.0);
+        let all: Vec<usize> = (0..cube.triangles.len()).collect();
+        let mut textured = apply_box(&cube, &Mat4::IDENTITY, &all, 1, 10.0);
+        textured.colors = vec![[10, 20, 30, 255]; cube.triangles.len()];
+        let src: Vec<[f32; 2]> = textured.tex.iter().flat_map(|t| t.uv).collect();
+        let lo = src
+            .iter()
+            .fold([f32::MAX; 2], |a, u| [a[0].min(u[0]), a[1].min(u[1])]);
+        let hi = src
+            .iter()
+            .fold([f32::MIN; 2], |a, u| [a[0].max(u[0]), a[1].max(u[1])]);
+        let mut plane = CutPlane::at_height(0.0);
+        plane.center = cube.aabb().center();
+        plane.turn(Quat::from_rotation_y(30f32.to_radians()));
+        let (top, bottom) = cut_plane(&textured, &plane);
+        for half in [&top, &bottom] {
+            let n = half.triangles.len();
+            assert_eq!((half.tex.len(), half.colors.len()), (n, n));
+            let with = (0..n).filter(|&i| half.face_tex(i).is_some()).count();
+            // Everything but the cap keeps its picture; the cap has none.
+            assert!(with > n / 2 && with < n, "{with} of {n}");
+            for t in half.tex.iter().filter(|t| t.layer > 0) {
+                for u in t.uv {
+                    assert!(u[0] >= lo[0] - 1e-3 && u[0] <= hi[0] + 1e-3);
+                    assert!(u[1] >= lo[1] - 1e-3 && u[1] <= hi[1] + 1e-3);
+                }
+            }
         }
     }
 

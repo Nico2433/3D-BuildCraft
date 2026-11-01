@@ -1,5 +1,6 @@
 //! Indexed triangle mesh, welding, normals and topology statistics.
 
+use crate::texture::FaceTex;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 
@@ -11,6 +12,9 @@ pub struct Mesh {
     /// RGBA per triangle, painted by area. Empty, or alpha 0 on a triangle, means the
     /// object's colour. Edits that rebuild the mesh drop it; see [`Mesh::face_color`].
     pub colors: Vec<[u8; 4]>,
+    /// Texture per triangle (see [`crate::texture`]). Empty, or layer 0 on a triangle,
+    /// means none. Dropped, like `colors`, by edits that rebuild the mesh.
+    pub tex: Vec<FaceTex>,
 }
 
 /// Vertex data for drawing; see [`Mesh::shading`].
@@ -20,10 +24,16 @@ pub struct Shading {
     pub normals: Vec<Vec3>,
     /// Per vertex: a painted colour, or alpha 0 for the object's.
     pub colors: Vec<[u8; 4]>,
+    /// Per vertex: texture coordinates and the packed layer ([`FaceTex::pack`]), 0 for none.
+    pub uvs: Vec<[f32; 2]>,
+    pub tex: Vec<u32>,
     pub triangles: Vec<[u32; 3]>,
     /// Creases, as pairs of vertex indices.
     pub edges: Vec<[u32; 2]>,
 }
+
+/// A drawn vertex's identity: source vertex, normal, colour, UV bits and packed texture.
+type Corner = (u32, [i32; 3], [u8; 4], [u32; 2], u32);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Aabb {
@@ -49,7 +59,7 @@ impl Aabb {
         }
     }
     pub fn is_valid(&self) -> bool {
-        self.min.x <= self.max.x
+        self.min.is_finite() && self.max.is_finite() && self.min.cmple(self.max).all()
     }
     pub fn size(&self) -> Vec3 {
         if self.is_valid() {
@@ -59,7 +69,11 @@ impl Aabb {
         }
     }
     pub fn center(&self) -> Vec3 {
-        (self.min + self.max) * 0.5
+        if self.is_valid() {
+            self.min * 0.5 + self.max * 0.5
+        } else {
+            Vec3::ZERO
+        }
     }
 }
 
@@ -89,6 +103,7 @@ impl Mesh {
             positions,
             triangles,
             colors: Vec::new(),
+            tex: Vec::new(),
         }
     }
 
@@ -112,15 +127,33 @@ impl Mesh {
             positions,
             triangles,
             colors: Vec::new(),
+            tex: Vec::new(),
         }
     }
 
-    /// Merges vertices with identical coordinates and drops triangles that collapse.
+    /// Merges vertices with identical coordinates and drops triangles that collapse. Face
+    /// colours and textures stay with their triangles.
     pub fn welded(&self) -> Mesh {
         let soup: Vec<[Vec3; 3]> = self.triangle_positions().collect();
         let mut m = Mesh::from_triangle_soup(&soup);
-        m.triangles
-            .retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+        let keep: Vec<bool> = m
+            .triangles
+            .iter()
+            .map(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+            .collect();
+        fn pick<T>(v: &mut Vec<T>, keep: &[bool]) {
+            let mut k = keep.iter();
+            v.retain(|_| *k.next().unwrap());
+        }
+        if self.colors.len() == self.triangles.len() {
+            m.colors = self.colors.clone();
+            pick(&mut m.colors, &keep);
+        }
+        if self.tex.len() == self.triangles.len() {
+            m.tex = self.tex.clone();
+            pick(&mut m.tex, &keep);
+        }
+        pick(&mut m.triangles, &keep);
         m
     }
 
@@ -140,7 +173,7 @@ impl Mesh {
 
     pub fn aabb(&self) -> Aabb {
         let mut b = Aabb::empty();
-        for p in &self.positions {
+        for p in self.positions.iter().filter(|_| !self.is_empty()) {
             b.grow(*p);
         }
         b
@@ -165,7 +198,7 @@ impl Mesh {
 
     pub fn aabb_transformed(&self, m: &Mat4) -> Aabb {
         let mut b = Aabb::empty();
-        for p in &self.positions {
+        for p in self.positions.iter().filter(|_| !self.is_empty()) {
             b.grow(m.transform_point3(*p));
         }
         b
@@ -180,6 +213,7 @@ impl Mesh {
                 .collect(),
             triangles: self.triangles.clone(),
             colors: self.colors.clone(),
+            tex: self.tex.clone(),
         };
         // A mirroring transform turns the surface inside out; keep it facing outward.
         if m.determinant() < 0.0 {
@@ -192,6 +226,10 @@ impl Mesh {
         for t in &mut self.triangles {
             t.swap(1, 2);
         }
+        // Corners follow their vertices.
+        for t in &mut self.tex {
+            t.uv.swap(1, 2);
+        }
     }
 
     pub fn append(&mut self, other: &Mesh) {
@@ -201,6 +239,12 @@ impl Mesh {
             let mut theirs = other.colors.clone();
             theirs.resize(other.triangles.len(), [0; 4]);
             self.colors.extend(theirs);
+        }
+        if self.has_tex() || other.has_tex() {
+            self.tex.resize(self.triangles.len(), FaceTex::default());
+            let mut theirs = other.tex.clone();
+            theirs.resize(other.triangles.len(), FaceTex::default());
+            self.tex.extend(theirs);
         }
         let base = self.positions.len() as u32;
         self.positions.extend_from_slice(&other.positions);
@@ -215,6 +259,19 @@ impl Mesh {
     /// Whether triangles carry their own colours (and the list still matches them).
     pub fn has_colors(&self) -> bool {
         self.colors.len() == self.triangles.len() && self.colors.iter().any(|c| c[3] > 0)
+    }
+
+    /// Whether triangles carry textures (and the list still matches them).
+    pub fn has_tex(&self) -> bool {
+        self.tex.len() == self.triangles.len() && self.tex.iter().any(|t| t.layer > 0)
+    }
+
+    /// Triangle `i`'s texture, if it has one.
+    pub fn face_tex(&self, i: usize) -> Option<FaceTex> {
+        if self.tex.len() != self.triangles.len() {
+            return None;
+        }
+        self.tex.get(i).copied().filter(|t| t.layer > 0)
     }
 
     /// Triangle `i`'s own colour, if it was painted.
@@ -318,7 +375,7 @@ impl Mesh {
             }
         }
         let mut out = Shading::default();
-        let mut index: HashMap<(u32, [i32; 3], [u8; 4]), u32> = HashMap::new();
+        let mut index: HashMap<Corner, u32> = HashMap::new();
         let mut corner = vec![[0u32; 3]; self.triangles.len()];
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
@@ -332,11 +389,23 @@ impl Mesh {
                     .normalize_or_zero();
                 // Painted faces get their own vertices, so colours stay crisp.
                 let color = self.face_color(f).unwrap_or([0; 4]);
-                let key = (v, (n * 1000.0).round().as_ivec3().to_array(), color);
+                // Textured corners are split by picture and coordinates too.
+                let (uv, tex) = self
+                    .face_tex(f)
+                    .map_or(([0.0; 2], 0), |t| (t.uv[k], t.pack()));
+                let key = (
+                    v,
+                    (n * 1000.0).round().as_ivec3().to_array(),
+                    color,
+                    uv.map(f32::to_bits),
+                    tex,
+                );
                 corner[f][k] = *index.entry(key).or_insert_with(|| {
                     out.positions.push(self.positions[v as usize]);
                     out.normals.push(n);
                     out.colors.push(color);
+                    out.uvs.push(uv);
+                    out.tex.push(tex);
                     out.positions.len() as u32 - 1
                 });
             }
@@ -365,13 +434,25 @@ impl Mesh {
 
     /// Reduces the triangle count to about `keep` (0..1) of the current one with
     /// meshoptimizer's edge-collapse simplifier ("Simplify").
+    pub fn simplify_target(&self, keep: f32) -> usize {
+        ((self.triangles.len() as f32 * keep.clamp(0.0, 1.0)) as usize)
+            .max(4)
+            .min(self.triangles.len())
+    }
+
     pub fn simplified(&self, keep: f32) -> Mesh {
+        self.try_simplified(keep).unwrap_or_else(|_| self.clone())
+    }
+
+    /// Rejects collapsed results so callers can retain the original and report the error.
+    pub fn try_simplified(&self, keep: f32) -> anyhow::Result<Mesh> {
         let indices: Vec<u32> = self.triangles.iter().flatten().copied().collect();
-        let target = ((indices.len() as f32 * keep.clamp(0.0, 1.0)) as usize / 3) * 3;
+        let target = self.simplify_target(keep) * 3;
+        anyhow::ensure!(!self.is_empty(), "Simplification produced an invalid solid");
         let Ok(adapter) =
             meshopt::VertexDataAdapter::new(bytemuck::cast_slice(&self.positions), 12, 0)
         else {
-            return self.clone();
+            anyhow::bail!("Simplification produced an invalid solid");
         };
         // Error 1.0 (relative to the mesh size) lets it reach the target count.
         let out = meshopt::simplify(
@@ -382,11 +463,27 @@ impl Mesh {
             meshopt::SimplifyOptions::None,
             None,
         );
-        Mesh::new(
+        let mesh = Mesh::new(
             self.positions.clone(),
             out.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
         )
-        .welded()
+        .welded();
+        let stats = mesh.stats();
+        anyhow::ensure!(
+            stats.triangles >= 4
+                && stats.degenerate_triangles == 0
+                && stats.is_closed_manifold()
+                && stats.area.is_finite()
+                && stats.volume.is_finite()
+                && stats.volume.abs() > 1e-9
+                && mesh.aabb().is_valid()
+                && mesh.triangle_positions().all(|[a, b, c]| {
+                    let area = (b - a).cross(c - a).length_squared();
+                    area.is_finite() && area > 0.0
+                }),
+            "Simplification produced an invalid solid"
+        );
+        Ok(mesh)
     }
 
     pub fn stats(&self) -> MeshStats {
@@ -494,6 +591,7 @@ impl Mesh {
         let mut map: HashMap<u32, u32> = HashMap::new();
         let mut m = Mesh::default();
         let colored = self.colors.len() == self.triangles.len();
+        let textured = self.tex.len() == self.triangles.len();
         for &i in tris {
             let t = self.triangles[i].map(|v| {
                 *map.entry(v).or_insert_with(|| {
@@ -504,6 +602,9 @@ impl Mesh {
             m.triangles.push(t);
             if colored {
                 m.colors.push(self.colors[i]);
+            }
+            if textured {
+                m.tex.push(self.tex[i]);
             }
         }
         m
@@ -642,6 +743,37 @@ mod tests {
     fn mirrored_transform_keeps_outward_winding() {
         let m = primitives::cube(10.0).transformed(&Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0)));
         assert!(m.stats().volume > 0.0);
+    }
+
+    #[test]
+    fn simplify_minimum_keeps_finite_closed_solid() {
+        for mesh in [primitives::cube(10.0), primitives::sphere(20.0, 64, 32)] {
+            for keep in [0.0, 0.001, 0.01] {
+                let reduced = mesh.simplified(keep);
+                assert!(reduced.triangles.len() >= 4);
+                assert!(reduced.stats().is_closed_manifold());
+                assert!(reduced.aabb().is_valid());
+                assert!(reduced.aabb().center().is_finite());
+                assert!(reduced.aabb().size().is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn empty_bounds_have_finite_display_values() {
+        let mesh = Mesh::default();
+        for bounds in [mesh.aabb(), mesh.aabb_transformed(&Mat4::IDENTITY)] {
+            assert!(!bounds.is_valid());
+            assert_eq!(bounds.center(), Vec3::ZERO);
+            assert_eq!(bounds.size(), Vec3::ZERO);
+        }
+        assert!(mesh.try_simplified(0.0).is_err());
+        assert_eq!(mesh.simplified(0.0), mesh);
+        let invalid = Aabb {
+            min: Vec3::ZERO,
+            max: Vec3::new(1.0, f32::INFINITY, 1.0),
+        };
+        assert!(!invalid.is_valid());
     }
 
     #[test]

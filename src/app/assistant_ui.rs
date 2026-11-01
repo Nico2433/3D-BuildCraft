@@ -1,6 +1,5 @@
-//! The AI assistant in the app: its settings page in the menu (on or off, which agent or
-//! endpoint, the API key in the system keychain, how to attach an external agent over
-//! MCP) and the chat panel at the right, whose requests run the app's tools.
+//! The AI assistant's chat panel and settings tab: model endpoints, API keys in the
+//! system keychain, and external agents connected over MCP.
 
 use super::icons::Icon;
 use super::style;
@@ -18,6 +17,7 @@ enum Who {
 #[derive(Default)]
 pub struct ChatState {
     pub open: bool,
+    pub settings_tab: bool,
     log: Vec<(Who, String)>,
     input: String,
     busy: bool,
@@ -84,7 +84,7 @@ impl App {
 
     fn chat_send(&mut self, ctx: &egui::Context) {
         let text = self.chat.input.trim().to_owned();
-        if text.is_empty() || self.chat.busy {
+        if text.is_empty() || self.chat.busy || !self.settings.ai.enabled {
             return;
         }
         let cfg = self.settings.ai.clone();
@@ -118,7 +118,7 @@ impl App {
 
     /// The chat at the right of the window.
     pub(super) fn chat_panel(&mut self, ctx: &egui::Context) {
-        if !self.chat.open || !self.settings.ai.enabled {
+        if !self.chat.open {
             return;
         }
         let lang = self.settings.lang();
@@ -148,7 +148,7 @@ impl App {
                         {
                             self.chat.open = false;
                         }
-                        if button(ui, tr(lang, "New chat"))
+                        if !self.chat.settings_tab && button(ui, tr(lang, "New chat"))
                             .on_hover_text(tr(lang, "Start over; the scene stays as it is."))
                             .clicked()
                         {
@@ -158,6 +158,26 @@ impl App {
                         }
                     });
                 });
+                ui.horizontal(|ui| {
+                    for (settings, label) in [(false, tr(lang, "Chat")), (true, tr(lang, "Settings"))] {
+                        let selected = self.chat.settings_tab == settings;
+                        let response = ui.selectable_label(selected, egui::RichText::new(label).color(style::TEXT));
+                        if selected {
+                            ui.painter().line_segment(
+                                [response.rect.left_bottom(), response.rect.right_bottom()],
+                                egui::Stroke::new(2.0_f32, style::TEXT),
+                            );
+                        }
+                        if response.clicked() {
+                            self.chat.settings_tab = settings;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                if self.chat.settings_tab {
+                    self.ai_settings(ui);
+                    return;
+                }
                 ui.label(egui::RichText::new(self.chat_target()).color(style::TEXT_DIM));
                 ui.add_space(6.0);
                 let input_h = 112.0;
@@ -230,7 +250,7 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let ready = !self.chat.busy && !self.chat.input.trim().is_empty();
+                        let ready = self.settings.ai.enabled && !self.chat.busy && !self.chat.input.trim().is_empty();
                         if ui.add_enabled(ready, framed(tr(lang, "Send"))).clicked() {
                             send = true;
                         }
@@ -252,8 +272,8 @@ impl App {
         self.chat.detecting = Some(rx);
     }
 
-    /// The assistant's page in the menu.
-    pub(super) fn ai_panel(&mut self, ui: &mut egui::Ui) {
+    /// Settings shared by the assistant's chat and external agents.
+    fn ai_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         let before = self.settings.ai.clone();
         if let Some(rx) = &self.chat.detecting {
@@ -335,19 +355,26 @@ impl App {
                             if let Some(p) = preset {
                                 ai.protocol = p.protocol;
                             }
-                            let current = preset.map_or(tr(lang, "Custom"), |p| p.name);
-                            egui::ComboBox::from_id_salt("ai_preset").selected_text(current).show_ui(ui, |ui| {
-                                for p in assistant::PRESETS {
-                                    if ui.selectable_label(current == p.name, p.name).clicked() {
-                                        ai.protocol = p.protocol;
-                                        ai.base_url = p.base_url.into();
-                                        ai.model = p.model.into();
-                                    }
+                            // Another URL shows as "Custom", which is not offered.
+                            let mut names: Vec<&str> = assistant::PRESETS.iter().map(|p| p.name).collect();
+                            let mut k = match preset {
+                                Some(p) => names.iter().position(|&n| n == p.name).unwrap_or(0),
+                                None => {
+                                    names.push(tr(lang, "Custom"));
+                                    names.len() - 1
                                 }
-                            });
+                            };
+                            let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                            if style::dropdown(ui, "ai_preset", width, &names, &mut k) {
+                                if let Some(p) = assistant::PRESETS.get(k) {
+                                    ai.protocol = p.protocol;
+                                    ai.base_url = p.base_url.into();
+                                    ai.model = p.model.into();
+                                }
+                            }
                             ui.end_row();
                             text(ui, tr(lang, "Base URL"));
-                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width(240.0));
+                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
                             ui.end_row();
                             text(ui, tr(lang, "Model"));
                             // A detected server offers its models; any other endpoint takes a typed name.
@@ -356,17 +383,21 @@ impl App {
                             });
                             match detected {
                                 Some(server) => {
-                                    egui::ComboBox::from_id_salt("detected_models")
-                                        .width(228.0)
-                                        .selected_text(ai.model.clone())
-                                        .show_ui(ui, |ui| {
-                                            for model in &server.models {
-                                                ui.selectable_value(&mut ai.model, model.clone(), model);
-                                            }
-                                        });
+                                    // A model the server does not list stays shown as it is.
+                                    let mut names: Vec<&str> = server.models.iter().map(String::as_str).collect();
+                                    let mut k = names.iter().position(|&m| m == ai.model).unwrap_or_else(|| {
+                                        names.push(&ai.model);
+                                        names.len() - 1
+                                    });
+                                    let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                                    if style::dropdown(ui, "detected_models", width, &names, &mut k) {
+                                        if let Some(m) = server.models.get(k) {
+                                            ai.model = m.clone();
+                                        }
+                                    }
                                 }
                                 None => {
-                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width(240.0));
+                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
                                 }
                             }
                             ui.end_row();
@@ -378,7 +409,7 @@ impl App {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.chat.key)
                                         .password(true)
-                                        .desired_width(160.0)
+                                        .desired_width((ui.available_width() - 90.0).clamp(60.0, 160.0))
                                         .hint_text(tr(lang, "optional")),
                                 );
                                 if button(ui, tr(lang, "Save key")).clicked() {
@@ -423,12 +454,6 @@ impl App {
                     }
                     None => {}
                 }
-                if button(ui, tr(lang, "Open the chat")).clicked() {
-                    self.chat.open = true;
-                    self.menu_open = false;
-                    self.ai_open = false;
-                }
-
                 heading(ui, tr(lang, "External agents (MCP)"));
                 ui.horizontal(|ui| {
                     style::switch(ui, &mut ai.external, tr(lang, "On"), tr(lang, "Off"));
@@ -483,7 +508,7 @@ impl App {
                         }
                     }
                 });
-                dim(ui, tr(lang, "With this switch on and the app open, the agent works in this window; otherwise the command opens a new one."));
+                dim(ui, tr(lang, "With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools."));
                 if let Some(Err(e)) = &self.listener {
                     ui.label(egui::RichText::new(e).color(Color32::from_rgb(0xFF, 0x7A, 0x7A)));
                 }

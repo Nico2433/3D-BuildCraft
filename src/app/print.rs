@@ -35,6 +35,13 @@ impl Page {
     }
 }
 
+/// [`App::scene_colors`] with the meshes and colours it was read from.
+#[derive(Default)]
+pub struct SceneColors {
+    key: Vec<(std::sync::Weak<Mesh>, Rgba)>,
+    colors: Vec<Rgba>,
+}
+
 impl App {
     pub(super) fn send_to_slicer(&mut self) {
         let lang = self.settings.lang();
@@ -42,20 +49,44 @@ impl App {
             return;
         };
         let title = self.scene_title();
+        let info = self.scene.file_info(&title);
         let file: String = title
             .chars()
             .filter(|c| c.is_alphanumeric() || " -_".contains(*c))
             .collect();
-        let dir = crate::settings::dirs()
-            .map(|d| d.cache_dir().join("print"))
-            .unwrap_or_else(|| std::env::temp_dir().join("buildcraft3d-print"));
+        let dir = crate::slicer::print_dir();
         let path = dir.join(format!(
             "{}.3mf",
             if file.is_empty() { "print" } else { &file }
         ));
         let sent = std::fs::create_dir_all(&dir)
             .map_err(anyhow::Error::from)
-            .and_then(|()| io::save(&path, &self.scene.to_models(), Some(&title)))
+            .and_then(|()| {
+                let models = self.scene.to_models();
+                if self.filaments.is_empty() {
+                    io::save(&path, &models, &info)
+                } else {
+                    // Each colour prints with the filament slot chosen on the Material page.
+                    let slot_of = |c: Rgba| self.filament_slot(c);
+                    // A chosen printer or process travels in the file, with the filaments.
+                    let process = self.settings.process.as_deref();
+                    let printer = self
+                        .settings
+                        .printer
+                        .as_deref()
+                        .or(process.and(self.printers.first().map(String::as_str)));
+                    let settings = printer
+                        .zip(self.chosen_slicer())
+                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p, process));
+                    io::threemf::write_for_slicer(
+                        &path,
+                        &models,
+                        &info,
+                        &slot_of,
+                        settings.as_deref(),
+                    )
+                }
+            })
             .and_then(|()| crate::slicer::open(&slicer, &path));
         match sent {
             Ok(()) => {
@@ -72,6 +103,17 @@ impl App {
             return;
         };
         let warnings = self.print_warnings();
+        // Back from the slicer: its filaments may have changed there.
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let was_focused = egui::Id::new("print_focused");
+        if focused && !ctx.data(|d| d.get_temp(was_focused).unwrap_or(true)) {
+            self.load_filaments(ctx);
+        }
+        if let Some(profiles) = self.profiles_job.as_ref().and_then(|r| r.try_recv().ok()) {
+            (self.printers, self.processes, self.filaments) = profiles;
+            self.profiles_job = None;
+        }
+        ctx.data_mut(|d| d.insert_temp(was_focused, focused));
 
         egui::TopBottomPanel::bottom("print_bar")
             .exact_height(62.0)
@@ -105,8 +147,6 @@ impl App {
                         if self.settings.slicer.is_none() {
                             print.on_hover_text(tr(lang, "Choose a slicer first."));
                         }
-                        bar_button(ui, tr(lang, "Order online"), false)
-                            .on_hover_text(tr(lang, SOON));
                         style::separator(ui, 40.0, FIELD_BORDER);
                         if style::stacked(ui, Icon::Redo, tr(lang, "Redo"), self.history.can_redo())
                             .clicked()
@@ -169,6 +209,10 @@ impl App {
                     let selected = p == Some(page);
                     if nav_item(ui, icon, label, selected).clicked() {
                         match p {
+                            Some(Page::Material) => {
+                                self.load_filaments(ui.ctx());
+                                self.print = p;
+                            }
                             Some(p) => self.print = Some(p),
                             None => self.print_status_open = true,
                         }
@@ -265,16 +309,14 @@ impl App {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Printer selection"));
         text(ui, tr(lang, "Choose the slicer that prints the model"));
-        ui.add_space(12.0);
-        card(ui, tr(lang, "Online 3D print service"), false).on_hover_text(tr(lang, SOON));
         ui.add_space(24.0);
         heading_info(ui, tr(lang, "Installed slicers"));
         ui.add_space(8.0);
         let mut shown = self.slicers.clone();
         // One picked by hand stays on the list even when it is not one we look for.
-        if let Some(chosen) = &self.settings.slicer {
-            if !shown.iter().any(|s| &s.path == chosen) {
-                shown.push(crate::slicer::from_path(chosen));
+        if let Some(chosen) = self.chosen_slicer() {
+            if !shown.contains(&chosen) {
+                shown.push(chosen);
             }
         }
         if shown.is_empty() {
@@ -300,39 +342,197 @@ impl App {
                 self.actions.push(Action::BrowseSlicer);
             }
         });
+        // The slicer's current printer, and the printer's usual process, come first.
+        let printer = self.settings.printer.as_ref();
+        if let Some(k) = profile_dropdown(ui, tr(lang, "Printer profile"), &self.printers, printer)
+        {
+            self.actions
+                .push(Action::ChoosePrinter(self.printers[k].clone()));
+        }
+        let process = self.settings.process.as_ref();
+        if let Some(k) = profile_dropdown(ui, tr(lang, "Print profile"), &self.processes, process) {
+            self.actions
+                .push(Action::ChooseProcess(self.processes[k].clone()));
+        }
     }
 
+    /// The chosen slicer, as found on this computer or named after its file.
+    fn chosen_slicer(&self) -> Option<crate::slicer::Slicer> {
+        let path = self.settings.slicer.as_ref()?;
+        let found = self.slicers.iter().find(|s| &s.path == path).cloned();
+        Some(found.unwrap_or_else(|| crate::slicer::from_path(path)))
+    }
+
+    /// Reads the chosen slicer's printer profiles, and the chosen printer's processes and
+    /// filaments, off the UI thread: inside our Flatpak that takes about a second.
+    pub(super) fn load_filaments(&mut self, ctx: &egui::Context) {
+        let Some(slicer) = self.chosen_slicer() else {
+            (self.printers, self.processes, self.filaments) = Default::default();
+            return;
+        };
+        let printer = self.settings.printer.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let printers = crate::slicer::printers(&slicer);
+            let processes = printer
+                .as_ref()
+                .or(printers.first())
+                .map_or_else(Vec::new, |p| crate::slicer::processes(&slicer, p));
+            let filaments = crate::slicer::filaments(&slicer, printer.as_deref());
+            let _ = tx.send((printers, processes, filaments));
+            ctx.request_repaint();
+        });
+        self.profiles_job = Some(rx);
+    }
+
+    /// The filament slot that prints `color`: the one picked for it, else the closest.
+    fn filament_slot(&self, color: Rgba) -> usize {
+        if let Some((_, slot)) = self.filament_of.iter().find(|(c, _)| *c == color) {
+            return (*slot).min(self.filaments.len().saturating_sub(1));
+        }
+        let distance = |f: &crate::slicer::Filament| -> i32 {
+            (0..3)
+                .map(|i| (f.color[i] as i32 - color[i] as i32).pow(2))
+                .sum()
+        };
+        (0..self.filaments.len())
+            .min_by_key(|&i| distance(&self.filaments[i]))
+            .unwrap_or(0)
+    }
+
+    /// The colours that print: painted areas', and objects' where faces are left unpainted.
+    /// Read again only when an object's mesh or colour changed.
+    fn scene_colors(&mut self) -> Vec<Rgba> {
+        let cache = &mut self.scene_colors;
+        let objects = &self.scene.objects;
+        // Meshes are replaced, never changed in place, so a mesh is known by its pointer;
+        // the weak handles keep a freed one's address from being reused meanwhile.
+        let same =
+            cache.key.len() == objects.len()
+                && cache.key.iter().zip(objects).all(|((m, c), o)| {
+                    m.as_ptr() == std::sync::Arc::as_ptr(&o.mesh) && *c == o.color
+                });
+        if !same {
+            cache.key = objects
+                .iter()
+                .map(|o| (std::sync::Arc::downgrade(&o.mesh), o.color))
+                .collect();
+            cache.colors.clear();
+            let mut add = |c: Rgba| {
+                if !cache.colors.contains(&c) {
+                    cache.colors.push(c);
+                }
+            };
+            for o in objects {
+                if o.mesh.colors.is_empty() {
+                    add(o.color);
+                    continue;
+                }
+                for i in 0..o.mesh.triangles.len() {
+                    add(o.mesh.face_color(i).unwrap_or(o.color));
+                }
+            }
+        }
+        cache.colors.clone()
+    }
+
+    /// The slicer's filaments: one for everything, or one per colour of the scene.
     fn material_page(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Material"));
+        if self.filaments.is_empty() {
+            text(ui, tr(lang, "No filaments found in the slicer profile."));
+            return;
+        }
+        let names: Vec<String> = self
+            .filaments
+            .iter()
+            .enumerate()
+            // Numbered like the slicer's slots, which may share a filament.
+            .map(|(i, f)| match f.kind.as_str() {
+                "" => format!("{}. {}", i + 1, f.name),
+                kind if f.name.contains(kind) => format!("{}. {}", i + 1, f.name),
+                kind => format!("{}. {} ({kind})", i + 1, f.name),
+            })
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let colors = self.scene_colors();
+        let slots: Vec<usize> = colors.iter().map(|&c| self.filament_slot(c)).collect();
+
         text(ui, tr(lang, "Material type"));
-        ui.add_enabled_ui(false, |ui| {
-            egui::ComboBox::from_id_salt("print_material")
-                .width(248.0)
-                .selected_text("")
-                .show_ui(ui, |_| {});
-        });
+        // One filament for every colour; empty while the colours use different ones.
+        let mut all = match slots.first() {
+            Some(&s) if slots.iter().all(|&o| o == s) => s,
+            _ => names.len(),
+        };
+        if self.filament_row(ui, "print_material", None, &names, &mut all) {
+            for &c in &colors {
+                self.actions.push(Action::ChooseFilament(c, all));
+            }
+        }
         ui.add_space(40.0);
         text(ui, tr(lang, "Select finish and color"));
+        ui.add_space(8.0);
+        for (i, (&color, mut slot)) in colors.iter().zip(slots).enumerate() {
+            let id = format!("print_filament_{i}");
+            if self.filament_row(ui, &id, Some(color), &names, &mut slot) {
+                self.actions.push(Action::ChooseFilament(color, slot));
+            }
+            ui.add_space(8.0);
+        }
+    }
+
+    /// A filament drop-down with the filament's colour after it, and the scene colour it
+    /// is for before it. True when the choice changed.
+    fn filament_row(
+        &self,
+        ui: &mut egui::Ui,
+        id: &str,
+        scene: Option<Rgba>,
+        names: &[&str],
+        slot: &mut usize,
+    ) -> bool {
+        let chip = |ui: &mut egui::Ui, c: Rgba| {
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(style::FIELD_H), egui::Sense::hover());
+            ui.painter().rect_filled(
+                r.shrink(4.0),
+                egui::CornerRadius::ZERO,
+                Color32::from_rgb(c[0], c[1], c[2]),
+            );
+        };
+        ui.horizontal(|ui| {
+            if let Some(c) = scene {
+                chip(ui, c);
+            }
+            let width = if scene.is_some() {
+                248.0
+            } else {
+                248.0 + style::FIELD_H + 8.0
+            };
+            let changed = style::dropdown(ui, id, width, names, slot);
+            if let Some(f) = self.filaments.get(*slot) {
+                chip(ui, f.color);
+            }
+            changed
+        })
+        .inner
     }
 
     fn design_page(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Design"));
         text(ui, tr(lang, "Units"));
-        let mut units = self.settings.units;
-        egui::ComboBox::from_id_salt("print_units")
-            .width(160.0)
-            .selected_text(tr(lang, units.name()))
-            .show_ui(ui, |ui| {
-                for u in Units::ALL {
-                    ui.selectable_value(&mut units, u, tr(lang, u.name()));
-                }
-            });
-        if units != self.settings.units {
-            self.settings.units = units;
+        let names = Units::ALL.map(|u| tr(lang, u.name()));
+        let mut k = Units::ALL
+            .iter()
+            .position(|&u| u == self.settings.units)
+            .unwrap_or(0);
+        if style::dropdown(ui, "print_units", 160.0, &names, &mut k) {
+            self.settings.units = Units::ALL[k];
             let _ = self.settings.save();
         }
+        let units = self.settings.units;
         let k = units.to_mm();
         let b = self.scene.scene_aabb();
         if !b.is_valid() {
@@ -469,13 +669,26 @@ impl App {
         text(ui, &format!("3D BuildCraft {}", env!("CARGO_PKG_VERSION")));
     }
 
-    /// The "3D printer status" window: no print jobs to show yet.
+    /// The "3D printer status" window: the printers connected in the slicer and what they
+    /// are doing, read again every few seconds while it is open.
     pub(super) fn print_status(&mut self, ctx: &egui::Context) {
+        const EVERY: Duration = Duration::from_secs(5);
         if !self.print_status_open {
+            self.printer_status_at = None;
             return;
+        }
+        if let Some(read) = self
+            .printer_status_job
+            .as_ref()
+            .and_then(|r| r.try_recv().ok())
+        {
+            self.printer_status = read;
+            self.printer_status_job = None;
+            self.printer_status_at = Some(Instant::now());
         }
         let lang = self.settings.lang();
         let mut open = true;
+        let mut refresh = false;
         egui::Window::new(format!("{} - 3D BuildCraft", tr(lang, "3D printer status")))
             .id(egui::Id::new("print_status"))
             .open(&mut open)
@@ -484,19 +697,151 @@ impl App {
             .frame(egui::Frame::window(&ctx.style()).fill(PAGE))
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(style::TEXT);
-                style::icon_button(
+                refresh = style::icon_button(
                     ui,
                     Icon::Rotate,
                     Vec2::splat(36.0),
                     true,
                     style::RIBBON_HOVER,
-                );
+                )
+                .on_hover_text(tr(lang, "Refresh"))
+                .clicked();
                 ui.add_space(16.0);
-                text(ui, tr(lang, "There are no current 3D print jobs."));
-                ui.allocate_space(ui.available_size());
+                // Nothing while the first reading is on its way.
+                if self.printer_status.is_empty() && self.printer_status_at.is_some() {
+                    text(ui, tr(lang, "There are no current 3D print jobs."));
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (printer, status) in &self.printer_status {
+                        printer_row(ui, lang, printer, status);
+                    }
+                    ui.allocate_space(ui.available_size());
+                });
             });
         self.print_status_open = open;
+        if refresh {
+            self.printer_status_at = None;
+        }
+        let due = self.printer_status_at.is_none_or(|t| t.elapsed() >= EVERY);
+        if open && due && self.printer_status_job.is_none() {
+            self.read_printer_status(ctx);
+        }
+        ctx.request_repaint_after(EVERY);
     }
+
+    /// Asks each printer for its status off the UI thread: the ones shown, or after a refresh
+    /// the ones connected in the slicer, read again.
+    fn read_printer_status(&mut self, ctx: &egui::Context) {
+        let known: Vec<_> = self.printer_status.iter().map(|(p, _)| p.clone()).collect();
+        let reread = self.printer_status_at.is_none();
+        let slicer = self.chosen_slicer();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let printers = if reread {
+                // The window can open before the print view looked for slicers.
+                slicer
+                    .or_else(|| crate::slicer::detect().into_iter().next())
+                    .map_or_else(Vec::new, |s| crate::slicer::connected(&s))
+            } else {
+                known
+            };
+            let read = printers
+                .into_iter()
+                .map(|p| {
+                    let status = crate::slicer::status(&p.host);
+                    (p, status)
+                })
+                .collect();
+            let _ = tx.send(read);
+            ctx.request_repaint();
+        });
+        self.printer_status_job = Some(rx);
+    }
+}
+
+/// A printer in the status window: its card, then what it is doing.
+fn printer_row(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    printer: &crate::slicer::Printer,
+    status: &crate::slicer::Status,
+) {
+    use crate::slicer::State;
+    let or_dash = |s: &str| {
+        if s.is_empty() {
+            "-".to_owned()
+        } else {
+            s.to_owned()
+        }
+    };
+    let temperature = |t: Option<f32>| t.map_or_else(|| "-".into(), |t| format!("{t:.0} °C"));
+    let state = match status.state {
+        State::Offline => tr(lang, "Offline"),
+        State::Idle => tr(lang, "Idle"),
+        State::Printing => tr(lang, "Printing"),
+        State::Paused => tr(lang, "Paused"),
+        State::Error => tr(lang, "Error"),
+    };
+    let mut fields = vec![
+        (tr(lang, "Model"), or_dash(&printer.model)),
+        (tr(lang, "IP address"), printer.host.clone()),
+        (tr(lang, "State"), state.to_owned()),
+    ];
+    let online = status.state != State::Offline;
+    if online {
+        fields.extend([
+            (
+                tr(lang, "Progress"),
+                status
+                    .progress
+                    .map_or_else(|| "-".into(), |p| format!("{:.0} %", p * 100.0)),
+            ),
+            (tr(lang, "File"), or_dash(&status.file)),
+            (tr(lang, "Nozzle"), temperature(status.nozzle)),
+            (tr(lang, "Bed"), temperature(status.bed)),
+        ]);
+    }
+    ui.horizontal_top(|ui| {
+        let _ = card(ui, &printer.name, online);
+        ui.add_space(24.0);
+        egui::Grid::new(("printer_status", &printer.host))
+            .num_columns(2)
+            .spacing([24.0, 6.0])
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(
+                        egui::RichText::new(label)
+                            .size(style::LABEL_FONT)
+                            .color(style::TEXT_DIM),
+                    );
+                    text(ui, &value);
+                    ui.end_row();
+                }
+            });
+    });
+    ui.add_space(24.0);
+}
+
+/// A slicer profile drop-down under its heading; nothing when there are no profiles. The
+/// first is shown while none is chosen. Returns the one picked.
+fn profile_dropdown(
+    ui: &mut egui::Ui,
+    heading: &str,
+    profiles: &[String],
+    chosen: Option<&String>,
+) -> Option<usize> {
+    if profiles.is_empty() {
+        return None;
+    }
+    ui.add_space(32.0);
+    heading_info(ui, heading);
+    ui.add_space(8.0);
+    let names: Vec<&str> = profiles.iter().map(String::as_str).collect();
+    let mut k = chosen
+        .and_then(|c| profiles.iter().position(|p| p == c))
+        .unwrap_or(0);
+    style::dropdown(ui, heading, 320.0, &names, &mut k).then_some(k)
 }
 
 /// A printer or slicer the user can pick; the chosen one has a coloured border.

@@ -34,7 +34,7 @@ impl App {
                     let size = Vec2::new(46.0, style::TITLE_H);
                     let close_hover = Color32::from_rgb(0xE8, 0x11, 0x23);
                     if style::icon_button(ui, Icon::Close, size, true, close_hover).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.actions.push(Action::Quit);
                     }
                     if style::icon_button(ui, Icon::Maximize, size, true, style::BLUE_HOVER)
                         .clicked()
@@ -116,20 +116,15 @@ impl App {
                         {
                             self.actions.push(Action::Save);
                         }
-                        if self.settings.ai.enabled {
-                            ui.add_space(8.0);
-                            if style::icon_button(
-                                ui,
-                                Icon::Assistant,
-                                square,
-                                true,
-                                style::BLUE_HOVER,
-                            )
+                        // Always shown: the switch that turns the assistant on is in its window.
+                        ui.add_space(8.0);
+                        if style::icon_button(ui, Icon::Assistant, square, true, style::BLUE_HOVER)
                             .on_hover_text(tr(lang, "AI assistant"))
                             .clicked()
-                            {
-                                self.chat.open = !self.chat.open;
-                            }
+                        {
+                            self.chat.open = !self.chat.open;
+                            // Off, it opens where it can be turned on.
+                            self.chat.settings_tab |= !self.settings.ai.enabled;
                         }
                         ui.add_space(8.0);
                         if style::ribbon_button(

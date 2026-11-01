@@ -110,7 +110,6 @@ const ES: &[(&str, &str)] = &[
     ("Search", "Buscar"),
     ("Estimated cost:", "Costo estimado:"),
     ("Not available", "No disponible"),
-    ("Order online", "Pedir en línea"),
     ("Printer", "Impresora"),
     ("Design", "Diseño"),
     (
@@ -123,10 +122,6 @@ const ES: &[(&str, &str)] = &[
     ),
     ("Printer selection", "Selección de impresora"),
     ("Select a printer", "Seleccionar una impresora"),
-    (
-        "Online 3D print service",
-        "Servicio de impresión 3D en línea",
-    ),
     ("Installed printers", "Impresoras instaladas"),
     ("None", "Ninguna"),
     ("Detected printers", "Impresoras detectadas"),
@@ -162,11 +157,32 @@ const ES: &[(&str, &str)] = &[
     ("On", "Activado"),
     ("Off", "Desactivado"),
     ("Selected", "Seleccionado"),
-    ("Order a print online", "Pedir impresión en línea"),
+    ("Could not open:", "No se pudo abrir:"),
+    ("Sticker", "Adhesivo"),
+    ("Brush", "Pincel"),
+    ("Edit sticker", "Editar adhesivo"),
+    ("Remove sticker", "Quitar adhesivo"),
+    ("Load", "Carga"),
+    ("Texture picker", "Selector de textura"),
+    ("Generate QR texture for", "Generar textura de QR para"),
+    ("Insert URL", "Insertar URL"),
+    ("Transparent background", "Fondo transparente"),
+    ("Recent materials", "Materiales recientes"),
+    ("Type a URL first.", "Escribe primero una URL."),
+    ("The text is too long for a QR.", "El texto es demasiado largo para un QR."),
+    ("There are too many pictures loaded.", "Hay demasiadas imágenes cargadas."),
+    ("Click an object to take its texture.", "Haz clic en un objeto para tomar su textura."),
+    ("That face has no texture.", "Esa cara no tiene textura."),
+    ("Place a sticker first.", "Coloca primero un adhesivo."),
+    ("To paint the surface with texture, click the Selected dropdown. To preview the selected texture on the object, hold the pointer over the object and click it to apply the selected texture.", "Para pintar la superficie con textura, haz clic en el menú desplegable Seleccionado. Para obtener una vista previa de la textura seleccionada en el objeto, mantén el puntero sobre el objeto y haz clic en él para aplicar la textura seleccionada."),
     ("Print on paper", "Imprimir en papel"),
     ("About the model", "Acerca del modelo"),
-    ("Feedback", "Comentarios"),
-    ("Rate this app", "Calificar esta aplicación"),
+    ("Title", "Título"),
+    ("Designer", "Diseñador"),
+    ("Copyright", "Copyright"),
+    ("License terms", "Términos de licencia"),
+    ("Description", "Descripción"),
+    ("Update", "Actualizar"),
     ("Special selection", "Selección especial"),
     (
         "One or more objects are not valid. Click here to repair them.",
@@ -215,6 +231,20 @@ const ES: &[(&str, &str)] = &[
     ("Simplify", "Simplificar"),
     ("Split", "Dividir"),
     ("Smooth", "Suave"),
+    ("Smoothness", "Suavidad"),
+    ("Apply", "Aplicar"),
+    ("Type", "Tipo"),
+    ("No material", "Ninguno"),
+    ("Simple", "Simple"),
+    ("Realistic", "Realista"),
+    ("Translucent", "Translúcido"),
+    ("Select material", "Seleccionar material"),
+    ("Choose color", "Elegir color"),
+    (
+        "Changes the material of the whole object to a material of a specific color. To choose the color, click Color.",
+        "Cambia el material de todo el objeto a un material de un color específico. Para elegir el color, haz clic en Color.",
+    ),
+    ("Smooth edges", "Suavizar bordes"),
     ("Emboss", "Relieve"),
     ("Extrude down", "Extrudir hacia abajo"),
     ("Merge", "Combinar"),
@@ -294,6 +324,7 @@ const ES: &[(&str, &str)] = &[
     ("3D printer status", "Estado de la impresora 3D"),
     ("Recent", "Recientes"),
     ("Browse files…", "Buscar archivos…"),
+    ("Chat", "Chat"),
     ("Settings", "Configuración"),
     ("3D models", "Modelos 3D"),
     (
@@ -311,6 +342,7 @@ const ES: &[(&str, &str)] = &[
     ("Select none", "Sin selección"),
     ("Invert selection", "Invertir selección"),
     ("Items", "Elementos"),
+    ("Simplification produced an invalid solid", "La simplificación produjo un sólido no válido"),
     ("triangles", "triángulos"),
     ("vertices", "vértices"),
     ("Open edges", "Bordes abiertos"),
@@ -363,15 +395,21 @@ const ES: &[(&str, &str)] = &[
     ("External agents (MCP)", "Agentes externos (MCP)"),
     ("To use the tools from an agent outside the app (Claude Code, Claude Desktop, Codex, Cursor or any MCP client), add this command to it as an MCP server:", "Para usar las herramientas desde un agente fuera de la app (Claude Code, Claude Desktop, Codex, Cursor o cualquier cliente MCP), agrégale este comando como servidor MCP:"),
     ("With Claude Code:", "Con Claude Code:"),
-    ("With this switch on and the app open, the agent works in this window; otherwise the command opens a new one.", "Con este interruptor activado y la app abierta, el agente trabaja en esta ventana; si no, el comando abre una nueva."),
+    ("With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools.", "Con este interruptor activado y la app abierta, el agente trabaja en esta ventana. El comando nunca abre la app; ábrela antes de usar las herramientas."),
     ("AI assistant:", "Asistente de IA:"),
     ("Print", "Imprimir"),
     ("Choose a slicer first.", "Elige primero un laminador."),
+    (
+        "No filaments found in the slicer profile.",
+        "No se encontraron filamentos en el perfil del laminador.",
+    ),
     (
         "Choose the slicer that prints the model",
         "Elige el laminador que imprime el modelo",
     ),
     ("Installed slicers", "Laminadores instalados"),
+    ("Printer profile", "Perfil de impresora"),
+    ("Print profile", "Perfil de impresión"),
     ("Browse…", "Examinar…"),
     ("Opened in", "Abierto en"),
     ("Could not print:", "No se pudo imprimir:"),
@@ -433,6 +471,26 @@ const ES: &[(&str, &str)] = &[
     ("Light", "Claro"),
     ("Dark", "Oscuro"),
     ("Collision", "Colisión"),
+    // 3D printer status
+    ("Offline", "Sin conexión"),
+    ("Idle", "Inactiva"),
+    ("Printing", "Imprimiendo"),
+    ("Paused", "En pausa"),
+    ("Error", "Error"),
+    ("IP address", "Dirección IP"),
+    ("State", "Estado"),
+    ("Progress", "Progreso"),
+    ("File", "Archivo"),
+    ("Nozzle", "Boquilla"),
+    ("Bed", "Cama"),
+    // Print on paper
+    ("Sent to the printer.", "Enviado a la impresora."),
+    ("Printing cancelled.", "Impresión cancelada."),
+    (
+        "No print dialog available: print the page from the viewer.",
+        "No hay un diálogo de impresión: imprime la página desde el visor.",
+    ),
+    ("Could not print", "No se pudo imprimir"),
 ];
 
 #[cfg(test)]
@@ -441,12 +499,22 @@ mod tests {
 
     #[test]
     fn every_ui_text_has_a_spanish_translation() {
-        // Literal texts are written as `tr(lang, "…")` in the UI code, src/app/*.rs.
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/app");
-        let src: String = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-            .collect();
+        // Literal texts are written as `tr(lang, "…")` in the UI code under src/app.
+        fn read_all(dir: &std::path::Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    read_all(&path, out);
+                } else {
+                    out.push_str(&std::fs::read_to_string(path).unwrap());
+                }
+            }
+        }
+        let mut src = String::new();
+        read_all(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app")),
+            &mut src,
+        );
         // rustfmt may break a call over lines, so drop whitespace after `tr(`.
         let mut texts = Vec::new();
         for part in src.split("tr(").skip(1) {

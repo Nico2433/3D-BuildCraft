@@ -132,6 +132,10 @@ pub struct Settings {
     pub libraries: Vec<PathBuf>,
     /// The slicer "Print" opens the scene in.
     pub slicer: Option<PathBuf>,
+    /// The slicer's printer profile to print with; None for the slicer's current one.
+    pub printer: Option<String>,
+    /// The print (process) profile for that printer; None for the printer's usual one.
+    pub process: Option<String>,
     /// The AI assistant; its API key is in the system keychain, not here.
     pub ai: crate::assistant::Config,
 }
@@ -150,6 +154,8 @@ impl Default for Settings {
             recent: Vec::new(),
             recent_colors: Vec::new(),
             slicer: None,
+            printer: None,
+            process: None,
             ai: crate::assistant::Config::default(),
             libraries: Vec::new(),
         }
@@ -207,6 +213,7 @@ pub struct Autosave {
     path: Option<PathBuf>,
     last: Instant,
     worker: Option<std::thread::JoinHandle<()>>,
+    active: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl Default for Autosave {
@@ -227,6 +234,7 @@ impl Autosave {
             path,
             last: Instant::now(),
             worker: None,
+            active: std::sync::Arc::new(std::sync::Mutex::new(true)),
         }
     }
 
@@ -256,35 +264,46 @@ impl Autosave {
 
     /// Only object headers and mesh Arcs are copied by the caller. Geometry cloning and
     /// serialization happen on the worker, with at most one save in flight.
-    pub fn start(&mut self, objects: Vec<crate::scene::Object>) {
+    pub fn start(&mut self, objects: Vec<crate::scene::Object>, info: crate::io::ModelInfo) {
         if self.worker.as_ref().is_some_and(|w| !w.is_finished()) {
             return;
         }
         let Some(path) = self.path.clone() else {
             return;
         };
+        let active = self.active.clone();
         self.last = Instant::now();
         self.worker = Some(std::thread::spawn(move || {
+            let staging = path.with_extension("tmp");
             let result = (|| -> Result<()> {
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir)?;
                 }
                 let models: Vec<_> = objects.iter().map(crate::scene::Object::to_model).collect();
-                crate::io::threemf::write(&path, &models, None)
+                let file = std::fs::File::create(&staging)?;
+                crate::io::threemf::write_to(file, &models, &info)?;
+                // Only publishing the completed save shares a lock with shutdown.
+                // Serialization can finish on its detached thread without delaying exit.
+                let active = active.lock().unwrap();
+                if *active {
+                    std::fs::rename(&staging, &path)?;
+                }
+                Ok(())
             })();
             if let Err(e) = result {
                 log::warn!("autosave failed: {e:#}");
             }
+            let _ = std::fs::remove_file(staging);
         }));
     }
 
     pub fn clear(&mut self) {
-        // Finish before removing the file so a worker cannot recreate it after exit.
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        let mut active = self.active.lock().unwrap();
+        *active = false;
+        self.worker.take();
         if let Some(p) = &self.path {
             let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(p.with_extension("tmp"));
         }
     }
 }
@@ -301,6 +320,7 @@ mod tests {
             path: Some(path.clone()),
             last: Instant::now() - AUTOSAVE_INTERVAL,
             worker: None,
+            active: std::sync::Arc::new(std::sync::Mutex::new(true)),
         };
         assert!(save.due(true));
         let object = crate::scene::Object::new(
@@ -308,10 +328,13 @@ mod tests {
             crate::primitives::Primitive::Cube.build(),
             crate::scene::DEFAULT_COLOR,
         );
-        save.start(vec![object]);
+        save.start(vec![object], Default::default());
         assert!(!save.due(true));
+        let worker = save.worker.take().unwrap();
         save.clear();
+        worker.join().unwrap();
         assert!(!path.exists());
+        assert!(!path.with_extension("tmp").exists());
         assert!(save.worker.is_none());
     }
 

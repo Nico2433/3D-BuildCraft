@@ -2,7 +2,7 @@
 //! `pid`/`pindex`, placement in the build item `transform` (not baked) and an optional
 //! Title, as the original does (H32, H39, H40, H42). Reads components and units.
 
-use super::{color_name, ModelObject, Rgba};
+use super::{color_name, ModelInfo, ModelObject, Rgba};
 use crate::mesh::Mesh;
 use crate::scene::DEFAULT_COLOR;
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,13 +18,37 @@ const MODEL_REL: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3d
 
 /// Writes to a temporary file beside `path` and renames it over the target, so a failed
 /// or interrupted save (or autosave) never destroys the previous file.
-pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Result<()> {
+pub fn write(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()> {
+    write_file(path, objects, info, None, None)
+}
+
+/// [`write`] for a slicer: every colour prints with filament slot `slot_of(colour)`
+/// (0-based), stored the way OrcaSlicer and Bambu Studio read it from other apps' files.
+/// `settings` is the slicer's project config to print with (see `slicer::project_settings`).
+pub fn write_for_slicer(
+    path: &Path,
+    objects: &[ModelObject],
+    info: &ModelInfo,
+    slot_of: &dyn Fn(Rgba) -> usize,
+    settings: Option<&str>,
+) -> Result<()> {
+    write_file(path, objects, info, Some(slot_of), settings)
+}
+
+fn write_file(
+    path: &Path,
+    objects: &[ModelObject],
+    info: &ModelInfo,
+    slot_of: Option<&dyn Fn(Rgba) -> usize>,
+    settings: Option<&str>,
+) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     let file = std::fs::File::create(&tmp)
         .with_context(|| format!("Could not create {}", tmp.display()))?;
-    let written = write_to(file, objects, title).and_then(|()| Ok(std::fs::rename(&tmp, path)?));
+    let written = write_zip(file, objects, info, slot_of, settings)
+        .and_then(|()| Ok(std::fs::rename(&tmp, path)?));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -34,7 +58,17 @@ pub fn write(path: &Path, objects: &[ModelObject], title: Option<&str>) -> Resul
 pub fn write_to<W: Write + std::io::Seek>(
     out: W,
     objects: &[ModelObject],
-    title: Option<&str>,
+    info: &ModelInfo,
+) -> Result<()> {
+    write_zip(out, objects, info, None, None)
+}
+
+fn write_zip<W: Write + std::io::Seek>(
+    out: W,
+    objects: &[ModelObject],
+    info: &ModelInfo,
+    slot_of: Option<&dyn Fn(Rgba) -> usize>,
+    settings: Option<&str>,
 ) -> Result<()> {
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default()
@@ -55,11 +89,13 @@ pub fn write_to<W: Write + std::io::Seek>(
     s.push_str(&format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">\n"
     ));
-    if let Some(t) = title {
-        s.push_str(&format!(
-            "  <metadata name=\"Title\">{}</metadata>\n",
-            escape(t)
-        ));
+    for (name, value) in info.fields() {
+        if !value.is_empty() {
+            s.push_str(&format!(
+                "  <metadata name=\"{name}\">{}</metadata>\n",
+                escape(value)
+            ));
+        }
     }
     s.push_str("  <resources>\n");
     let colors = super::unique_colors(objects);
@@ -93,7 +129,10 @@ pub fn write_to<W: Write + std::io::Seek>(
             // A painted triangle names its own material.
             let paint = o.mesh.face_color(ti).map_or(String::new(), |c| {
                 let i = colors.iter().position(|k| *k == c).unwrap();
-                format!(" pid=\"1\" p1=\"{i}\"")
+                let paint = slot_of.map_or(String::new(), |slot| {
+                    format!(" paint_color=\"{}\"", paint_color(slot(c) + 1))
+                });
+                format!(" pid=\"1\" p1=\"{i}\"{paint}")
             });
             s.push_str(&format!(
                 "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"{paint} />\n",
@@ -112,8 +151,37 @@ pub fn write_to<W: Write + std::io::Seek>(
     }
     s.push_str("  </build>\n</model>\n");
     zip.write_all(s.as_bytes())?;
+    if let Some(slot) = slot_of {
+        // Object extruders (1-based), keyed by the object ids above.
+        zip.start_file("Metadata/model_settings.config", opts)?;
+        let mut c = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
+        for (i, o) in objects.iter().enumerate() {
+            c.push_str(&format!(
+                "  <object id=\"{}\">\n    <metadata key=\"name\" value=\"{}\"/>\n    <metadata key=\"extruder\" value=\"{}\"/>\n  </object>\n",
+                i + 2,
+                escape(&o.name),
+                slot(o.color) + 1
+            ));
+        }
+        c.push_str("</config>\n");
+        zip.write_all(c.as_bytes())?;
+    }
+    if let Some(settings) = settings {
+        zip.start_file("Metadata/project_settings.config", opts)?;
+        zip.write_all(settings.as_bytes())?;
+    }
     zip.finish()?;
     Ok(())
+}
+
+/// A whole triangle painted with `extruder` (1-based) in the hex bitstream of Orca's
+/// `TriangleSelector::serialize`: 2 bits of state, or `11` then 4 bits of state − 3.
+fn paint_color(extruder: usize) -> String {
+    // Orca paints with at most 16 extruders.
+    match extruder.clamp(1, 16) {
+        n @ 1..=2 => format!("{:X}", n << 2),
+        n => format!("{:X}C", n - 3),
+    }
 }
 
 /// 3MF stores the 4×3 affine part column by column, which is glam's column-major order.
@@ -173,7 +241,8 @@ struct ObjDef {
     components: Vec<(u32, Mat4)>,
 }
 
-pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
+/// The objects and what the file says about the model.
+pub fn read(path: &Path) -> Result<(Vec<ModelObject>, ModelInfo)> {
     let file =
         std::fs::File::open(path).with_context(|| format!("Could not open {}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("The 3MF is not a valid ZIP package")?;
@@ -182,11 +251,40 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     zip.by_name(model_path.trim_start_matches('/'))
         .with_context(|| format!("{model_path} is missing from the 3MF"))?
         .read_to_string(&mut xml)?;
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Object");
-    parse_model(&xml, stem)
+    Ok((parse_model(&xml, super::file_stem(path))?, parse_info(&xml)))
+}
+
+/// The model's `<metadata name="…">` entries that [`ModelInfo`] holds.
+pub fn parse_info(xml: &str) -> ModelInfo {
+    let mut info = ModelInfo::default();
+    let mut r = Reader::from_str(xml);
+    let mut field: Option<&'static str> = None;
+    loop {
+        match r.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"metadata" => {
+                let name = attr(&e, "name").unwrap_or_default();
+                field = info
+                    .fields()
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .find(|n| *n == name);
+            }
+            Ok(Event::Text(t)) => {
+                if let (Some(name), Ok(text)) = (field.take(), t.unescape()) {
+                    if let Some((_, value)) =
+                        info.fields_mut().into_iter().find(|(n, _)| *n == name)
+                    {
+                        *value = text.trim().to_string();
+                    }
+                }
+            }
+            // The metadata comes before the resources.
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"resources" => break,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => field = None,
+        }
+    }
+    info
 }
 
 fn find_model_path<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Option<String> {
@@ -216,7 +314,7 @@ fn attr(e: &BytesStart, name: &str) -> Option<String> {
         .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
-fn parse_color(s: &str) -> Option<Rgba> {
+pub(crate) fn parse_color(s: &str) -> Option<Rgba> {
     let h = s.trim_start_matches('#');
     let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
     match h.len() {
@@ -466,9 +564,54 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scene.3mf");
         std::fs::write(&path, b"old").unwrap();
-        write(&path, &[], Some("t")).unwrap();
+        write(&path, &[], &ModelInfo::default()).unwrap();
         assert!(zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).is_ok());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn slicer_export_assigns_filament_slots() {
+        let red = [255, 0, 0, 255];
+        let blue = [0, 0, 255, 255];
+        let mut painted = crate::primitives::Primitive::Cube.build();
+        painted.colors = vec![[0; 4]; painted.triangles.len()];
+        painted.colors[1] = blue;
+        let object = |name: &str, mesh: Mesh, color| ModelObject {
+            name: name.into(),
+            mesh,
+            transform: Mat4::IDENTITY,
+            color,
+        };
+        let objects = [
+            object("A", painted, red),
+            object("B", crate::primitives::Primitive::Cube.build(), blue),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("print.3mf");
+        // Red prints with slot 0 (extruder 1), anything else with slot 3 (extruder 4).
+        write_for_slicer(
+            &path,
+            &objects,
+            &ModelInfo::default(),
+            &|c| if c == red { 0 } else { 3 },
+            Some("{}"),
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut text = |name: &str| {
+            let mut s = String::new();
+            zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+            s
+        };
+        let model = text("3D/3dmodel.model");
+        assert_eq!(model.matches("paint_color=\"1C\"").count(), 1);
+        assert_eq!(text("Metadata/project_settings.config"), "{}");
+        let config = text("Metadata/model_settings.config");
+        assert!(config.contains("<object id=\"2\">\n    <metadata key=\"name\" value=\"A\"/>\n    <metadata key=\"extruder\" value=\"1\"/>"));
+        assert!(config.contains("<object id=\"3\">\n    <metadata key=\"name\" value=\"B\"/>\n    <metadata key=\"extruder\" value=\"4\"/>"));
+        assert_eq!(read(&path).unwrap().0[0].mesh.face_color(1), Some(blue));
+        let states: Vec<String> = (1..=5).map(paint_color).collect();
+        assert_eq!(states, ["4", "8", "0C", "1C", "2C"]);
     }
 
     #[test]

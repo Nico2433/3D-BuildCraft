@@ -174,7 +174,7 @@ impl App {
                                 (
                                     Icon::Smooth,
                                     tr(lang, "Smooth"),
-                                    Some(Action::Smooth),
+                                    Some(Action::StartSmooth),
                                     has_sel,
                                 ),
                                 (
@@ -216,7 +216,15 @@ impl App {
                             ],
                         ),
                         Tab::Paint => {
-                            row(ui, &[(Icon::Material, tr(lang, "Material"), None, true)]);
+                            row(
+                                ui,
+                                &[(
+                                    Icon::Material,
+                                    tr(lang, "Material"),
+                                    Some(Action::StartMaterial),
+                                    has_sel,
+                                )],
+                            );
                             sep(ui);
                             row(
                                 ui,
@@ -227,7 +235,12 @@ impl App {
                                         Some(Action::StartPaint),
                                         true,
                                     ),
-                                    (Icon::Texture, tr(lang, "Texture"), None, true),
+                                    (
+                                        Icon::Texture,
+                                        tr(lang, "Texture"),
+                                        Some(Action::StartTexture),
+                                        true,
+                                    ),
                                 ],
                             );
                         }
@@ -356,13 +369,15 @@ impl App {
                     );
                     let resp = ui.interact(row, ui.id().with(("grid_mode", k)), Sense::click());
                     let current = r.grid == shown && (!shown || r.grid_tone == tone);
-                    let fill = if current {
-                        Color32::from_rgb(0x12, 0x4A, 0x62)
-                    } else if resp.hovered() {
-                        style::RIBBON_HOVER
-                    } else {
-                        Color32::TRANSPARENT
-                    };
+                    let fill = style::interaction_fill(
+                        &resp,
+                        true,
+                        current,
+                        style::Bar {
+                            active: Color32::from_rgb(0x12, 0x4A, 0x62),
+                            ..style::RIBBON_BAR
+                        },
+                    );
                     let p = ui.painter();
                     p.rect_filled(row, egui::CornerRadius::ZERO, fill);
                     let icon = egui::Rect::from_center_size(
