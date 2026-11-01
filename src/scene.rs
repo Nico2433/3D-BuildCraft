@@ -182,6 +182,25 @@ impl Scene {
             .fold(Aabb::empty(), Aabb::union)
     }
 
+    /// Radius of a sphere around the selection that stays the same as it turns: the objects'
+    /// scaled local bounds, placed round the middle of their centres.
+    pub fn selection_radius(&self) -> f32 {
+        let spheres: Vec<(Vec3, f32)> = self
+            .selected()
+            .filter(|o| !o.mesh.is_empty())
+            .map(|o| {
+                let local = cached_aabb_local(&o.mesh);
+                let r = (local.size() * o.scale.abs()).length() * 0.5;
+                (o.matrix().transform_point3(local.center()), r)
+            })
+            .collect();
+        let mid = spheres.iter().map(|s| s.0).sum::<Vec3>() / spheres.len().max(1) as f32;
+        spheres
+            .iter()
+            .map(|(c, r)| c.distance(mid) + r)
+            .fold(0.0, f32::max)
+    }
+
     pub fn scene_aabb(&self) -> Aabb {
         self.objects
             .iter()

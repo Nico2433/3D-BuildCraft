@@ -72,20 +72,30 @@ pub struct Gizmo {
     /// Each ring's points and the axis it turns about.
     rings: Vec<(Vec<Pos2>, usize)>,
     frame: Option<egui::Rect>,
+    /// While moving: the bar from the axis's zero to the selection's centre.
+    guide: Option<[Pos2; 2]>,
+    /// While turning: the ring's centre and the arc swept since the drag began.
+    sweep: Vec<Pos2>,
 }
 
-/// The handles for `mode` around the box `b`, seen from `eye`.
+/// The handles for `mode` around the box `b`, seen from `eye`. `radius` is the rings'
+/// (before turning, `angles` are where each handle rests); `drag` is the handle being
+/// dragged with the degrees it has turned the selection so far.
 pub fn build(
     mode: TransformMode,
     b: &Aabb,
+    radius: f32,
     eye: Vec3,
     angles: [f32; 3],
+    drag: Option<(Kind, f32)>,
     to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
 ) -> Gizmo {
     let mut g = Gizmo {
         handles: Vec::new(),
         rings: Vec::new(),
         frame: None,
+        guide: None,
+        sweep: Vec::new(),
     };
     if !b.is_valid() {
         return g;
@@ -123,6 +133,11 @@ pub fn build(
                     add(Kind::Move(axis), p + *along * side * gap, *along, 1.0);
                 }
             }
+            if let Some((Kind::Move(axis), _)) = drag {
+                let mut zero = c;
+                zero[axis] = 0.0;
+                g.guide = to_screen(zero).zip(to_screen(c)).map(|(a, b)| [a, b]);
+            }
         }
         TransformMode::Scale => {
             for (axis, side) in [(0, -1.0), (0, 1.0), (1, front), (2, -1.0), (2, 1.0)] {
@@ -130,7 +145,7 @@ pub fn build(
             }
         }
         TransformMode::Rotate => {
-            let r = b.size().length() * 0.5 * 1.05;
+            let r = radius * 1.05;
             // Ring about each axis, its handle's point and which way positive turns go.
             let rings = [
                 (0, -Vec3::Y, -Vec3::Z),
@@ -146,7 +161,24 @@ pub fn build(
                     })
                     .collect();
                 g.rings.push((pts, axis));
-                let q = glam::Quat::from_axis_angle(axes[axis], angles[axis].to_radians());
+                let turned = match drag {
+                    Some((Kind::Turn(a), d)) if a == axis => d,
+                    _ => 0.0,
+                };
+                if turned != 0.0 {
+                    // The wedge from where the object was when the drag began to now.
+                    let turned = turned.clamp(-360.0, 360.0);
+                    let steps = (turned.abs() / 3.0).ceil() as usize;
+                    g.sweep = to_screen(c)
+                        .into_iter()
+                        .chain((0..=steps).filter_map(|i| {
+                            let t = (angles[axis] + turned * i as f32 / steps as f32).to_radians();
+                            to_screen(c + (u * t.cos() + v * t.sin()) * r)
+                        }))
+                        .collect();
+                }
+                let q =
+                    glam::Quat::from_axis_angle(axes[axis], (angles[axis] + turned).to_radians());
                 let radial = q * at;
                 add(
                     Kind::Turn(axis),
@@ -218,6 +250,21 @@ impl Gizmo {
                 BLUE
             }
         };
+        if let Some([a, b]) = self.guide {
+            let bar = Color32::from_rgba_unmultiplied(235, 235, 235, 200);
+            painter.line_segment([a, b], Stroke::new(4.0_f32, bar));
+        }
+        if self.sweep.len() > 2 {
+            let mut fan = egui::Mesh::default();
+            let wedge = Color32::from_rgba_unmultiplied(255, 255, 255, 70);
+            for p in &self.sweep {
+                fan.colored_vertex(*p, wedge);
+            }
+            for i in 2..self.sweep.len() as u32 {
+                fan.add_triangle(0, i - 1, i);
+            }
+            painter.add(egui::Shape::mesh(fan));
+        }
         for (pts, axis) in &self.rings {
             let c = color(Kind::Turn(*axis));
             painter.add(egui::Shape::line(pts.clone(), Stroke::new(1.0_f32, c)));
@@ -334,7 +381,15 @@ mod tests {
                 let p = vp.project_point3(p);
                 Some(Pos2::new(p.x * 400.0, p.y * 400.0))
             };
-            let g = build(TransformMode::Move, &b, eye, [0.0; 3], &project);
+            let g = build(
+                TransformMode::Move,
+                &b,
+                b.size().length() * 0.5,
+                eye,
+                [0.0; 3],
+                None,
+                &project,
+            );
             assert_eq!(g.handles.len(), 3);
             for (axis, h) in g.handles.iter().enumerate() {
                 let side = if offset[axis] < 0.0 { -1.0 } else { 1.0 };
@@ -356,8 +411,10 @@ mod tests {
         let g = build(
             TransformMode::Rotate,
             &cube(),
+            cube().size().length() * 0.5,
             Vec3::new(0.0, -100.0, 50.0),
             [0.0; 3],
+            None,
             &screen,
         );
         assert_eq!(g.handles.len(), 3);
@@ -376,16 +433,20 @@ mod tests {
         let g = build(
             TransformMode::Rotate,
             &b,
+            b.size().length() * 0.5,
             Vec3::new(0.0, -100.0, 50.0),
             [0.0; 3],
+            None,
             &screen,
         );
         let initial = g.handles[2].at;
         let g = build(
             TransformMode::Rotate,
             &b,
+            b.size().length() * 0.5,
             Vec3::new(0.0, -100.0, 50.0),
             [0.0, 0.0, 90.0],
+            None,
             &screen,
         );
         let at = g.handles[2].at;
@@ -400,8 +461,10 @@ mod tests {
         let g = build(
             TransformMode::Scale,
             &cube(),
+            cube().size().length() * 0.5,
             Vec3::new(0.0, -100.0, 50.0),
             [0.0; 3],
+            None,
             &screen,
         );
         assert_eq!(

@@ -406,6 +406,8 @@ pub struct Launch {
     pub mcp: bool,
     /// Transform mode to open in: move, rotate or scale.
     pub mode: Option<String>,
+    /// A handle drag in progress, for screenshots: `x:60` or `rot-z:45`.
+    pub drag: Option<String>,
 }
 
 impl App {
@@ -508,6 +510,9 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
+        if let Some(spec) = launch.drag {
+            app.simulate_drag(&spec);
+        }
         if let Some(path) = launch.image {
             app.tool = Some(Tool::image(path));
         }

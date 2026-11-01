@@ -682,26 +682,17 @@ impl App {
             return None;
         }
         let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
-        let active = self
-            .handle
-            .as_ref()
-            .filter(|h| matches!(h.handle.map(|h| h.kind), Some(gizmo::Kind::Turn(_))));
-        let b = self.scene.selection_aabb();
-        let mut angles = self.rotate_angles;
-        if let Some(h) = active {
-            if let Some(gizmo::Handle {
-                kind: gizmo::Kind::Turn(axis),
-                ..
-            }) = h.handle
-            {
-                angles[axis] += self.rotation_drag_angle(h.turned);
-            }
-        }
+        let drag = self.handle.as_ref().and_then(|h| {
+            let kind = h.handle?.kind;
+            Some((kind, self.rotation_drag_angle(h.turned)))
+        });
         Some(gizmo::build(
             self.mode,
-            &b,
+            &self.scene.selection_aabb(),
+            self.scene.selection_radius(),
             self.camera.eye(),
-            angles,
+            self.rotate_angles,
+            drag,
             &to_screen,
         ))
     }
@@ -788,6 +779,41 @@ impl App {
             }
         }
         guides
+    }
+
+    /// Starts a handle drag already `amount` along (`--drag`, for screenshots): `x`, `y`, `z`
+    /// move along an axis, `rot-x`, `rot-y`, `rot-z` turn about it.
+    pub(super) fn simulate_drag(&mut self, spec: &str) {
+        use gizmo::Kind;
+        let Some((name, amount)) = spec
+            .split_once(':')
+            .and_then(|(n, a)| Some((n, a.parse::<f32>().ok()?)))
+        else {
+            return;
+        };
+        let axis = |c: &str| ["x", "y", "z"].iter().position(|a| *a == c);
+        let kind = match name.strip_prefix("rot-") {
+            Some(a) => axis(a).map(Kind::Turn),
+            None => axis(name).map(Kind::Move),
+        };
+        let Some(kind) = kind else { return };
+        let (start, b0) = (self.scene.objects.clone(), self.scene.selection_aabb());
+        self.handle = Some(HandleDrag {
+            handle: Some(gizmo::Handle {
+                kind,
+                at: Pos2::ZERO,
+                per: egui::Vec2::X,
+                pivot: None,
+            }),
+            plane_z: 0.0,
+            from: Pos2::ZERO,
+            last: Pos2::ZERO,
+            turned: amount,
+            start: start.clone(),
+            aabb: b0,
+            before: self.snapshot(),
+        });
+        self.drag_handle(kind, amount, start, &b0, true);
     }
 
     /// Applies a handle drag of `amount` (mm, degrees or a size factor) to the objects as
