@@ -75,7 +75,11 @@ impl App {
                     ],
                     &[
                         (Icon::Print3D, tr(lang, "3D print"), Some(Action::OpenPrint)),
-                        (Icon::Printer, tr(lang, "Print on paper"), None),
+                        (
+                            Icon::Printer,
+                            tr(lang, "Print on paper"),
+                            Some(Action::OpenPaper),
+                        ),
                     ],
                     &[
                         (

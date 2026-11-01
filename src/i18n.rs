@@ -483,6 +483,24 @@ const ES: &[(&str, &str)] = &[
     ("File", "Archivo"),
     ("Nozzle", "Boquilla"),
     ("Bed", "Cama"),
+    // Print on paper
+    ("Paper print", "Impresión"),
+    ("No printers found", "No se encontraron impresoras"),
+    ("Add a printer", "Agregar una impresora"),
+    ("Orientation", "Orientación"),
+    ("Portrait", "Vertical"),
+    ("Landscape", "Horizontal"),
+    ("Copies", "Copias"),
+    ("Color mode", "Modo de color"),
+    ("Automatic", "AutoSelect"),
+    ("Grayscale", "Escala de grises"),
+    ("More settings", "Más opciones de configuración"),
+    (
+        "Let the app change my print preferences",
+        "Permitir que la aplicación cambie las preferencias de impresión",
+    ),
+    ("Sent to the printer.", "Enviado a la impresora."),
+    ("Could not print", "No se pudo imprimir"),
 ];
 
 #[cfg(test)]

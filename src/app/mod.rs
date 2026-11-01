@@ -37,6 +37,7 @@ mod jobs;
 mod launch;
 mod material;
 mod paint_menu;
+mod paper;
 mod picking;
 mod power;
 mod print;
@@ -351,6 +352,8 @@ pub struct App {
     printer_status: PrinterStatus,
     printer_status_job: Option<std::sync::mpsc::Receiver<PrinterStatus>>,
     printer_status_at: Option<Instant>,
+    /// The print-on-paper window.
+    paper: Option<paper::Dialog>,
     /// A Design-page edit in progress: the size it started at, the scene before, and
     /// whether its undo step was pushed.
     design_edit: Option<(Vec3, Snapshot, bool)>,
@@ -890,7 +893,8 @@ impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
         let smoothing = matches!(&self.tool, Some(Tool::Smooth { amount, edges, run, .. })
-            if !run.is_shown(*amount, *edges));
+            if !run.is_shown(*amount, *edges))
+            || self.paper.as_ref().is_some_and(|d| !d.ready());
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };
@@ -1021,6 +1025,7 @@ impl eframe::App for App {
         }
         self.dialogs(ctx);
         self.print_status(ctx);
+        self.paper_dialog(ctx);
 
         for a in std::mem::take(&mut self.actions) {
             self.apply(a, ctx);
