@@ -337,6 +337,8 @@ pub struct App {
     filaments: Vec<crate::slicer::Filament>,
     /// The filament slot picked for a scene colour; other colours use the closest filament.
     filament_of: Vec<(Rgba, usize)>,
+    /// The scene's colours as the Material page last read them.
+    scene_colors: print::SceneColors,
     /// Tool calls from the AI assistant: the chat, `--mcp` on stdio, or agents attached
     /// over the local port.
     agent: std::sync::mpsc::Receiver<agent::Request>,
@@ -615,8 +617,13 @@ impl App {
         }
     }
 
-    /// The scene's name, or "New scene" in the UI language.
+    /// The model's title from "About the model", else the scene's name, else "New scene"
+    /// in the UI language.
     fn scene_title(&self) -> String {
+        let title = self.scene.info.title.trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
         self.scene
             .name
             .clone()

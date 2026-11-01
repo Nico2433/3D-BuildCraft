@@ -355,16 +355,23 @@ impl App {
                             if let Some(p) = preset {
                                 ai.protocol = p.protocol;
                             }
-                            let current = preset.map_or(tr(lang, "Custom"), |p| p.name);
-                            egui::ComboBox::from_id_salt("ai_preset").selected_text(current).show_ui(ui, |ui| {
-                                for p in assistant::PRESETS {
-                                    if ui.selectable_label(current == p.name, p.name).clicked() {
-                                        ai.protocol = p.protocol;
-                                        ai.base_url = p.base_url.into();
-                                        ai.model = p.model.into();
-                                    }
+                            // Another URL shows as "Custom", which is not offered.
+                            let mut names: Vec<&str> = assistant::PRESETS.iter().map(|p| p.name).collect();
+                            let mut k = match preset {
+                                Some(p) => names.iter().position(|&n| n == p.name).unwrap_or(0),
+                                None => {
+                                    names.push(tr(lang, "Custom"));
+                                    names.len() - 1
                                 }
-                            });
+                            };
+                            let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                            if style::dropdown(ui, "ai_preset", width, &names, &mut k) {
+                                if let Some(p) = assistant::PRESETS.get(k) {
+                                    ai.protocol = p.protocol;
+                                    ai.base_url = p.base_url.into();
+                                    ai.model = p.model.into();
+                                }
+                            }
                             ui.end_row();
                             text(ui, tr(lang, "Base URL"));
                             ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
@@ -376,14 +383,18 @@ impl App {
                             });
                             match detected {
                                 Some(server) => {
-                                    egui::ComboBox::from_id_salt("detected_models")
-                                        .width((ui.available_width() - 10.0).clamp(80.0, 228.0))
-                                        .selected_text(ai.model.clone())
-                                        .show_ui(ui, |ui| {
-                                            for model in &server.models {
-                                                ui.selectable_value(&mut ai.model, model.clone(), model);
-                                            }
-                                        });
+                                    // A model the server does not list stays shown as it is.
+                                    let mut names: Vec<&str> = server.models.iter().map(String::as_str).collect();
+                                    let mut k = names.iter().position(|&m| m == ai.model).unwrap_or_else(|| {
+                                        names.push(&ai.model);
+                                        names.len() - 1
+                                    });
+                                    let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                                    if style::dropdown(ui, "detected_models", width, &names, &mut k) {
+                                        if let Some(m) = server.models.get(k) {
+                                            ai.model = m.clone();
+                                        }
+                                    }
                                 }
                                 None => {
                                     ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));

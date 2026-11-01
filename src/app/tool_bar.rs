@@ -411,41 +411,36 @@ impl App {
                 built,
             }) => {
                 style::label(ui, tr(lang, "Pattern"));
-                let pattern_name = match &params.pattern {
-                    Pattern::Text => tr(lang, "Text"),
-                    Pattern::Shape(s) => tr(lang, s.label()),
-                    Pattern::Image(_) => tr(lang, "Image"),
+                // Text, the shapes, then Image, which asks for the picture.
+                let mut patterns: Vec<&str> = vec![tr(lang, "Text")];
+                patterns.extend(Shape::ALL.map(|s| tr(lang, s.label())));
+                patterns.push(tr(lang, "Image"));
+                let mut k = match &params.pattern {
+                    Pattern::Text => 0,
+                    Pattern::Shape(s) => 1 + Shape::ALL.iter().position(|o| o == s).unwrap_or(0),
+                    Pattern::Image(_) => patterns.len() - 1,
                 };
-                egui::ComboBox::from_id_salt("emboss_pattern")
-                    .selected_text(pattern_name)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut params.pattern, Pattern::Text, tr(lang, "Text"));
-                        for s in Shape::ALL {
-                            ui.selectable_value(
-                                &mut params.pattern,
-                                Pattern::Shape(s),
-                                tr(lang, s.label()),
-                            );
-                        }
-                        let image = matches!(params.pattern, Pattern::Image(_));
-                        if ui.selectable_label(image, tr(lang, "Image")).clicked() {
-                            if let Some(p) = rfd::FileDialog::new()
-                                .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
-                                .pick_file()
-                            {
-                                params.pattern = Pattern::Image(p);
-                            }
-                        }
-                    });
+                if style::dropdown(ui, "emboss_pattern", 150.0, &patterns, &mut k) {
+                    if k == 0 {
+                        params.pattern = Pattern::Text;
+                    } else if let Some(&s) = Shape::ALL.get(k - 1) {
+                        params.pattern = Pattern::Shape(s);
+                    } else if let Some(p) = rfd::FileDialog::new()
+                        .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                        .pick_file()
+                    {
+                        params.pattern = Pattern::Image(p);
+                    }
+                }
                 style::label(ui, tr(lang, "Projection"));
-                egui::ComboBox::from_id_salt("emboss_projection")
-                    .width(150.0)
-                    .selected_text(tr(lang, params.projection.label()))
-                    .show_ui(ui, |ui| {
-                        for p in Projection::ALL {
-                            ui.selectable_value(&mut params.projection, p, tr(lang, p.label()));
-                        }
-                    });
+                let names = Projection::ALL.map(|p| tr(lang, p.label()));
+                let mut k = Projection::ALL
+                    .iter()
+                    .position(|&p| p == params.projection)
+                    .unwrap_or(0);
+                if style::dropdown(ui, "emboss_projection", 150.0, &names, &mut k) {
+                    params.projection = Projection::ALL[k];
+                }
                 if style::option(ui, Icon::Pyramid, tr(lang, "Bevel"), params.bevel).clicked() {
                     params.bevel = !params.bevel;
                 }
@@ -460,15 +455,16 @@ impl App {
                     let fonts = self
                         .font_list
                         .get_or_insert_with(crate::emboss::font_families);
-                    egui::ComboBox::from_id_salt("emboss_font")
-                        .width(160.0)
-                        .selected_text(params.font.as_deref().unwrap_or(tr(lang, "Built-in")))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut params.font, None, tr(lang, "Built-in"));
-                            for f in fonts.iter() {
-                                ui.selectable_value(&mut params.font, Some(f.clone()), f);
-                            }
-                        });
+                    let mut names = vec![tr(lang, "Built-in")];
+                    names.extend(fonts.iter().map(String::as_str));
+                    let mut k = params
+                        .font
+                        .as_ref()
+                        .and_then(|f| fonts.iter().position(|o| o == f))
+                        .map_or(0, |k| k + 1);
+                    if style::dropdown(ui, "emboss_font", 200.0, &names, &mut k) {
+                        params.font = k.checked_sub(1).map(|k| fonts[k].clone());
+                    }
                 }
                 if !params.engrave {
                     style::label(ui, tr(lang, "Color"));
@@ -533,22 +529,14 @@ fn unit_choice(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response 
 
 /// A colour picker for an emboss part: the object's colour or one from the palette.
 fn color_combo(ui: &mut egui::Ui, salt: &str, lang: Lang, color: &mut Option<Rgba>) {
-    let name = |c: &Option<Rgba>| match c {
-        None => tr(lang, "Object color"),
-        Some(c) => PALETTE
-            .iter()
-            .find(|(_, rgba)| rgba == c)
-            .map_or("?", |(n, _)| tr(lang, n)),
-    };
-    egui::ComboBox::from_id_salt(salt)
-        .width(130.0)
-        .selected_text(name(color))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(color, None, tr(lang, "Object color"));
-            for (n, c) in PALETTE {
-                ui.selectable_value(color, Some(c), tr(lang, n));
-            }
-        });
+    let mut names = vec![tr(lang, "Object color")];
+    names.extend(PALETTE.iter().map(|(n, _)| tr(lang, n)));
+    let mut k = color
+        .and_then(|c| PALETTE.iter().position(|(_, rgba)| *rgba == c))
+        .map_or(0, |k| k + 1);
+    if style::dropdown(ui, salt, 130.0, &names, &mut k) {
+        *color = k.checked_sub(1).map(|k| PALETTE[k].1);
+    }
 }
 
 /// The shapes Custom offers, in the original's order.

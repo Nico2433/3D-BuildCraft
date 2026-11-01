@@ -1,7 +1,6 @@
 //! Paint → Material: the tool's Type drop-down, with a preview swatch for each style, and
 //! the live change of the selected objects.
 
-use super::icons::Icon;
 use super::style;
 use super::*;
 use eframe::egui::CornerRadius;
@@ -51,7 +50,7 @@ fn swatch(p: &egui::Painter, r: egui::Rect, color: Rgba, kind: Material) {
     }
 }
 
-/// The "Type" drop-down: a field with the current choice that opens a list of the four
+/// The "Type" drop-down: a field with the current choice that opens a list of the other
 /// materials, each with a swatch of `color`. True when the choice changed.
 pub(super) fn type_dropdown(
     ui: &mut egui::Ui,
@@ -61,91 +60,42 @@ pub(super) fn type_dropdown(
     open: &mut bool,
 ) -> bool {
     let width = 150.0;
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(width, style::FIELD_H), egui::Sense::click());
-    style::field_box(ui, rect, resp.hovered() || *open);
-    ui.painter().text(
-        rect.left_center() + Vec2::new(10.0, 0.0),
-        Align2::LEFT_CENTER,
+    let mut k = Material::ALL.iter().position(|m| m == kind).unwrap_or(0);
+    let changed = style::dropdown_rows(
+        ui,
+        egui::Id::new("material_type"),
+        width,
         tr(lang, kind.label()),
-        egui::FontId::proportional(style::MENU_FONT),
-        style::TEXT,
-    );
-    let chevron = egui::Rect::from_center_size(
-        rect.right_center() - Vec2::new(16.0, 0.0),
-        Vec2::splat(14.0),
-    );
-    super::icons::paint(ui.painter(), chevron, Icon::ChevronDown, style::TEXT);
-    let opening = resp.clicked();
-    if opening {
-        *open = !*open;
-    }
-    let mut picked = None;
-    if *open {
-        let size = Vec2::new(width + 76.0, ROW_H * Material::ALL.len() as f32);
-        let list = egui::Rect::from_min_size(rect.left_top() - Vec2::new(0.0, 6.0), size);
-        let area = egui::Area::new(egui::Id::new("material_type"))
-            .fixed_pos(list.min)
-            .order(egui::Order::Foreground)
-            .fade_in(false)
-            .show(ui.ctx(), |ui| {
-                ui.allocate_rect(list, egui::Sense::hover());
-                ui.painter().rect_filled(
-                    list,
-                    CornerRadius::ZERO,
-                    Color32::from_rgb(0x22, 0x26, 0x2B),
-                );
-                for (k, m) in Material::ALL.into_iter().enumerate() {
-                    let row = egui::Rect::from_min_size(
-                        list.min + Vec2::new(0.0, k as f32 * ROW_H),
-                        Vec2::new(size.x, ROW_H),
-                    );
-                    let r = ui.interact(row, ui.id().with(k), egui::Sense::click());
-                    let fill = if *kind == m {
-                        Color32::from_rgb(0x5A, 0x25, 0x61)
-                    } else if r.hovered() {
-                        Color32::from_rgb(0x3A, 0x3E, 0x44)
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let p = ui.painter();
-                    p.rect_filled(row.shrink(1.0), CornerRadius::ZERO, fill);
-                    let sw = egui::Rect::from_center_size(
-                        row.left_center() + Vec2::new(32.0, 0.0),
-                        Vec2::splat(38.0),
-                    );
-                    swatch(p, sw, color, m);
-                    if m != Material::None {
-                        p.rect_stroke(
-                            sw,
-                            CornerRadius::ZERO,
-                            Stroke::new(1.0_f32, Color32::from_gray(0x76)),
-                            egui::StrokeKind::Outside,
-                        );
-                    }
-                    p.text(
-                        row.left_center() + Vec2::new(64.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        tr(lang, m.label()),
-                        egui::FontId::proportional(style::MENU_FONT),
-                        style::TEXT,
-                    );
-                    if r.clicked() {
-                        picked = Some(m);
-                    }
-                }
-                ui.painter().rect_stroke(
-                    list,
+        Material::ALL.len(),
+        &mut k,
+        open,
+        Vec2::new(width + 76.0, ROW_H),
+        |p, row, k| {
+            let m = Material::ALL[k];
+            let sw = egui::Rect::from_center_size(
+                row.left_center() + Vec2::new(32.0, 0.0),
+                Vec2::splat(38.0),
+            );
+            swatch(p, sw, color, m);
+            if m != Material::None {
+                p.rect_stroke(
+                    sw,
                     CornerRadius::ZERO,
                     Stroke::new(1.0_f32, Color32::from_gray(0x76)),
-                    egui::StrokeKind::Inside,
+                    egui::StrokeKind::Outside,
                 );
-            });
-        if picked.is_some() || (area.response.clicked_elsewhere() && !opening) {
-            *open = false;
-        }
-    }
-    picked.is_some_and(|m| std::mem::replace(kind, m) != m)
+            }
+            p.text(
+                row.left_center() + Vec2::new(64.0, 0.0),
+                Align2::LEFT_CENTER,
+                tr(lang, m.label()),
+                egui::FontId::proportional(style::MENU_FONT),
+                style::TEXT,
+            );
+        },
+    );
+    *kind = Material::ALL[k];
+    changed
 }
 
 impl App {

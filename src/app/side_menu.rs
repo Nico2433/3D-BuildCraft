@@ -287,12 +287,12 @@ impl App {
                     .color(style::TEXT),
             );
             ui.add_space(4.0);
-            let edit = if name == "Description" {
-                egui::TextEdit::multiline(value).desired_rows(5)
+            if name == "Description" {
+                let edit = egui::TextEdit::multiline(value).desired_rows(5);
+                ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)));
             } else {
-                egui::TextEdit::singleline(value)
-            };
-            ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)));
+                style::text_field(ui, value, width, "");
+            }
             ui.add_space(14.0);
         }
         ui.add_space(6.0);

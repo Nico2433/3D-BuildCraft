@@ -35,6 +35,13 @@ impl Page {
     }
 }
 
+/// [`App::scene_colors`] with the meshes and colours it was read from.
+#[derive(Default)]
+pub struct SceneColors {
+    key: Vec<(std::sync::Weak<Mesh>, Rgba)>,
+    colors: Vec<Rgba>,
+}
+
 impl App {
     pub(super) fn send_to_slicer(&mut self) {
         let lang = self.settings.lang();
@@ -395,23 +402,39 @@ impl App {
     }
 
     /// The colours that print: painted areas', and objects' where faces are left unpainted.
-    fn scene_colors(&self) -> Vec<Rgba> {
-        let mut colors: Vec<Rgba> = Vec::new();
-        for o in &self.scene.objects {
-            if o.mesh.colors.is_empty() {
-                if !colors.contains(&o.color) {
-                    colors.push(o.color);
+    /// Read again only when an object's mesh or colour changed.
+    fn scene_colors(&mut self) -> Vec<Rgba> {
+        let cache = &mut self.scene_colors;
+        let objects = &self.scene.objects;
+        // Meshes are replaced, never changed in place, so a mesh is known by its pointer;
+        // the weak handles keep a freed one's address from being reused meanwhile.
+        let same =
+            cache.key.len() == objects.len()
+                && cache.key.iter().zip(objects).all(|((m, c), o)| {
+                    m.as_ptr() == std::sync::Arc::as_ptr(&o.mesh) && *c == o.color
+                });
+        if !same {
+            cache.key = objects
+                .iter()
+                .map(|o| (std::sync::Arc::downgrade(&o.mesh), o.color))
+                .collect();
+            cache.colors.clear();
+            let mut add = |c: Rgba| {
+                if !cache.colors.contains(&c) {
+                    cache.colors.push(c);
                 }
-                continue;
-            }
-            let faces = (0..o.mesh.triangles.len()).map(|i| o.mesh.face_color(i));
-            for c in faces.map(|c| c.unwrap_or(o.color)) {
-                if !colors.contains(&c) {
-                    colors.push(c);
+            };
+            for o in objects {
+                if o.mesh.colors.is_empty() {
+                    add(o.color);
+                    continue;
+                }
+                for i in 0..o.mesh.triangles.len() {
+                    add(o.mesh.face_color(i).unwrap_or(o.color));
                 }
             }
         }
-        colors
+        cache.colors.clone()
     }
 
     /// The slicer's filaments: one for everything, or one per colour of the scene.
@@ -500,19 +523,16 @@ impl App {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Design"));
         text(ui, tr(lang, "Units"));
-        let mut units = self.settings.units;
-        egui::ComboBox::from_id_salt("print_units")
-            .width(160.0)
-            .selected_text(tr(lang, units.name()))
-            .show_ui(ui, |ui| {
-                for u in Units::ALL {
-                    ui.selectable_value(&mut units, u, tr(lang, u.name()));
-                }
-            });
-        if units != self.settings.units {
-            self.settings.units = units;
+        let names = Units::ALL.map(|u| tr(lang, u.name()));
+        let mut k = Units::ALL
+            .iter()
+            .position(|&u| u == self.settings.units)
+            .unwrap_or(0);
+        if style::dropdown(ui, "print_units", 160.0, &names, &mut k) {
+            self.settings.units = Units::ALL[k];
             let _ = self.settings.save();
         }
+        let units = self.settings.units;
         let k = units.to_mm();
         let b = self.scene.scene_aabb();
         if !b.is_valid() {

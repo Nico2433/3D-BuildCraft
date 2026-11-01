@@ -365,56 +365,97 @@ pub fn field_box(ui: &Ui, rect: Rect, hovered: bool) {
 }
 
 /// The original's drop-down: a field with the choice and a chevron; clicked, a dark list
-/// opens over it with the current choice in purple. True when the choice changed.
+/// of the other choices opens under it. True when the choice changed.
 pub fn dropdown(ui: &mut Ui, id: &str, width: f32, options: &[&str], selected: &mut usize) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
-    field_box(ui, rect, resp.hovered());
-    let font = FontId::proportional(MENU_FONT);
+    let open_id = ui.id().with((id, "open"));
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     let current = options.get(*selected).copied().unwrap_or_default();
-    ui.painter().text(
-        rect.left_center() + Vec2::new(10.0, 0.0),
-        egui::Align2::LEFT_CENTER,
+    let changed = dropdown_rows(
+        ui,
+        open_id,
+        width,
         current,
-        font.clone(),
-        TEXT,
+        options.len(),
+        selected,
+        &mut open,
+        Vec2::new(width, FIELD_H),
+        |p, row, k| row_text(p, row, options[k], 10.0),
     );
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+    changed
+}
+
+/// [`dropdown`] showing `current`, with the open state kept by the caller and `count`
+/// rows of size `row`, each painted by `paint` (as with a swatch before the name).
+#[allow(clippy::too_many_arguments)]
+pub fn dropdown_rows(
+    ui: &mut Ui,
+    id: egui::Id,
+    width: f32,
+    current: &str,
+    count: usize,
+    selected: &mut usize,
+    open: &mut bool,
+    row: Vec2,
+    paint: impl Fn(&egui::Painter, Rect, usize),
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
+    field_box(ui, rect, resp.hovered() || *open);
+    let text = rect.with_max_x(rect.right() - 30.0);
+    row_text(&ui.painter().with_clip_rect(text), rect, current, 10.0);
     let chevron = Rect::from_center_size(
         rect.right_center() - Vec2::new(16.0, 0.0),
         Vec2::splat(14.0),
     );
     icons::paint(ui.painter(), chevron, Icon::ChevronDown, TEXT);
-
-    let open_id = ui.id().with((id, "open"));
-    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     if resp.clicked() {
-        open = !open;
+        *open = !*open;
     }
-    let mut changed = false;
-    if open {
-        // The list lies over the field with the current choice where the field was.
-        let top = rect.top() - *selected as f32 * FIELD_H;
-        let at = egui::pos2(rect.left(), top);
-        if let Some(k) = list(
-            ui.ctx(),
-            open_id,
-            at,
-            width,
-            options,
-            Some(*selected),
-            &mut open,
-            resp.clicked(),
-        ) {
-            changed = *selected != k;
-            *selected = k;
-        }
+    if !*open {
+        return false;
     }
-    ui.data_mut(|d| d.insert_temp(open_id, open));
-    changed
+    // Under the field, or over it when there is more room there.
+    let screen = ui.ctx().screen_rect();
+    let others = count - usize::from(*selected < count);
+    let height = row.y * others.min(LIST_ROWS) as f32;
+    let (below, above) = (screen.bottom() - rect.bottom(), rect.top() - screen.top());
+    let at = if height <= below || below >= above {
+        rect.left_bottom()
+    } else {
+        rect.left_top() - Vec2::new(0.0, height.min(above))
+    };
+    let picked = list_rows(
+        ui.ctx(),
+        id,
+        at,
+        row,
+        count,
+        Some(*selected),
+        open,
+        resp.clicked(),
+        paint,
+    );
+    picked.is_some_and(|k| std::mem::replace(selected, k) != k)
 }
 
-/// The original's drop-down list: dark rows, the `selected` one in purple, from `at`
-/// (moved as needed to stay on screen). Returns the row picked; `open` turns false on a
-/// pick or a click elsewhere (other than the click that opened it, `opening`).
+/// Rows a list shows at most; more scroll.
+const LIST_ROWS: usize = 12;
+
+/// `text` at the left of `rect`, `inset` in, as the fields and lists write it.
+fn row_text(p: &egui::Painter, rect: Rect, text: &str, inset: f32) {
+    p.text(
+        rect.left_center() + Vec2::new(inset, 0.0),
+        egui::Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(MENU_FONT),
+        TEXT,
+    );
+}
+
+/// The original's drop-down list: dark rows from `at` (moved as needed to stay on screen),
+/// without the `selected` one, which the field shows. Returns the index in `options` of
+/// the row picked; `open` turns false on a pick or a click elsewhere (other than the click
+/// that opened it, `opening`).
 #[allow(clippy::too_many_arguments)]
 pub fn list(
     ctx: &egui::Context,
@@ -426,50 +467,72 @@ pub fn list(
     open: &mut bool,
     opening: bool,
 ) -> Option<usize> {
-    let size = Vec2::new(width, FIELD_H * options.len() as f32);
+    list_rows(
+        ctx,
+        id,
+        at,
+        Vec2::new(width, FIELD_H),
+        options.len(),
+        selected,
+        open,
+        opening,
+        |p, row, k| row_text(p, row, options[k], 10.0),
+    )
+}
+
+/// [`list`] of `count` rows of size `row`, each painted by `paint`.
+#[allow(clippy::too_many_arguments)]
+pub fn list_rows(
+    ctx: &egui::Context,
+    id: egui::Id,
+    at: egui::Pos2,
+    row: Vec2,
+    count: usize,
+    selected: Option<usize>,
+    open: &mut bool,
+    opening: bool,
+    paint: impl Fn(&egui::Painter, Rect, usize),
+) -> Option<usize> {
+    let shown: Vec<usize> = (0..count).filter(|&k| Some(k) != selected).collect();
+    if shown.is_empty() {
+        *open = false;
+        return None;
+    }
     let screen = ctx.screen_rect();
-    let top = at.y.min(screen.bottom() - size.y).max(screen.top());
-    let list = Rect::from_min_size(egui::pos2(at.x, top), size);
-    let font = FontId::proportional(MENU_FONT);
+    let height = (row.y * shown.len().min(LIST_ROWS) as f32).min(screen.height());
+    let top = at.y.min(screen.bottom() - height).max(screen.top());
+    let list = Rect::from_min_size(egui::pos2(at.x, top), Vec2::new(row.x, height));
     let mut picked = None;
     let area = egui::Area::new(id.with("list"))
         .fixed_pos(list.min)
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(ctx, |ui| {
-            ui.allocate_rect(list, Sense::hover());
             ui.painter().rect_filled(
                 list,
                 CornerRadius::ZERO,
                 Color32::from_rgb(0x22, 0x26, 0x2B),
             );
-            for (k, o) in options.iter().enumerate() {
-                let row = Rect::from_min_size(
-                    list.min + Vec2::new(0.0, k as f32 * FIELD_H),
-                    Vec2::new(width, FIELD_H),
-                );
-                let r = ui.interact(row, id.with(k), Sense::click());
-                let fill = if selected == Some(k) {
-                    Color32::from_rgb(0x5A, 0x25, 0x61)
-                } else if r.hovered() {
-                    Color32::from_rgb(0x3A, 0x3E, 0x44)
-                } else {
-                    Color32::TRANSPARENT
-                };
-                ui.painter()
-                    .rect_filled(row.shrink(1.0), CornerRadius::ZERO, fill);
-                ui.painter().text(
-                    row.left_center() + Vec2::new(10.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    *o,
-                    font.clone(),
-                    TEXT,
-                );
-                if r.clicked() {
-                    picked = Some(k);
-                    *open = false;
-                }
-            }
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            egui::ScrollArea::vertical()
+                .max_height(height)
+                .show(ui, |ui| {
+                    for &k in &shown {
+                        let (r, resp) = ui.allocate_exact_size(row, Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(
+                                r.shrink(1.0),
+                                CornerRadius::ZERO,
+                                Color32::from_rgb(0x3A, 0x3E, 0x44),
+                            );
+                        }
+                        paint(ui.painter(), r, k);
+                        if resp.clicked() {
+                            picked = Some(k);
+                            *open = false;
+                        }
+                    }
+                });
             ui.painter().rect_stroke(
                 list,
                 CornerRadius::ZERO,
@@ -481,6 +544,67 @@ pub fn list(
         *open = false;
     }
     picked
+}
+
+/// A single-line text box, `hint` shown while it is empty. Focused, it turns light with
+/// an accent border and, while it has text, a × at its right that empties it.
+pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Response {
+    let id = ui.next_auto_id();
+    let shown_id = id.with("clear");
+    // Kept while the × is pressed, as the press takes the focus away from the box.
+    let was_shown = ui.data(|d| d.get_temp::<bool>(shown_id)).unwrap_or(false);
+    let focused = ui.memory(|m| m.has_focus(id));
+    let edit = egui::TextEdit::singleline(text)
+        .id(id)
+        .hint_text(hint)
+        .font(FontId::proportional(MENU_FONT))
+        .desired_width(width)
+        .margin(egui::Margin {
+            left: 8,
+            right: 28,
+            top: 6,
+            bottom: 6,
+        });
+    let mut resp = if focused {
+        let before = ui.visuals().clone();
+        let v = ui.visuals_mut();
+        v.selection.stroke = Stroke::new(2.0_f32, TOGGLE_ON);
+        v.selection.bg_fill = Color32::from_rgb(0x99, 0xC9, 0xEF);
+        v.text_cursor.stroke = Stroke::new(1.0_f32, Color32::BLACK);
+        let resp = ui.add(
+            edit.background_color(Color32::WHITE)
+                .text_color(Color32::BLACK),
+        );
+        *ui.visuals_mut() = before;
+        resp
+    } else {
+        ui.add(edit)
+    };
+    let pressing = ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
+    let shown = !text.is_empty() && (resp.has_focus() || (was_shown && pressing));
+    ui.data_mut(|d| d.insert_temp(shown_id, shown));
+    if shown {
+        let x = Rect::from_center_size(
+            resp.rect.right_center() - Vec2::new(14.0, 0.0),
+            Vec2::splat(20.0),
+        );
+        let clear = ui.interact(x, shown_id, Sense::click());
+        if clear.hovered() {
+            ui.painter()
+                .rect_filled(x, CornerRadius::ZERO, Color32::from_gray(0xE0));
+        }
+        let (a, b) = (x.shrink(6.0).left_top(), x.shrink(6.0).right_bottom());
+        let stroke = Stroke::new(1.2_f32, Color32::from_gray(0x33));
+        ui.painter().line_segment([a, b], stroke);
+        ui.painter()
+            .line_segment([egui::pos2(a.x, b.y), egui::pos2(b.x, a.y)], stroke);
+        if clear.clicked() {
+            text.clear();
+            resp.request_focus();
+            resp.mark_changed();
+        }
+    }
+    resp
 }
 
 /// A number field with its unit dimmed at the right inside the box, as "40  mm".

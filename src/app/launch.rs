@@ -87,6 +87,7 @@ impl App {
             profiles_job: None,
             filaments: Vec::new(),
             filament_of: Vec::new(),
+            scene_colors: Default::default(),
             agent: agent_rx,
             agent_tx,
             listener: None,
