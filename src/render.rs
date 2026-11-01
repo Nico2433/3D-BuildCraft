@@ -2,6 +2,7 @@
 //! Metal through wgpu (ADR-0001).
 
 use crate::mesh::Mesh;
+use crate::scene::Material;
 use bytemuck::{Pod, Zeroable};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu, CallbackResources, CallbackTrait};
@@ -45,7 +46,7 @@ struct ObjectUniform {
     model: [[f32; 4]; 4],
     normal: [[f32; 4]; 4],
     color: [f32; 4],
-    /// x selected, y pass (0 object, 1 reflection, 2 shadow), z takes the sticker preview
+    /// x selected, y pass (0 object, 1 reflection, 2 shadow), z realistic, w takes the sticker preview
     extra: [f32; 4],
 }
 
@@ -68,6 +69,7 @@ pub struct DrawItem {
     pub model: Mat4,
     pub color: [u8; 4],
     pub selected: bool,
+    pub material: Material,
 }
 
 #[derive(Clone, Copy)]
@@ -208,7 +210,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
         // The sticker being placed, shown on the object under the pointer.
         let facing = dot(normalize(in.n), g.decal_n.xyz) > 0.25;
         let within = all(dq.xy >= vec2<f32>(0.0)) && all(dq.xy <= vec2<f32>(1.0)) && abs(dq.z) < g.decal_n.w;
-        if (g.decal_p.x > 0.5 && o.extra.z > 0.5 && o.extra.y < 0.5 && facing && within) {
+        if (g.decal_p.x > 0.5 && o.extra.w > 0.5 && o.extra.y < 0.5 && facing && within) {
             base = mix(base, live_tex.rgb, live_tex.a);
         }
     }
@@ -219,8 +221,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
         let diff = max(dot(n, l), 0.0);
         let fill = max(dot(n, normalize(vec3<f32>(0.5, 0.6, 0.4))), 0.0) * 0.2;
         let h = normalize(l + v);
-        let spec = pow(max(dot(n, h), 0.0), 48.0) * 0.12;
-        c = base * (0.40 + 0.42 * diff + fill) + vec3<f32>(spec);
+        var spec = pow(max(dot(n, h), 0.0), 48.0) * 0.12;
+        c = base * (0.40 + 0.42 * diff + fill);
+        if (o.extra.z > 0.5) {
+            // Realistic: a tight strong highlight and a pale sheen at grazing angles.
+            spec = pow(max(dot(n, h), 0.0), 60.0) * 1.1;
+            let sheen = pow(1.0 - max(dot(n, v), 0.0), 2.0) * 0.5;
+            c = mix(c, vec3<f32>(0.85, 0.92, 1.0), sheen);
+        }
+        c = c + vec3<f32>(spec);
     }
     var a = o.color.a;
     if (g.flags.z > 0.5) { a = 0.35; }
@@ -900,8 +909,8 @@ impl CallbackTrait for FrameCallback {
                     extra: [
                         f(it.selected),
                         pass,
+                        f(it.material == Material::Realistic),
                         f(self.decal.is_some_and(|d| d.item == i)),
-                        0.0,
                     ],
                 };
                 let o = slot * OBJECT_STRIDE as usize;
@@ -1116,15 +1125,32 @@ impl CallbackTrait for FrameCallback {
                 pass.draw(0..6, 0..1);
             }
         }
-        pass.set_pipeline(if self.flags.xray { &r.xray } else { &r.solid });
-        pass.set_bind_group(2, &r.texture_bg, &[]);
-        for (i, it) in self.items.iter().enumerate() {
+        // Opaque objects first, then the translucent ones far to near, which blend over
+        // them without writing depth.
+        let far = |it: &DrawItem| self.eye.distance(it.model.transform_point3(Vec3::ZERO));
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (a, b) = (&self.items[a], &self.items[b]);
+            (a.material == Material::Translucent)
+                .cmp(&(b.material == Material::Translucent))
+                .then_with(|| {
+                    if a.material == Material::Translucent {
+                        far(b).total_cmp(&far(a))
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+        });
+        for i in order {
+            let it = &self.items[i];
             let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
                 continue;
             };
             if gm.index_count == 0 {
                 continue;
             }
+            let see_through = self.flags.xray || it.material == Material::Translucent;
+            pass.set_pipeline(if see_through { &r.xray } else { &r.solid });
             pass.set_bind_group(1, &r.object_bg, &[(i as u64 * OBJECT_STRIDE) as u32]);
             pass.set_vertex_buffer(0, gm.vbuf.slice(..));
             pass.set_index_buffer(gm.ibuf.slice(..), wgpu::IndexFormat::Uint32);

@@ -25,6 +25,38 @@ pub const PALETTE: [(&str, Rgba); 10] = [
     ("Black", [0x26, 0x26, 0x26, 0xFF]),
 ];
 
+/// How an object's surface is drawn (Paint's "Material").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// No override: drawn as Simple.
+    #[default]
+    None,
+    Simple,
+    /// Glossy, with a stronger highlight and a sheen at grazing angles.
+    Realistic,
+    /// See-through: drawn after the opaque objects, without writing depth.
+    Translucent,
+}
+
+impl Material {
+    pub const ALL: [Material; 4] = [
+        Material::None,
+        Material::Simple,
+        Material::Realistic,
+        Material::Translucent,
+    ];
+
+    /// The i18n key of its name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Material::None => "No material",
+            Material::Simple => "Simple",
+            Material::Realistic => "Realistic",
+            Material::Translucent => "Translucent",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Object {
     pub id: u64,
@@ -35,6 +67,7 @@ pub struct Object {
     pub rotation: Vec3,
     pub scale: Vec3,
     pub color: Rgba,
+    pub material: Material,
 }
 
 impl Object {
@@ -47,6 +80,7 @@ impl Object {
             rotation: Vec3::ZERO,
             scale: Vec3::ONE,
             color,
+            material: Material::None,
         }
     }
 

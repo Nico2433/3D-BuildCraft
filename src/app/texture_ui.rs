@@ -171,17 +171,18 @@ impl App {
         let lang = self.settings.lang();
         ui.add_space(8.0);
         let current = t.thumbs.layer(ui.ctx(), t.layer).map(|h| h.id());
-        let (rect, opening) = super::paint_menu::selected_header(ui, lang, |p, swatch| {
-            match current {
-                Some(id) => p.image(
-                    id,
-                    swatch,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                ),
-                None => p.rect_filled(swatch, egui::CornerRadius::ZERO, Color32::GRAY),
-            };
-        });
+        let (rect, opening) =
+            super::paint_menu::selected_header(ui, tr(lang, "Selected"), |p, swatch| {
+                match current {
+                    Some(id) => p.image(
+                        id,
+                        swatch,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    ),
+                    None => p.rect_filled(swatch, egui::CornerRadius::ZERO, Color32::GRAY),
+                };
+            });
         if opening {
             t.menu = !t.menu;
         }
@@ -592,6 +593,9 @@ impl App {
         rect: egui::Rect,
         aspect: f32,
     ) -> TextureFrame {
+        if !matches!(self.tool, Some(Tool::Texture(_))) {
+            return TextureFrame::default();
+        }
         let Some(Tool::Texture(mut t)) = self.tool.take() else {
             return TextureFrame::default();
         };

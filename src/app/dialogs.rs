@@ -132,6 +132,18 @@ impl App {
                 ));
             }
         }
+        if let Some(Tool::Material { .. }) = self.tool {
+            cards.push((
+                Icon::Info,
+                tr(
+                    lang,
+                    "Changes the material of the whole object to a material of a specific color. To choose the color, click Color.",
+                )
+                .to_owned(),
+                style::CARD_INFO,
+                None,
+            ));
+        }
         for t in &self.toasts {
             let edge = if t.error {
                 style::CARD_ERROR

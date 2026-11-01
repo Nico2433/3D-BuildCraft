@@ -174,7 +174,7 @@ impl App {
                                 (
                                     Icon::Smooth,
                                     tr(lang, "Smooth"),
-                                    Some(Action::Smooth),
+                                    Some(Action::StartSmooth),
                                     has_sel,
                                 ),
                                 (
@@ -216,7 +216,15 @@ impl App {
                             ],
                         ),
                         Tab::Paint => {
-                            row(ui, &[(Icon::Material, tr(lang, "Material"), None, true)]);
+                            row(
+                                ui,
+                                &[(
+                                    Icon::Material,
+                                    tr(lang, "Material"),
+                                    Some(Action::StartMaterial),
+                                    has_sel,
+                                )],
+                            );
                             sep(ui);
                             row(
                                 ui,

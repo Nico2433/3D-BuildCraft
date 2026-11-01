@@ -14,7 +14,7 @@ const APP_ID: &str = "io.github.nico2433.BuildCraft3D";
 
 const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size WxH] \
 [--tab insert|object|edit|paint|view|help] [--lang es|en] [--select-all] [--menu] \
-[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|cut|cut-bottom|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
+[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|smooth|material|cut|cut-bottom|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
 
 fn main() -> eframe::Result<()> {
     env_logger::init();

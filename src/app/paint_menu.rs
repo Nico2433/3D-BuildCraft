@@ -57,16 +57,36 @@ fn from_hsv(hsv: [f32; 3]) -> Rgba {
     [r, g, b, 0xFF]
 }
 
+/// A square filled with a gradient: lighter at the top left, darker at the bottom right.
+pub(super) fn bevel(p: &egui::Painter, r: egui::Rect, c: Color32) {
+    let mix = |to: Color32, t: f32| {
+        let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+        Color32::from_rgb(m(c.r(), to.r()), m(c.g(), to.g()), m(c.b(), to.b()))
+    };
+    let mut mesh = egui::Mesh::default();
+    for (p, col) in [
+        (r.left_top(), mix(Color32::WHITE, 0.45)),
+        (r.right_top(), c),
+        (r.right_bottom(), mix(Color32::BLACK, 0.3)),
+        (r.left_bottom(), c),
+    ] {
+        mesh.colored_vertex(p, col);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    p.add(mesh);
+}
+
 /// The "Selected" label, a swatch drawn by `paint_swatch` and a chevron, as Paint's and the
 /// Texture tool's bars have them. Returns the area the menus hang from and whether it was
 /// clicked.
 pub(super) fn selected_header(
     ui: &mut egui::Ui,
-    lang: Lang,
+    label: &str,
     paint_swatch: impl FnOnce(&egui::Painter, egui::Rect),
 ) -> (egui::Rect, bool) {
     let label = ui.painter().layout_no_wrap(
-        tr(lang, "Selected").to_owned(),
+        label.to_owned(),
         egui::FontId::proportional(style::LABEL_FONT + 1.3),
         style::TEXT,
     );
@@ -101,9 +121,15 @@ pub(super) fn selected_color(
     color: &mut Rgba,
     menu: &mut PaintMenu,
     recent: &[Rgba],
+    material: bool,
 ) -> bool {
-    let (rect, opening) = selected_header(ui, lang, |p, swatch| {
-        p.rect_filled(swatch, egui::CornerRadius::ZERO, rgb(*color));
+    let label = tr(lang, if material { "Color" } else { "Selected" });
+    let (rect, opening) = selected_header(ui, label, |p, swatch| {
+        if material {
+            bevel(p, swatch, rgb(*color));
+        } else {
+            p.rect_filled(swatch, egui::CornerRadius::ZERO, rgb(*color));
+        }
     });
     if opening {
         *menu = match menu {
@@ -117,7 +143,8 @@ pub(super) fn selected_color(
     match menu {
         PaintMenu::Closed => {}
         PaintMenu::Swatches => {
-            let size = Vec2::new(337.0, 349.0);
+            // Material has no recent colours.
+            let size = Vec2::new(337.0, if material { 252.0 } else { 349.0 });
             let mut next = None;
             let area = egui::Area::new(egui::Id::new("paint_swatches"))
                 .fixed_pos(egui::pos2(rect.right() + 12.0, rect.top() + 18.0))
@@ -146,7 +173,12 @@ pub(super) fn selected_color(
                             style::TEXT,
                         )
                     };
-                    for (k, label) in [tr(lang, "Eyedropper"), tr(lang, "More colors...")]
+                    let first = if material {
+                        "Choose color"
+                    } else {
+                        "Eyedropper"
+                    };
+                    for (k, label) in [tr(lang, first), tr(lang, "More colors...")]
                         .into_iter()
                         .enumerate()
                     {
@@ -168,7 +200,10 @@ pub(super) fn selected_color(
                                 panel.left() + 25.0 + (k % 6) as f32 * 56.0,
                                 top + 28.0 + (k / 6) as f32 * 56.0,
                             );
-                            let r = egui::Rect::from_center_size(centre, Vec2::splat(20.0));
+                            let r = egui::Rect::from_center_size(
+                                centre,
+                                Vec2::splat(if material { 28.0 } else { 20.0 }),
+                            );
                             let hit = ui.interact(
                                 r.expand(6.0),
                                 ui.id().with(("swatch", top as i32, k)),
@@ -182,28 +217,43 @@ pub(super) fn selected_color(
                                     egui::StrokeKind::Inside,
                                 );
                             }
-                            p.rect_filled(r, egui::CornerRadius::ZERO, rgb(*c));
+                            if material {
+                                bevel(&p, r, rgb(*c));
+                                if c == color {
+                                    p.rect_stroke(
+                                        r.expand(5.0),
+                                        egui::CornerRadius::ZERO,
+                                        Stroke::new(2.0_f32, style::TOGGLE_ON),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                            } else {
+                                p.rect_filled(r, egui::CornerRadius::ZERO, rgb(*c));
+                            }
                             if hit.clicked() {
                                 *color = *c;
                                 next = Some(9);
                             }
                         }
                     };
-                    let h = band(40.0, ROW_DARK);
-                    text(h, tr(lang, "Recent colors"));
-                    let r = band(56.0, ROW);
-                    swatches(recent, r.top(), ui);
+                    if !material {
+                        let h = band(40.0, ROW_DARK);
+                        text(h, tr(lang, "Recent colors"));
+                        let r = band(56.0, ROW);
+                        swatches(recent, r.top(), ui);
+                    }
                     let h = band(40.0, ROW_DARK);
                     text(h, tr(lang, "Standard colors"));
                     let r = band(112.0, ROW);
                     swatches(&STANDARD, r.top(), ui);
                 });
             match next {
-                Some(0) => {
+                Some(0) if !material => {
                     dropper = true;
                     *menu = PaintMenu::Closed;
                 }
-                Some(1) => {
+                // Material's "Choose color" opens the full picker, as More colors does.
+                Some(0 | 1) => {
                     let h = Hsva::from_srgb([color[0], color[1], color[2]]);
                     *menu = PaintMenu::More {
                         hsv: [h.h, h.s, h.v],

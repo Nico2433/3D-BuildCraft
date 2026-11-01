@@ -76,6 +76,9 @@ impl App {
                             Some(Tool::Simplify { .. }) => {
                                 Some((tr(lang, "Reduce faces"), Action::ApplySimplify, true))
                             }
+                            Some(Tool::Smooth { .. }) => {
+                                Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
+                            }
                             Some(Tool::Hollow { .. }) => {
                                 Some((tr(lang, "Hollow"), Action::ApplyHollow, true))
                             }
@@ -90,6 +93,9 @@ impl App {
                             }
                             Some(Tool::Texture(_)) => {
                                 Some((tr(lang, "Apply"), Action::ApplyTexture, true))
+                            }
+                            Some(Tool::Material { .. }) => {
+                                Some((tr(lang, "Apply"), Action::ApplyMaterial, true))
                             }
                             Some(Tool::Custom { preview, .. }) => {
                                 Some((tr(lang, "Add"), Action::ApplyCustom, preview.is_ok()))
@@ -222,6 +228,14 @@ impl App {
                         &format!("{}   {faces}", tr(lang, "Original number of faces")),
                     );
                 });
+            }
+            Some(Tool::Smooth { amount, edges, .. }) => {
+                ui.add_space(12.0);
+                style::label(ui, tr(lang, "Smoothness"));
+                style::slider(ui, amount, 0.0..=1.0, 250.0, 0);
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::label(ui, tr(lang, "Smooth edges"));
+                style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"));
             }
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);
@@ -365,12 +379,31 @@ impl App {
             }) => {
                 ui.add_space(8.0);
                 let recent = &self.settings.recent_colors;
-                if super::paint_menu::selected_color(ui, lang, color, menu, recent) {
+                if super::paint_menu::selected_color(ui, lang, color, menu, recent, false) {
                     *dropper = true;
                 }
                 style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, tr(lang, "Coverage"));
                 style::slider(ui, coverage, 0.0..=1.0, 148.0, 0);
+            }
+            Some(Tool::Material {
+                kind,
+                color,
+                menu,
+                type_open,
+                dropper,
+                ..
+            }) => {
+                ui.add_space(12.0);
+                style::label(ui, tr(lang, "Type"));
+                super::material::type_dropdown(ui, lang, kind, *color, type_open);
+                ui.add_space(12.0);
+                super::paint_menu::selected_color(ui, lang, color, menu, &[], true);
+                if style::option(ui, Icon::Eyedropper, tr(lang, "Select material"), *dropper)
+                    .clicked()
+                {
+                    *dropper = !*dropper;
+                }
             }
             Some(Tool::Emboss {
                 params,

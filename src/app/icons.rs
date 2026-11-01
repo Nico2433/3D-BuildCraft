@@ -108,6 +108,7 @@ pub enum Icon {
     ZoomIn,
     ZoomOut,
     Pencil,
+    Eyedropper,
     More,
     /// A square note with a folded corner and a smile: the Texture tool's sticker.
     Sticker,
@@ -834,6 +835,17 @@ impl Pen<'_> {
                     (17.0, 21.0),
                     (8.0, 21.0),
                 ]);
+            }
+            Eyedropper => {
+                self.closed(&[(15.0, 3.0), (21.0, 9.0), (18.0, 12.0), (12.0, 6.0)]);
+                self.closed(&[
+                    (13.0, 8.0),
+                    (16.0, 11.0),
+                    (8.0, 19.0),
+                    (4.0, 20.0),
+                    (5.0, 16.0),
+                ]);
+                self.line(&[(9.0, 14.0), (12.0, 17.0)]);
             }
             More => {
                 for x in [5.0, 12.0, 19.0] {

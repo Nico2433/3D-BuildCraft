@@ -11,7 +11,7 @@ use crate::io::{self, Format, ModelObject, Rgba};
 use crate::mesh::{ray_aabb, ray_triangle, Aabb, Mesh};
 use crate::primitives::Primitive;
 use crate::render::{DrawItem, FrameCallback, Renderer, ViewFlags};
-use crate::scene::{Axis, Object, Scene, PALETTE};
+use crate::scene::{Axis, Material, Object, Scene, PALETTE};
 use crate::settings::{Autosave, ColorMode, Settings, Units};
 use eframe::egui::{
     self, Align2, Color32, Key, KeyboardShortcut, Modifiers, PointerButton, Pos2, Sense, Stroke,
@@ -23,6 +23,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Opacity of a translucent object.
+const TRANSLUCENT_ALPHA: u8 = 128;
 const VIEWPORT_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
 mod add_dialog;
 mod agent;
@@ -31,6 +33,7 @@ mod dialogs;
 mod gizmo;
 mod icons;
 mod jobs;
+mod material;
 mod paint_menu;
 mod picking;
 mod power;
@@ -39,6 +42,7 @@ mod ribbon;
 mod selection;
 mod settle;
 mod side_menu;
+mod smooth;
 mod start;
 mod style;
 mod texture_ui;
@@ -109,6 +113,14 @@ enum Tool {
         plane: CutPlane,
         keep: Keep,
     },
+    /// Smoothness 0..1 and whether sharp edges are smoothed too, previewed in the scene.
+    Smooth {
+        amount: f32,
+        edges: bool,
+        /// The scene, undo depth and unsaved flag before smoothing, for Cancel.
+        before: Box<(Snapshot, usize, bool)>,
+        run: smooth::Run,
+    },
     /// Fraction of faces to remove, 0..1.
     Simplify {
         level: f32,
@@ -155,6 +167,19 @@ enum Tool {
     },
     /// Paint's "Texture": stickers and a brush with a chosen picture.
     Texture(Box<texture_ui::Texture>),
+    /// Paint → Material: the style and colour the selected objects take, shown live.
+    Material {
+        kind: Material,
+        color: Rgba,
+        /// The scene, undo depth and unsaved flag before the change, for Cancel.
+        before: Box<(Snapshot, usize, bool)>,
+        /// The style and colour the scene shows now.
+        shown: (Material, Rgba),
+        menu: paint_menu::PaintMenu,
+        type_open: bool,
+        /// The next click on an object takes its style and colour.
+        dropper: bool,
+    },
     Emboss {
         params: Emboss,
         /// The text solid for `built`, or why it could not be made.
@@ -244,6 +269,7 @@ const CLIP_TEXT: &str = "3D BuildCraft objects";
 /// Labels of the job cards, also how a running job is recognised.
 const REPAIRING: &str = "Repairing...";
 const LOADING: &str = "Loading...";
+const SMOOTHING: &str = "Smoothing...";
 
 struct Toast {
     text: String,
@@ -286,13 +312,18 @@ enum Action {
     StartSimplify,
     ApplySimplify,
     ApplyCut,
+    /// Smooths the selection at once (for the assistant).
     Smooth,
+    StartSmooth,
+    ApplySmooth,
     ExtrudeDown,
     StartHollow,
     ApplyHollow,
     StartEmboss,
     ApplyEmboss,
     StartPaint,
+    StartMaterial,
+    ApplyMaterial,
     /// Opens Paint's colour list, or with `true` its "more colours" panel (screenshots).
     PaintMenu(bool),
     ApplyPaint,
@@ -588,6 +619,46 @@ impl App {
             _ => None,
         };
         app.actions.extend(start);
+        // `material`, or for screenshots `material-type` and `material-color` (with that menu
+        // open), `material-realistic` and `material-translucent`: all in green.
+        if let Some(t) = launch
+            .tool
+            .as_deref()
+            .and_then(|t| t.strip_prefix("material"))
+        {
+            app.apply(Action::StartMaterial, &cc.egui_ctx);
+            if let (
+                Some(Tool::Material {
+                    kind,
+                    color,
+                    menu,
+                    type_open,
+                    ..
+                }),
+                false,
+            ) = (&mut app.tool, t.is_empty())
+            {
+                *color = [0x21, 0xBB, 0x4C, 0xFF];
+                match t {
+                    "-type" => *type_open = true,
+                    "-color" => *menu = paint_menu::PaintMenu::Swatches,
+                    "-realistic" => *kind = Material::Realistic,
+                    "-translucent" => *kind = Material::Translucent,
+                    _ => {}
+                }
+            }
+        }
+        // `smooth` or, for screenshots, `smooth-0.6` with the slider at that value.
+        if let Some(t) = launch
+            .tool
+            .as_deref()
+            .and_then(|t| t.strip_prefix("smooth"))
+        {
+            app.apply(Action::StartSmooth, &cc.egui_ctx);
+            if let Some(Tool::Smooth { amount, .. }) = &mut app.tool {
+                *amount = t.trim_start_matches('-').parse().unwrap_or(0.0);
+            }
+        }
         if let Some(spec) = launch.measure {
             app.tool = Some(Tool::measure_preset(&spec));
         }
@@ -715,6 +786,7 @@ impl App {
                     fixed < total,
                 );
             }
+            jobs::Done::Smoothed { gen, result } => self.smooth_done(gen, result),
             jobs::Done::Loaded {
                 path,
                 replace_scene,
@@ -1226,6 +1298,17 @@ impl App {
                     self.edit(|s| s.cut_selected(&plane, keep));
                 }
             }
+            Action::StartSmooth => {
+                if !self.scene.selection.is_empty() {
+                    self.tool = Some(Tool::Smooth {
+                        amount: 0.0,
+                        edges: true,
+                        before: Box::new((self.snapshot(), self.history.depth(), self.scene.dirty)),
+                        run: smooth::Run::new(self.scene.selected_ids(), 0.0, true),
+                    });
+                }
+            }
+            Action::ApplySmooth => self.apply_smooth(),
             Action::Smooth => {
                 self.modify_selected(crate::solid::smooth);
             }
@@ -1266,8 +1349,28 @@ impl App {
                     dropper: false,
                 });
             }
+            Action::StartMaterial => {
+                if let Some(o) = self.scene.selected().next() {
+                    let kind = match o.material {
+                        Material::None => Material::Simple,
+                        m => m,
+                    };
+                    self.tool = Some(Tool::Material {
+                        kind,
+                        color: o.color,
+                        before: Box::new((self.snapshot(), self.history.depth(), self.scene.dirty)),
+                        shown: (kind, o.color),
+                        menu: Default::default(),
+                        type_open: false,
+                        dropper: false,
+                    });
+                }
+            }
+            Action::ApplyMaterial => self.apply_material(),
             Action::PaintMenu(more) => {
-                if let Some(Tool::Paint { color, menu, .. }) = &mut self.tool {
+                if let Some(Tool::Paint { color, menu, .. } | Tool::Material { color, menu, .. }) =
+                    &mut self.tool
+                {
                     let h = egui::ecolor::Hsva::from_srgb([color[0], color[1], color[2]]);
                     *menu = if more {
                         paint_menu::PaintMenu::More {
@@ -1355,7 +1458,12 @@ impl App {
             Action::CancelTool => {
                 // Cancelling an interactive edit restores the scene and undo depth.
                 let before = match self.tool.take() {
-                    Some(Tool::Paint { before, .. } | Tool::Settle { before, .. }) => Some(*before),
+                    Some(
+                        Tool::Paint { before, .. }
+                        | Tool::Settle { before, .. }
+                        | Tool::Smooth { before, .. }
+                        | Tool::Material { before, .. },
+                    ) => Some(*before),
                     Some(Tool::Texture(t)) => Some(*t.before),
                     _ => None,
                 };
@@ -1505,6 +1613,8 @@ impl App {
 impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
+        let smoothing = matches!(&self.tool, Some(Tool::Smooth { amount, edges, run, .. })
+            if !run.is_shown(*amount, *edges));
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };
@@ -1528,7 +1638,8 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        if *frames > 0 {
+        // Wait for a preview that is still being computed.
+        if *frames > 0 && self.jobs.is_empty() && !smoothing {
             *frames -= 1;
             if *frames == 0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -1599,6 +1710,8 @@ impl eframe::App for App {
         }
         let jobs_before = self.jobs.len();
         self.collect_jobs();
+        self.smooth_step(ctx);
+        self.material_step();
         self.reclaim_after_work(ctx, picking_ready || self.jobs.len() != jobs_before);
         if !self.jobs.is_empty() {
             // Keeps the progress bars moving.
@@ -1628,6 +1741,9 @@ impl eframe::App for App {
 
         for a in std::mem::take(&mut self.actions) {
             self.apply(a, ctx);
+        }
+        if self.clamp_cut_plane() {
+            ctx.request_repaint();
         }
         self.serve_agent(ctx);
         self.sync_listener(ctx);

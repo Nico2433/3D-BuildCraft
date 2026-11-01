@@ -350,7 +350,7 @@ pub fn blue_fields(ui: &mut Ui) {
 pub const FIELD_H: f32 = 33.0;
 
 /// The box of a tool bar field: dark blue with a light border.
-fn field_box(ui: &Ui, rect: Rect, hovered: bool) {
+pub fn field_box(ui: &Ui, rect: Rect, hovered: bool) {
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::ZERO, BLUE_FIELD);
     let edge = if hovered { TEXT } else { BLUE_FIELD_BORDER };
