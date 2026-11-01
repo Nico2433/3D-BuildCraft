@@ -79,6 +79,13 @@ impl App {
             return;
         };
         let warnings = self.print_warnings();
+        // Back from the slicer: its filaments may have changed there.
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let was_focused = egui::Id::new("print_focused");
+        if focused && !ctx.data(|d| d.get_temp(was_focused).unwrap_or(true)) {
+            self.load_filaments();
+        }
+        ctx.data_mut(|d| d.insert_temp(was_focused, focused));
 
         egui::TopBottomPanel::bottom("print_bar")
             .exact_height(62.0)
@@ -176,6 +183,10 @@ impl App {
                     let selected = p == Some(page);
                     if nav_item(ui, icon, label, selected).clicked() {
                         match p {
+                            Some(Page::Material) => {
+                                self.load_filaments();
+                                self.print = p;
+                            }
                             Some(p) => self.print = Some(p),
                             None => self.print_status_open = true,
                         }
@@ -337,12 +348,18 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// The colours in the scene: objects' and painted areas'.
+    /// The colours that print: painted areas', and objects' where faces are left unpainted.
     fn scene_colors(&self) -> Vec<Rgba> {
         let mut colors: Vec<Rgba> = Vec::new();
         for o in &self.scene.objects {
-            let faces = (0..o.mesh.triangles.len()).filter_map(|i| o.mesh.face_color(i));
-            for c in std::iter::once(o.color).chain(faces) {
+            if o.mesh.colors.is_empty() {
+                if !colors.contains(&o.color) {
+                    colors.push(o.color);
+                }
+                continue;
+            }
+            let faces = (0..o.mesh.triangles.len()).map(|i| o.mesh.face_color(i));
+            for c in faces.map(|c| c.unwrap_or(o.color)) {
                 if !colors.contains(&c) {
                     colors.push(c);
                 }
