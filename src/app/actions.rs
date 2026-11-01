@@ -167,9 +167,7 @@ impl App {
             }
             Action::ApplySettle => {
                 if let Some(Tool::Settle { before, .. }) = self.tool.take() {
-                    let (snapshot, depth, _) = *before;
-                    self.history.truncate(depth);
-                    self.history.push(snapshot);
+                    self.commit(*before);
                     self.handle = None;
                 }
             }
@@ -514,16 +512,9 @@ impl App {
             Some(Tool::Texture(t)) => Some(*t.before),
             _ => None,
         };
-        if let Some((snapshot, depth, dirty)) = before {
-            self.restore_snapshot(snapshot);
-            self.history.truncate(depth);
-            self.scene.dirty = dirty;
+        if let Some(before) = before {
+            self.roll_back(before);
             self.handle = None;
         }
-    }
-
-    /// What a tool that previews on the live scene restores on Cancel: the scene, undo depth and dirty flag.
-    fn checkpoint(&self) -> Box<(Snapshot, usize, bool)> {
-        Box::new((self.snapshot(), self.history.depth(), self.scene.dirty))
     }
 }

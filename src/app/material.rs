@@ -190,9 +190,7 @@ impl App {
 
     pub(super) fn apply_material(&mut self) {
         if let Some(Tool::Material { color, before, .. }) = self.tool.take() {
-            let (snapshot, depth, _) = *before;
-            self.history.truncate(depth);
-            self.history.push(snapshot);
+            self.commit(*before);
             self.scene.dirty = true;
             self.remember_color(color);
         }

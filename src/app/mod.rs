@@ -107,7 +107,7 @@ enum TransformMode {
 enum Tool {
     Settle {
         bodies: Vec<settle::Body>,
-        before: Box<(Snapshot, usize, bool)>,
+        before: Box<Checkpoint>,
     },
     Measure {
         points: Vec<Vec3>,
@@ -123,7 +123,7 @@ enum Tool {
         amount: f32,
         edges: bool,
         /// The scene, undo depth and unsaved flag before smoothing, for Cancel.
-        before: Box<(Snapshot, usize, bool)>,
+        before: Box<Checkpoint>,
         run: smooth::Run,
     },
     /// Fraction of faces to remove, 0..1.
@@ -165,7 +165,7 @@ enum Tool {
         color: Rgba,
         coverage: f32,
         /// The scene, undo depth and unsaved flag before painting, for Cancel.
-        before: Box<(Snapshot, usize, bool)>,
+        before: Box<Checkpoint>,
         menu: paint_menu::PaintMenu,
         /// The next click on an object takes its colour instead of painting.
         dropper: bool,
@@ -177,7 +177,7 @@ enum Tool {
         kind: Material,
         color: Rgba,
         /// The scene, undo depth and unsaved flag before the change, for Cancel.
-        before: Box<(Snapshot, usize, bool)>,
+        before: Box<Checkpoint>,
         /// The style and colour the scene shows now.
         shown: (Material, Rgba),
         menu: paint_menu::PaintMenu,
@@ -367,6 +367,9 @@ pub struct App {
     screenshot: Option<(PathBuf, u32)>,
 }
 
+/// The scene before an interactive tool started: snapshot, undo depth and dirty flag.
+type Checkpoint = (Snapshot, usize, bool);
+
 impl App {
     // ----- edits -------------------------------------------------------------
 
@@ -382,6 +385,26 @@ impl App {
         self.scene.selection = s.selection;
         self.scene.dirty = true;
         self.refresh_invalid();
+    }
+
+    /// Where an interactive tool (paint, settle, smooth, material, texture) starts.
+    fn checkpoint(&self) -> Box<Checkpoint> {
+        Box::new((self.snapshot(), self.history.depth(), self.scene.dirty))
+    }
+
+    /// Apply: the whole tool session becomes one undo step.
+    fn commit(&mut self, before: Checkpoint) {
+        let (snapshot, depth, _) = before;
+        self.history.truncate(depth);
+        self.history.push(snapshot);
+    }
+
+    /// Cancel: the scene, undo depth and dirty flag go back to the checkpoint.
+    fn roll_back(&mut self, before: Checkpoint) {
+        let (snapshot, depth, dirty) = before;
+        self.restore_snapshot(snapshot);
+        self.history.truncate(depth);
+        self.scene.dirty = dirty;
     }
 
     fn edit(&mut self, f: impl FnOnce(&mut Scene)) {

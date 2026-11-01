@@ -138,9 +138,7 @@ impl App {
             return;
         }
         if let Some(Tool::Smooth { before, .. }) = self.tool.take() {
-            let (snapshot, depth, _) = *before;
-            self.history.truncate(depth);
-            self.history.push(snapshot);
+            self.commit(*before);
             self.scene.dirty = true;
             self.refresh_invalid();
         }

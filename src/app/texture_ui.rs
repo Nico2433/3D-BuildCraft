@@ -81,7 +81,7 @@ impl Thumbs {
 /// State of the Texture tool.
 pub(super) struct Texture {
     /// The scene, undo depth and unsaved flag before the tool, for Cancel.
-    pub before: Box<(Snapshot, usize, bool)>,
+    pub before: Box<super::Checkpoint>,
     /// The picture in use: a registry layer.
     layer: u16,
     mode: Mode,
@@ -126,7 +126,7 @@ enum Pick {
 
 impl Texture {
     /// Starts with the first texture selected.
-    pub fn new(before: Box<(Snapshot, usize, bool)>) -> Self {
+    pub fn new(before: Box<super::Checkpoint>) -> Self {
         Self {
             before,
             layer: texture::layer_of(Kind::Paper).unwrap_or(0),
