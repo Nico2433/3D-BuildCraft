@@ -14,7 +14,7 @@ const APP_ID: &str = "io.github.nico2433.BuildCraft3D";
 
 const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size WxH] \
 [--tab insert|object|edit|paint|view|help] [--lang es|en] [--select-all] [--menu] \
-[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--tool settings|settle|cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
+[--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -45,6 +45,7 @@ fn main() -> eframe::Result<()> {
             Some("--mcp") => launch.mcp = true,
             Some("--mode") => launch.mode = value(),
             Some("--drag") => launch.drag = value(),
+            Some("--measure") => launch.measure = value(),
             Some(s) if s.starts_with("--") => {
                 eprintln!("{USAGE}");
                 std::process::exit(2);
