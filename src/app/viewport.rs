@@ -706,8 +706,8 @@ impl App {
                             painter.line_segment(
                                 [a, b],
                                 Stroke::new(
-                                    5.0 / ctx.pixels_per_point(),
-                                    Color32::from_rgba_unmultiplied(0xD8, 0xD8, 0xD8, 190),
+                                    11.0 / ctx.pixels_per_point(),
+                                    Color32::from_white_alpha(13),
                                 ),
                             );
                         }
@@ -762,12 +762,12 @@ impl App {
                 return Some(gizmo::plane_arrow(edge, plane.normal(), &to_screen));
             }
         }
-        // The Split rings turn about the plane's centre.
+        // The Split rings turn about the plane's middle.
         let mut around = self.scene.selection_aabb();
         if let Some(Tool::Cut { plane, .. }) = &self.tool {
             around = Aabb {
-                min: plane.center,
-                max: plane.center,
+                min: plane.point(),
+                max: plane.point(),
             };
         }
         Some(gizmo::build(

@@ -263,12 +263,14 @@ impl Gizmo {
             }
         };
         if let Some([a, b]) = self.guide {
-            let bar = Color32::from_rgba_unmultiplied(235, 235, 235, 200);
-            painter.line_segment([a, b], Stroke::new(4.0_f32, bar));
+            // A bar the original shows at about 25 % white. Translucent white blends
+            // brighter than its alpha says here, so the value is small.
+            let width = 13.0 / painter.ctx().pixels_per_point();
+            painter.line_segment([a, b], Stroke::new(width, Color32::from_white_alpha(12)));
         }
         if self.sweep.len() > 2 {
             let mut fan = egui::Mesh::default();
-            let wedge = Color32::from_rgba_unmultiplied(255, 255, 255, 70);
+            let wedge = Color32::from_white_alpha(13);
             for p in &self.sweep {
                 fan.colored_vertex(*p, wedge);
             }

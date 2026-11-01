@@ -1181,10 +1181,7 @@ impl App {
             }
             Action::StartCut => {
                 let mut plane = CutPlane::at_height(0.0);
-                // It starts at the bottom of the selection, so the offset reads 0 there.
-                let b = self.scene.selection_aabb();
-                plane.center = b.center();
-                plane.center.z = b.min.z;
+                plane.center = self.scene.selection_aabb().center();
                 self.tool = Some(Tool::Cut {
                     plane,
                     keep: Keep::Top,
