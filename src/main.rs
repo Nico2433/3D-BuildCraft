@@ -16,8 +16,8 @@ const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size 
 [--tab insert|object|edit|paint|view|help] [--lang es|en] [--select-all] [--menu] \
 [--zoom F] [--image file] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|smooth|material|cut|cut-bottom|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|texture-split|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about]";
 
-fn main() -> eframe::Result<()> {
-    env_logger::init();
+/// Reads the command line: the launch options and the window size.
+fn parse_args() -> (app::Launch, [f32; 2]) {
     let mut launch = app::Launch::default();
     let mut size = [1280.0, 800.0];
     let mut args = std::env::args_os().skip(1);
@@ -53,15 +53,12 @@ fn main() -> eframe::Result<()> {
             _ => launch.file = Some(PathBuf::from(arg)),
         }
     }
-    if launch.mcp {
-        if let Err(e) = mcp::bridge() {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-        return Ok(());
-    }
+    (launch, size)
+}
+
+fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
     let device_descriptor = eframe::egui_wgpu::WgpuSetupCreateNew::default().device_descriptor;
-    let options = eframe::NativeOptions {
+    eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: eframe::wgpu::PresentMode::AutoNoVsync,
@@ -146,7 +143,20 @@ fn main() -> eframe::Result<()> {
             let _ = builder;
         })),
         ..Default::default()
-    };
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    env_logger::init();
+    let (launch, size) = parse_args();
+    if launch.mcp {
+        if let Err(e) = mcp::bridge() {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let options = native_options(size);
     eframe::run_native(
         "3D BuildCraft",
         options,
