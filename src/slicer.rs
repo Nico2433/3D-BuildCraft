@@ -229,11 +229,16 @@ pub fn filaments(slicer: &Slicer, printer: Option<&str>) -> Vec<Filament> {
     Config::of(slicer).map_or_else(Vec::new, |c| c.filaments(printer))
 }
 
-/// OrcaSlicer's `Metadata/project_settings.config` for printing with `printer` and its filament
-/// slots: the printer, process and filament presets with everything they inherit, so the slicer
-/// opens the model with them. None when a preset cannot be read.
-pub fn project_settings(slicer: &Slicer, printer: &str) -> Option<String> {
-    Config::of(slicer)?.project_settings(printer)
+/// The print (process) profiles usable with `printer`, the one Orca would pick first. Empty when unknown.
+pub fn processes(slicer: &Slicer, printer: &str) -> Vec<String> {
+    Config::of(slicer).map_or_else(Vec::new, |c| c.processes(printer))
+}
+
+/// OrcaSlicer's `Metadata/project_settings.config` for printing with `printer`, `process` (None:
+/// the printer's own or last-used one) and its filament slots: the presets with everything they
+/// inherit, so the slicer opens the model with them. None when a preset cannot be read.
+pub fn project_settings(slicer: &Slicer, printer: &str, process: Option<&str>) -> Option<String> {
+    Config::of(slicer)?.project_settings(printer, process)
 }
 
 /// The configuration folder of OrcaSlicer or Bambu Studio and its app name.
@@ -462,24 +467,9 @@ impl Config {
                 .map(|(k, _)| k.clone())
                 .collect()
         });
-        let mut chain = Vec::new();
-        let mut next = user.or_else(|| self.system_preset(kind, name));
-        // Inheritance is a few levels deep; the limit stops a loop.
-        while let Some(preset) = next.take().filter(|_| chain.len() < 16) {
-            let parent = preset["inherits"]
-                .as_str()
-                .filter(|p| !p.is_empty())
-                .map(str::to_owned);
-            chain.push(preset);
-            if let Some(parent) = parent {
-                next = Some(self.system_preset(kind, &parent)?);
-            }
-        }
-        let mut settings = Map::new();
-        for preset in chain.into_iter().rev() {
-            settings.extend(preset.as_object()?.clone());
-        }
-        (!settings.is_empty()).then_some((Value::Object(settings), changed))
+        let preset = user.or_else(|| self.system_preset(kind, name))?;
+        let settings = merged(preset, |parent| self.system_preset(kind, parent))?;
+        Some((settings, changed))
     }
 
     /// A system preset, looked up in the indexes of the vendors the user installed.
@@ -501,13 +491,88 @@ impl Config {
         })
     }
 
-    fn project_settings(&self, printer: &str) -> Option<String> {
+    /// The process the slicer remembers for `printer`, else the printer's default one.
+    fn default_process(&self, printer: &str, machine: &Value) -> Option<String> {
+        self.slots(Some(printer))
+            .and_then(|s| s["process"].as_str().or(s["print"].as_str()))
+            .or(machine["default_print_profile"].as_str())
+            .map(str::to_owned)
+    }
+
+    /// The process presets the slicer offers for `printer`: the user's, then the system ones of
+    /// the installed vendors, with the one it would pick first at the front.
+    fn processes(&self, printer: &str) -> Vec<String> {
+        let Some((machine, _)) = self.preset("machine", printer) else {
+            return Vec::new();
+        };
+        // A user printer is matched by the system printer it inherits.
+        let ids = [Value::from(printer), machine["inherits"].clone()];
+        let fits = |p: &Value| match p["compatible_printers"]
+            .as_array()
+            .filter(|l| !l.is_empty())
+        {
+            Some(list) => list.iter().any(|x| ids.contains(x)),
+            // shortcut: a compatible_printers_condition is not evaluated and leaves the preset
+            // out (a few vendors such as Prusa use them); evaluate it if their presets are missed.
+            None => p["compatible_printers_condition"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty(),
+        };
+        let mut names: Vec<String> =
+            list_json(&self.dir.join(format!("user/{}/process", self.folder)))
+                .into_iter()
+                .filter(|n| self.preset("process", n).is_some_and(|(p, _)| fits(&p)))
+                .collect();
+        let mut vendors: Vec<&str> = self.conf["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["vendor"].as_str())
+            .collect();
+        vendors.sort_unstable();
+        vendors.dedup();
+        for vendor in vendors {
+            let Some((root, index)) = self.vendor(vendor) else {
+                continue;
+            };
+            // Each file read once: a vendor has hundreds of processes sharing a few parents.
+            let files: Vec<(&str, Value)> = index["process_list"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| {
+                    let file = read_json(&root.join(vendor).join(e["sub_path"].as_str()?))?;
+                    Some((e["name"].as_str()?, file))
+                })
+                .collect();
+            for (name, file) in &files {
+                let usable = file["instantiation"] != "false"
+                    && merged(file.clone(), |p| {
+                        files.iter().find(|(n, _)| *n == p).map(|(_, f)| f.clone())
+                    })
+                    .is_some_and(|p| fits(&p));
+                if usable {
+                    names.push((*name).to_owned());
+                }
+            }
+        }
+        if let Some(i) = self
+            .default_process(printer, &machine)
+            .and_then(|d| names.iter().position(|n| *n == d))
+        {
+            let first = names.remove(i);
+            names.insert(0, first);
+        }
+        names
+    }
+
+    fn project_settings(&self, printer: &str, process: Option<&str>) -> Option<String> {
         let (machine, machine_changed) = self.preset("machine", printer)?;
         let slots = self.slots(Some(printer));
-        let process_name = slots
-            .and_then(|s| s["process"].as_str().or(s["print"].as_str()))
-            .or(machine["default_print_profile"].as_str())?
-            .to_owned();
+        let process_name = process
+            .map(str::to_owned)
+            .or_else(|| self.default_process(printer, &machine))?;
         let (process, process_changed) = self.preset("process", &process_name)?;
         let (names, colors) = self.slot_names(Some(printer));
         let filaments = names
@@ -608,6 +673,28 @@ impl Config {
         }
         serde_json::to_string_pretty(&out).ok()
     }
+}
+
+/// `preset` over the presets it inherits, found with `parent`. None when one is missing.
+fn merged(preset: Value, parent: impl Fn(&str) -> Option<Value>) -> Option<Value> {
+    let mut chain = Vec::new();
+    let mut next = Some(preset);
+    // Inheritance is a few levels deep; the limit stops a loop.
+    while let Some(preset) = next.take().filter(|_| chain.len() < 16) {
+        let base = preset["inherits"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned);
+        chain.push(preset);
+        if let Some(base) = base {
+            next = Some(parent(&base)?);
+        }
+    }
+    let mut settings = Map::new();
+    for preset in chain.into_iter().rev() {
+        settings.extend(preset.as_object()?.clone());
+    }
+    (!settings.is_empty()).then_some(Value::Object(settings))
 }
 
 /// Where the slicer keeps the system profiles it ships with, beside its program.
@@ -766,7 +853,11 @@ mod tests {
                     {"name": "M 0.4", "sub_path": "machine/M 0.4.json"},
                     {"name": "M 0.8", "sub_path": "machine/M 0.8.json"},
                     {"name": "M Pro 0.4", "sub_path": "machine/M Pro 0.4.json"}],
-                "process_list": [{"name": "Fine", "sub_path": "process/Fine.json"}],
+                "process_list": [{"name": "Fine", "sub_path": "process/Fine.json"},
+                    {"name": "base", "sub_path": "process/base.json"},
+                    {"name": "Coarse", "sub_path": "process/Coarse.json"},
+                    {"name": "Big", "sub_path": "process/Big.json"},
+                    {"name": "Cond", "sub_path": "process/Cond.json"}],
                 "filament_list": [{"name": "PLA", "sub_path": "filament/PLA.json"}]}"#,
             ),
             (
@@ -789,6 +880,26 @@ mod tests {
             (
                 "profiles/V/process/Fine.json",
                 r#"{"name": "Fine", "layer_height": "0.1"}"#,
+            ),
+            (
+                "profiles/V/process/base.json",
+                r#"{"name": "base", "instantiation": "false", "compatible_printers": ["M 0.4"]}"#,
+            ),
+            (
+                "profiles/V/process/Coarse.json",
+                r#"{"name": "Coarse", "inherits": "base", "instantiation": "true", "layer_height": "0.3"}"#,
+            ),
+            (
+                "profiles/V/process/Big.json",
+                r#"{"name": "Big", "compatible_printers": ["M 0.8"]}"#,
+            ),
+            (
+                "profiles/V/process/Cond.json",
+                r#"{"name": "Cond", "compatible_printers_condition": "nozzle_diameter[0]==0.4"}"#,
+            ),
+            (
+                "user/42/process/Mine fast.json",
+                r#"{"name": "Mine fast", "inherits": "Coarse"}"#,
             ),
             (
                 "profiles/V/filament/PLA.json",
@@ -818,13 +929,18 @@ mod tests {
         };
         assert_eq!(names(None), ["Mine", "PLA"]);
         assert_eq!(names(Some("Gone")), ["PLA"]);
+        // The remembered process first, the user's before the system ones.
+        assert_eq!(config.processes("K1M"), ["Fine", "Mine fast", "Coarse"]);
+        assert_eq!(config.processes("M 0.8"), ["Fine", "Big"]);
+        assert!(config.processes("Unknown").is_empty());
     }
 
     #[test]
     fn project_settings_resolve_the_chosen_presets() {
         let dir = tempfile::tempdir().unwrap();
         let config = orca_config(dir.path());
-        let s: Value = serde_json::from_str(&config.project_settings("K1M").unwrap()).unwrap();
+        let s: Value =
+            serde_json::from_str(&config.project_settings("K1M", None).unwrap()).unwrap();
         assert_eq!(s["printer_settings_id"], "K1M");
         assert_eq!(s["print_settings_id"], "Fine");
         assert_eq!(s["layer_height"], "0.1");
@@ -857,7 +973,11 @@ mod tests {
             "filament_extruder_variant;filament_type;nozzle_temperature"
         );
         assert_eq!(differ[3], "machine_start_gcode");
-        assert!(config.project_settings("Unknown").is_none());
+        assert!(config.project_settings("Unknown", None).is_none());
+        let s: Value =
+            serde_json::from_str(&config.project_settings("K1M", Some("Coarse")).unwrap()).unwrap();
+        assert_eq!(s["print_settings_id"], "Coarse");
+        assert_eq!(s["layer_height"], "0.3");
     }
 
     #[test]

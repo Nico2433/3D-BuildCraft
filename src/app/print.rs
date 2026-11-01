@@ -66,7 +66,7 @@ impl App {
                         .printer
                         .as_deref()
                         .zip(self.chosen_slicer())
-                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p));
+                        .and_then(|(p, s)| crate::slicer::project_settings(&s, p, None));
                     io::threemf::write_for_slicer(
                         &path,
                         &models,
