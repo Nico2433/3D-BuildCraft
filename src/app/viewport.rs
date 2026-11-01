@@ -129,7 +129,7 @@ impl App {
                     }
                 }
                 if resp.drag_started_by(PointerButton::Primary)
-                    && self.tool.is_none()
+                    && matches!(self.tool, None | Some(Tool::Cut { .. }))
                     && self.marquee.is_none()
                     && !marquee_modifier
                 {
@@ -137,7 +137,7 @@ impl App {
                     let grabbed = at.zip(gizmo.as_ref()).and_then(|(p, g)| g.grab(p));
                     // Pressed on a selected object (and no handle): drag it on the floor.
                     let on_selection = at
-                        .filter(|_| grabbed.is_none())
+                        .filter(|_| grabbed.is_none() && self.tool.is_none())
                         .and_then(|p| {
                             let (o, d) = self.camera.ray(to_ndc(p), aspect);
                             self.pick(o, d)
@@ -152,6 +152,7 @@ impl App {
                             turned: 0.0,
                             start: self.scene.objects.clone(),
                             aabb: self.scene.selection_aabb(),
+                            cut: self.cut_plane(),
                             before: self.snapshot(),
                         });
                     }
@@ -176,6 +177,7 @@ impl App {
                             turned: 0.0,
                             start: self.scene.objects.clone(),
                             aabb: self.scene.selection_aabb(),
+                            cut: self.cut_plane(),
                             before,
                         });
                     }
@@ -240,7 +242,7 @@ impl App {
                         Some(gizmo::Kind::Move(2)) => &[2],
                         _ => &[],
                     };
-                    if !ui.input(|i| i.modifiers.alt) {
+                    if self.tool.is_none() && !ui.input(|i| i.modifiers.alt) {
                         snap_guides = self.snap_movement(axes, rect, aspect);
                     }
                 }
@@ -329,7 +331,7 @@ impl App {
                         if let Some(gizmo::Handle {
                             kind: gizmo::Kind::Turn(axis),
                             ..
-                        }) = h.handle
+                        }) = h.handle.filter(|_| self.tool.is_none())
                         {
                             self.rotate_angles[axis] = (self.rotate_angles[axis]
                                 + self.rotation_drag_angle(h.turned))
@@ -520,6 +522,14 @@ impl App {
                     eye: self.camera.eye(),
                     viewport: glam::Vec2::new(rect.width(), rect.height())
                         * ui.ctx().pixels_per_point(),
+                    // The Split preview shows only the part that will be kept.
+                    clip: match &self.tool {
+                        Some(Tool::Cut { plane, keep }) if *keep != Keep::Both => {
+                            let n = plane.normal() * if *keep == Keep::Top { -1.0 } else { 1.0 };
+                            Some((n, n.dot(plane.point())))
+                        }
+                        _ => None,
+                    },
                     flags: ViewFlags {
                         shading: r.shading,
                         smoothing: r.smoothing,
@@ -632,21 +642,22 @@ impl App {
                         );
                     }
                 }
-                if let Some(Tool::Cut { z, .. }) = &self.tool {
-                    // The cutting plane, a little wider than the selection.
-                    let b = self.scene.selection_aabb();
-                    let pad = b.size().max_element() * 0.15;
-                    let (lo, hi) = (b.min - pad, b.max + pad);
-                    let corners = [(lo.x, lo.y), (hi.x, lo.y), (hi.x, hi.y), (lo.x, hi.y)];
-                    let pts: Vec<Pos2> = corners
+                if let Some(Tool::Cut { plane, .. }) = &self.tool {
+                    // The cutting plane: green to move, blue to turn.
+                    let pts: Vec<Pos2> = self
+                        .cut_slab(plane)
                         .iter()
-                        .filter_map(|(x, y)| to_screen(Vec3::new(*x, *y, *z)))
+                        .filter_map(|p| to_screen(*p))
                         .collect();
                     if pts.len() == 4 {
+                        let (fill, line) = match self.mode {
+                            TransformMode::Rotate => (gizmo::BLUE, gizmo::BLUE),
+                            _ => (Color32::from_rgb(0x4C, 0xC0, 0x4C), gizmo::GREEN),
+                        };
                         painter.add(egui::Shape::convex_polygon(
                             pts,
-                            Color32::from_rgba_unmultiplied(0x4C, 0xC0, 0x4C, 90),
-                            Stroke::new(1.5_f32, Color32::from_rgb(0x4C, 0xE0, 0x4C)),
+                            fill.gamma_multiply(0.35),
+                            Stroke::new(1.5_f32, line),
                         ));
                     }
                 }
@@ -678,7 +689,11 @@ impl App {
     /// The handles around the selection, in screen points; `None` when nothing is
     /// selected or a tool or the print view is open.
     fn gizmo(&self, aspect: f32, rect: egui::Rect) -> Option<gizmo::Gizmo> {
-        if self.scene.selection.is_empty() || self.tool.is_some() || self.print.is_some() {
+        let splitting = matches!(self.tool, Some(Tool::Cut { .. }));
+        if self.scene.selection.is_empty()
+            || (self.tool.is_some() && !splitting)
+            || self.print.is_some()
+        {
             return None;
         }
         let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
@@ -686,15 +701,47 @@ impl App {
             let kind = h.handle?.kind;
             Some((kind, self.rotation_drag_angle(h.turned)))
         });
+        let mut angles = self.rotate_angles;
+        if let Some(Tool::Cut { plane, .. }) = &self.tool {
+            // Where the plane started the drag, so the handles do not follow it.
+            let at_start = self.handle.as_ref().and_then(|h| h.cut).unwrap_or(*plane);
+            angles = at_start.rotation.to_array();
+            if self.mode == TransformMode::Move {
+                // The arrow sits on the plane's edge nearest the bottom of the screen.
+                let slab = self.cut_slab(plane);
+                let edge = (0..4)
+                    .map(|i| (slab[i] + slab[(i + 1) % 4]) * 0.5)
+                    .filter_map(|p| Some((p, to_screen(p)?.y)))
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .map_or(plane.point(), |e| e.0);
+                let guide = drag.map(|_| [plane.center, plane.point()]);
+                return Some(gizmo::plane_arrow(edge, plane.normal(), guide, &to_screen));
+            }
+        }
         Some(gizmo::build(
             self.mode,
             &self.scene.selection_aabb(),
             self.scene.selection_radius(),
             self.camera.eye(),
-            self.rotate_angles,
+            angles,
             drag,
             &to_screen,
         ))
+    }
+
+    /// The Split tool's plane, if it is open.
+    fn cut_plane(&self) -> Option<CutPlane> {
+        match &self.tool {
+            Some(Tool::Cut { plane, .. }) => Some(*plane),
+            _ => None,
+        }
+    }
+
+    /// The corners of the square slab drawn for the Split plane, as wide as the rings.
+    fn cut_slab(&self, plane: &CutPlane) -> [Vec3; 4] {
+        let (q, r) = (plane.quat(), self.scene.selection_radius());
+        let (u, v, p) = (q * Vec3::X * r, q * Vec3::Y * r, plane.point());
+        [p - u - v, p + u - v, p + u + v, p - u + v]
     }
 
     /// A point of the scene on screen in the view `rect`, if it is in front of the camera.
@@ -811,6 +858,7 @@ impl App {
             turned: amount,
             start: start.clone(),
             aabb: b0,
+            cut: self.cut_plane(),
             before: self.snapshot(),
         });
         self.drag_handle(kind, amount, start, &b0, true);
@@ -828,6 +876,27 @@ impl App {
     ) {
         use gizmo::Kind;
         let snap = self.settings.snap && !unsnapped;
+        // The Split tool drags its plane, not the objects.
+        if let (Some(Tool::Cut { plane, .. }), Some(mut moved)) =
+            (&mut self.tool, self.handle.as_ref().and_then(|h| h.cut))
+        {
+            match kind {
+                Kind::Move(_) => moved.offset += if snap { amount.round() } else { amount },
+                Kind::Turn(axis) => {
+                    let mut along = Vec3::ZERO;
+                    along[axis] = 1.0;
+                    let deg = if self.settings.snap {
+                        (amount / 5.0).round() * 5.0
+                    } else {
+                        amount
+                    };
+                    moved.turn(glam::Quat::from_axis_angle(along, deg.to_radians()));
+                }
+                _ => {}
+            }
+            *plane = moved;
+            return;
+        }
         self.scene.objects = start;
         let ids = self.scene.selected_ids();
         match kind {
@@ -905,6 +974,8 @@ pub(super) struct HandleDrag {
     /// The objects then, which every frame of the drag starts from.
     start: Vec<Object>,
     aabb: Aabb,
+    /// The Split plane as the drag began.
+    cut: Option<CutPlane>,
     before: Snapshot,
 }
 

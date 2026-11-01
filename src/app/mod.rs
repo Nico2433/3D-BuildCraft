@@ -3,7 +3,7 @@
 
 use crate::boolean::Op;
 use crate::camera::OrbitCamera;
-use crate::cut::Keep;
+use crate::cut::{CutPlane, Keep};
 use crate::emboss::{Emboss, Pattern, Projection, Shape};
 use crate::history::{History, Snapshot};
 use crate::i18n::{tr, Lang};
@@ -103,7 +103,7 @@ enum Tool {
         points: Vec<Vec3>,
     },
     Cut {
-        z: f32,
+        plane: CutPlane,
         keep: Keep,
     },
     /// Fraction of faces to remove, 0..1.
@@ -510,8 +510,12 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
-        if let Some(spec) = launch.drag {
-            app.simulate_drag(&spec);
+        if let Some(spec) = &launch.drag {
+            // A drag in the Split tool moves its plane, so the tool opens first.
+            if launch.tool.as_deref() == Some("cut") {
+                app.apply(Action::StartCut, &cc.egui_ctx);
+            }
+            app.simulate_drag(spec);
         }
         if let Some(path) = launch.image {
             app.tool = Some(Tool::image(path));
@@ -527,7 +531,7 @@ impl App {
             cc.egui_ctx.set_zoom_factor(z);
         }
         let start = match launch.tool.as_deref() {
-            Some("cut") => Some(Action::StartCut),
+            Some("cut") if launch.drag.is_none() => Some(Action::StartCut),
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
             Some("emboss") => Some(Action::StartEmboss),
@@ -1134,8 +1138,16 @@ impl App {
             }
             Action::Measure => self.tool = Some(Tool::Measure { points: vec![] }),
             Action::StartCut => {
-                let z = self.scene.selection_aabb().center().z;
-                self.tool = Some(Tool::Cut { z, keep: Keep::Top });
+                let mut plane = CutPlane::at_height(0.0);
+                plane.center = self.scene.selection_aabb().center();
+                self.tool = Some(Tool::Cut {
+                    plane,
+                    keep: Keep::Top,
+                });
+                // The plane has no size mode.
+                if self.mode == TransformMode::Scale {
+                    self.mode = TransformMode::Move;
+                }
             }
             Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
             Action::ApplySimplify => {
@@ -1154,8 +1166,8 @@ impl App {
                 }
             }
             Action::ApplyCut => {
-                if let Some(Tool::Cut { z, keep }) = self.tool.take() {
-                    self.edit(|s| s.cut_selected(z, keep));
+                if let Some(Tool::Cut { plane, keep }) = self.tool.take() {
+                    self.edit(|s| s.cut_selected(&plane, keep));
                 }
             }
             Action::Smooth => {

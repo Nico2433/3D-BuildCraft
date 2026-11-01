@@ -1,4 +1,4 @@
-use buildcraft3d::cut::Keep;
+use buildcraft3d::cut::{CutPlane, Keep};
 use buildcraft3d::io::ModelObject;
 use buildcraft3d::primitives;
 use buildcraft3d::scene::{Axis, Object, Scene};
@@ -373,7 +373,7 @@ fn cut_selected_keeps_the_chosen_halves_selected() {
     ] {
         let (mut s, ids) = scene_with(vec![cube_at(0.0, 0.0), cube_at(50.0, 0.0)]);
         s.selection.insert(ids[0]);
-        s.cut_selected(4.0, keep);
+        s.cut_selected(&CutPlane::at_height(4.0), keep);
         // The untouched cube is still there; the cut one is replaced by its halves.
         assert_eq!(s.objects.len(), 1 + volumes.len(), "{keep:?}");
         assert!(s.get(ids[1]).is_some());
@@ -393,7 +393,7 @@ fn cut_selected_keeps_the_chosen_halves_selected() {
 fn cut_selected_above_the_object_with_keep_top_removes_it() {
     let (mut s, ids) = scene_with(vec![cube_at(0.0, 0.0)]);
     s.selection.insert(ids[0]);
-    s.cut_selected(50.0, Keep::Top);
+    s.cut_selected(&CutPlane::at_height(50.0), Keep::Top);
     assert!(s.objects.is_empty());
 }
 

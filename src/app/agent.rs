@@ -238,7 +238,8 @@ impl App {
                     "both" => Keep::Both,
                     k => return Err(format!("unknown keep: {k}")),
                 };
-                self.tool = Some(Tool::Cut { z, keep });
+                let plane = crate::cut::CutPlane::at_height(z);
+                self.tool = Some(Tool::Cut { plane, keep });
                 self.apply(Action::ApplyCut, ctx);
             }
             "emboss_text" => {

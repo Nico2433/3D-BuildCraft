@@ -28,6 +28,9 @@ struct Globals {
     flags2: [f32; 4],
     /// Viewport size in pixels (xy), for the selection outline's width.
     viewport: [f32; 4],
+    /// Plane (normal xyz, distance w): what lies on its positive side is not drawn. A zero
+    /// normal clips nothing.
+    clip: [f32; 4],
 }
 
 #[repr(C)]
@@ -79,6 +82,8 @@ pub struct FrameCallback {
     pub flags: ViewFlags,
     /// Size of the viewport in pixels.
     pub viewport: glam::Vec2,
+    /// A plane (normal, distance) whose positive side is cut away, as in the Split preview.
+    pub clip: Option<(Vec3, f32)>,
 }
 
 struct GpuMesh {
@@ -128,7 +133,7 @@ pub struct Renderer {
 }
 
 const SHADER: &str = r#"
-struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32> };
+struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32>, clip: vec4<f32> };
 struct Obj { model: mat4x4<f32>, normal: mat4x4<f32>, color: vec4<f32>, extra: vec4<f32> };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> o: Obj;
@@ -146,6 +151,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
 }
 
 @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+    if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
     let flat_n = normalize(cross(dpdx(in.wpos), dpdy(in.wpos)));
     // Degenerate faces have no normal; use the screen-space one.
     var n = flat_n;
@@ -178,10 +184,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
 }
 
 // A depth-free mask covers the projected union, including concave interiors.
-@vertex fn vs_mask(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
-    return g.view_proj * o.model * vec4<f32>(p, 1.0);
+struct MaskOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32> };
+@vertex fn vs_mask(@location(0) p: vec3<f32>) -> MaskOut {
+    let w = o.model * vec4<f32>(p, 1.0);
+    return MaskOut(g.view_proj * w, w.xyz);
 }
-@fragment fn fs_mask() -> @location(0) vec4<f32> {
+@fragment fn fs_mask(in: MaskOut) -> @location(0) vec4<f32> {
+    if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
     return vec4<f32>(1.0);
 }
 
@@ -630,6 +639,7 @@ impl CallbackTrait for FrameCallback {
                 0.0,
             ],
             viewport: [self.viewport.x, self.viewport.y, 0.0, 0.0],
+            clip: self.clip.map_or([0.0; 4], |(n, d)| [n.x, n.y, n.z, d]),
         };
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&globals));
 

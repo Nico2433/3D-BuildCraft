@@ -1,8 +1,8 @@
-//! Plane cut ("Split"): splits a mesh with a horizontal plane and caps both halves, so
-//! a closed mesh gives two closed meshes.
+//! Plane cut ("Split"): splits a mesh with a plane and caps both halves, so a closed mesh
+//! gives two closed meshes.
 
 use crate::mesh::Mesh;
-use glam::{Vec2, Vec3};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use std::collections::HashMap;
 
 /// Which halves "Split" keeps.
@@ -13,10 +13,64 @@ pub enum Keep {
     Both,
 }
 
+/// The cutting plane of the Split tool: through `center`, moved `offset` along its normal,
+/// turned by `rotation` degrees (roll about X, pitch about Y, yaw about Z, as an object's).
+/// Unturned, the normal is +Z.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutPlane {
+    pub center: Vec3,
+    pub offset: f32,
+    pub rotation: Vec3,
+}
+
+impl CutPlane {
+    /// The horizontal plane at height `z`.
+    pub fn at_height(z: f32) -> Self {
+        Self {
+            center: Vec3::new(0.0, 0.0, z),
+            offset: 0.0,
+            rotation: Vec3::ZERO,
+        }
+    }
+
+    pub fn quat(&self) -> Quat {
+        let r = self.rotation * (std::f32::consts::PI / 180.0);
+        Quat::from_euler(EulerRot::ZYX, r.z, r.y, r.x)
+    }
+
+    pub fn normal(&self) -> Vec3 {
+        self.quat() * Vec3::Z
+    }
+
+    /// The plane's middle.
+    pub fn point(&self) -> Vec3 {
+        self.center + self.normal() * self.offset
+    }
+
+    /// Turns the plane by `q` (world space) about its center.
+    pub fn turn(&mut self, q: Quat) {
+        let (z, y, x) = (q * self.quat()).normalize().to_euler(EulerRot::ZYX);
+        self.rotation = Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI);
+    }
+}
+
+/// Splits `mesh` (world coordinates) by `plane`. Returns (above, below), above being the
+/// side the normal points to; either can be empty.
+pub fn cut_plane(mesh: &Mesh, plane: &CutPlane) -> (Mesh, Mesh) {
+    // Turn the plane level, cut there and turn the halves back.
+    let q = plane.quat();
+    let level = Mat4::from_quat(q.inverse());
+    let z = level.transform_point3(plane.point()).z;
+    let back = Mat4::from_quat(q);
+    let (top, bottom) = cut(&mesh.transformed(&level), z);
+    (
+        top.transformed(&back).welded(),
+        bottom.transformed(&back).welded(),
+    )
+}
+
 /// Splits `mesh` (world coordinates) at height `z`. Returns (above, below); either can be
 /// empty. Only closed cut contours are capped, so an open input stays open.
-// shortcut: horizontal planes only; rotate the object first for other angles. A rotatable
-// plane comes with the cut gizmo.
 pub fn cut(mesh: &Mesh, z: f32) -> (Mesh, Mesh) {
     let mut positions = mesh.positions.clone();
     let above: Vec<bool> = positions.iter().map(|p| p.z >= z).collect();
@@ -177,6 +231,31 @@ mod tests {
         let (top, bottom) = cut(&primitives::cube(10.0), 4.0);
         assert!((closed_volume(&top) - 600.0).abs() < 1e-3);
         assert!((closed_volume(&bottom) - 400.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn oblique_cut_splits_a_cube_through_its_center_in_halves() {
+        let cube = primitives::cube(10.0);
+        let mut plane = CutPlane::at_height(0.0);
+        plane.center = cube.aabb().center();
+        plane.turn(Quat::from_rotation_y(30f32.to_radians()));
+        let (top, bottom) = cut_plane(&cube, &plane);
+        assert!((closed_volume(&top) - 500.0).abs() < 1e-2);
+        assert!((closed_volume(&bottom) - 500.0).abs() < 1e-2);
+        // The upper half lies on the normal's side.
+        let n = plane.normal();
+        let side = |m: &Mesh| {
+            m.positions
+                .iter()
+                .map(|p| (*p - plane.point()).dot(n))
+                .sum::<f32>()
+        };
+        assert!(side(&top) > 0.0 && side(&bottom) < 0.0);
+        // Moving the plane along its normal takes a slice off one side only.
+        plane.offset = 2.0;
+        let (top, bottom) = cut_plane(&cube, &plane);
+        assert!(closed_volume(&top) < 500.0 && closed_volume(&bottom) > 500.0);
+        assert!((closed_volume(&top) + closed_volume(&bottom) - 1000.0).abs() < 1e-2);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Bottom bar: move, rotate or size the selection, three mode buttons then X, Y and Z with
-//! the unit. While splitting, the same bar holds the height of the cut.
+//! the unit. While splitting, the same bar holds the cut plane's offset and angles.
 
 use super::icons::Icon;
 use super::style;
@@ -172,12 +172,13 @@ impl App {
             .size()
     }
 
-    /// The split height, with move (current) and rotate (not available: the plane stays
-    /// horizontal) as in the original.
+    /// The split plane: move sets its offset along its normal, rotate its roll, pitch and
+    /// yaw, as in the original.
     fn cut_bar(&mut self, ctx: &egui::Context) {
         let lang = self.settings.lang();
         let units = self.settings.units;
-        let Some(Tool::Cut { z, .. }) = &mut self.tool else {
+        let mode = &mut self.mode;
+        let Some(Tool::Cut { plane, .. }) = &mut self.tool else {
             return;
         };
         let mut f = Fields {
@@ -186,15 +187,28 @@ impl App {
             lang,
         };
         bottom_bar(ctx, |ui| {
-            mode_button(ui, Icon::Move, true).on_hover_text(tr(lang, "Height"));
-            ui.add_enabled_ui(false, |ui| mode_button(ui, Icon::Rotate, false))
-                .response
-                .on_disabled_hover_text(tr(lang, SOON));
-            let mut v = *z / units.to_mm();
-            if field(ui, &mut f, 0, "", &mut v) {
-                *z = v * units.to_mm();
+            for (m, icon, tip) in [
+                (TransformMode::Move, Icon::Move, tr(lang, "Offset")),
+                (TransformMode::Rotate, Icon::Rotate, tr(lang, "Rotate")),
+            ] {
+                if mode_button(ui, icon, *mode == m)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    *mode = m;
+                }
             }
-            unit_label(ui, tr(lang, units.label()));
+            if *mode == TransformMode::Rotate {
+                let names = ["Roll", "Pitch", "Yaw"].map(|n| tr(lang, n));
+                xyz_fields(ui, names, &mut plane.rotation, &mut f);
+                unit_label(ui, tr(lang, "deg."));
+            } else {
+                let mut v = plane.offset / units.to_mm();
+                if field(ui, &mut f, 0, "", &mut v) {
+                    plane.offset = v * units.to_mm();
+                }
+                unit_label(ui, tr(lang, units.label()));
+            }
         });
     }
 }

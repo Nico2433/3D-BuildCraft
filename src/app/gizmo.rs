@@ -67,6 +67,7 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
 
+#[derive(Default)]
 pub struct Gizmo {
     pub handles: Vec<Handle>,
     /// Each ring's points and the axis it turns about.
@@ -90,13 +91,7 @@ pub fn build(
     drag: Option<(Kind, f32)>,
     to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
 ) -> Gizmo {
-    let mut g = Gizmo {
-        handles: Vec::new(),
-        rings: Vec::new(),
-        frame: None,
-        guide: None,
-        sweep: Vec::new(),
-    };
+    let mut g = Gizmo::default();
     if !b.is_valid() {
         return g;
     }
@@ -165,9 +160,11 @@ pub fn build(
                     Some((Kind::Turn(a), d)) if a == axis => d,
                     _ => 0.0,
                 };
-                if turned != 0.0 {
-                    // The wedge from where the object was when the drag began to now.
-                    let turned = turned.clamp(-360.0, 360.0);
+                // The wedge from where the object was when the drag began to now; after a
+                // full turn it starts again from empty.
+                let wedge = turned % 360.0;
+                if wedge != 0.0 {
+                    let turned = wedge;
                     let steps = (turned.abs() / 3.0).ceil() as usize;
                     g.sweep = to_screen(c)
                         .into_iter()
@@ -226,6 +223,27 @@ pub fn build(
             g.frame = Some(frame);
         }
     }
+    g
+}
+
+/// The Split tool's move handle: a double arrow at `at` on the plane's edge, along its
+/// `normal`. While dragging, `guide` is the bar from the plane's zero to where it is.
+pub fn plane_arrow(
+    at: Vec3,
+    normal: Vec3,
+    guide: Option<[Vec3; 2]>,
+    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
+) -> Gizmo {
+    let mut g = Gizmo::default();
+    if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + normal)) {
+        g.handles.push(Handle {
+            kind: Kind::Move(0),
+            at: a,
+            per: q - a,
+            pivot: None,
+        });
+    }
+    g.guide = guide.and_then(|[a, b]| to_screen(a).zip(to_screen(b)).map(|(a, b)| [a, b]));
     g
 }
 

@@ -427,13 +427,13 @@ impl Scene {
         Ok(())
     }
 
-    /// "Split": cuts the selected objects at height `z` and keeps the chosen halves
-    /// where they are, selected.
-    pub fn cut_selected(&mut self, z: f32, keep: Keep) {
+    /// "Split": cuts the selected objects by `plane` and keeps the chosen halves where
+    /// they are, selected.
+    pub fn cut_selected(&mut self, plane: &crate::cut::CutPlane, keep: Keep) {
         let picked: Vec<Object> = self.selected().cloned().collect();
         self.delete_selected();
         for o in picked {
-            let (top, bottom) = crate::cut::cut(&o.world_mesh(), z);
+            let (top, bottom) = crate::cut::cut_plane(&o.world_mesh(), plane);
             for (half, wanted) in [(top, keep != Keep::Bottom), (bottom, keep != Keep::Top)] {
                 if wanted && !half.is_empty() {
                     let id = self.add(Object::new(o.name.clone(), half, o.color));
@@ -746,7 +746,7 @@ mod tests {
             let mut s = Scene::default();
             let id = s.insert_on_floor(Object::new("c", Primitive::Cube.build(), DEFAULT_COLOR));
             s.selection.insert(id);
-            s.cut_selected(10.0, keep);
+            s.cut_selected(&crate::cut::CutPlane::at_height(10.0), keep);
             assert_eq!((s.objects.len(), s.selection.len()), (count, count));
             let v: f64 = s.objects.iter().map(|o| o.mesh.stats().volume).sum();
             assert!((v - volume).abs() < 1e-2, "{keep:?}: {v}");
