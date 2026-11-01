@@ -47,12 +47,14 @@ impl CutPlane {
         self.center + self.normal() * self.offset
     }
 
-    /// Turns the plane by `q` (world space) about its middle `point()`.
+    /// Turns the plane by `q` (world space) about its middle `point()`. The centre stays
+    /// put and the offset follows, so the middle stays over the object instead of
+    /// drifting sideways after a few moves and turns.
     pub fn turn(&mut self, q: Quat) {
         let middle = self.point();
         let (z, y, x) = (q * self.quat()).normalize().to_euler(EulerRot::ZYX);
         self.rotation = Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI);
-        self.center = middle - self.normal() * self.offset;
+        self.offset = self.normal().dot(middle - self.center);
     }
 }
 
