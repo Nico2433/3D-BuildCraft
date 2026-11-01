@@ -60,7 +60,7 @@ impl App {
                 } else {
                     // Each colour prints with the filament slot chosen on the Material page.
                     let slot_of = |c: Rgba| self.filament_slot(c);
-                    io::threemf::write_for_slicer(&path, &models, Some(&title), &slot_of)
+                    io::threemf::write_for_slicer(&path, &models, Some(&title), &slot_of, None)
                 }
             })
             .and_then(|()| crate::slicer::open(&slicer, &path));
@@ -330,7 +330,7 @@ impl App {
     pub(super) fn load_filaments(&mut self) {
         self.filaments = self
             .chosen_slicer()
-            .map_or_else(Vec::new, |s| crate::slicer::filaments(&s));
+            .map_or_else(Vec::new, |s| crate::slicer::filaments(&s, None));
     }
 
     /// The filament slot that prints `color`: the one picked for it, else the closest.
