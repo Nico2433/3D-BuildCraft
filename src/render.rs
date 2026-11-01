@@ -1096,11 +1096,12 @@ impl CallbackTrait for FrameCallback {
             return;
         };
         pass.set_bind_group(0, &r.globals_bg, &[]);
+        // Textures for every solid/x-ray draw, whether or not the reflection runs.
+        pass.set_bind_group(2, &r.texture_bg, &[]);
         let n = self.items.len() as u64;
         let slot = |s: u64| [(s * OBJECT_STRIDE) as u32];
         if self.flags.floor && self.flags.reflections && !self.flags.xray && self.eye.z > 0.0 {
             pass.set_pipeline(&r.solid);
-            pass.set_bind_group(2, &r.texture_bg, &[]);
             for (i, it) in self.items.iter().enumerate() {
                 let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
                     continue;

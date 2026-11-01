@@ -811,15 +811,19 @@ impl App {
         let Some(Tool::Cut { plane, .. }) = &self.tool else {
             return false;
         };
+        // The cached selection box keeps this cheap on heavy meshes; it is exact for a
+        // level plane and slightly loose for a tilted one.
         let n = plane.normal();
+        let b = self.scene.selection_aabb();
         let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-        for o in self.scene.selected() {
-            let m = o.matrix();
-            for p in &o.mesh.positions {
-                let d = n.dot(m.transform_point3(*p));
-                lo = lo.min(d);
-                hi = hi.max(d);
-            }
+        for i in 0..8 {
+            let c = Vec3::new(
+                if i & 1 == 0 { b.min.x } else { b.max.x },
+                if i & 2 == 0 { b.min.y } else { b.max.y },
+                if i & 4 == 0 { b.min.z } else { b.max.z },
+            );
+            lo = lo.min(n.dot(c));
+            hi = hi.max(n.dot(c));
         }
         let d = n.dot(plane.point());
         if lo > hi || (d.clamp(lo, hi) - d).abs() < 1e-4 {
@@ -990,6 +994,9 @@ impl App {
                 _ => {}
             }
             *plane = moved;
+            // Clamp before this frame paints the plane, or each drag frame shows it past
+            // the object.
+            self.clamp_cut_plane();
             return;
         }
         self.scene.objects = start;
