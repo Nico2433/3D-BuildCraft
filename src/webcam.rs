@@ -6,6 +6,11 @@ use image::RgbaImage;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Whether the system lists a camera, so the UI can disable what needs one.
+pub fn available() -> bool {
+    nokhwa::query(nokhwa::utils::ApiBackend::Auto).is_ok_and(|cameras| !cameras.is_empty())
+}
+
 /// The latest frame, a counter that grows with each new one, or why there is none.
 type Latest = Result<(u64, Arc<RgbaImage>), String>;
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 impl App {
     /// Shared traversal keeps object and face picking consistent.
-    fn pick_hit(&self, origin: Vec3, dir: Vec3) -> Option<(u64, usize, f32)> {
+    pub(super) fn pick_hit(&self, origin: Vec3, dir: Vec3) -> Option<(u64, usize, f32)> {
         type State = Vec<(u64, Arc<Mesh>, glam::Mat4)>;
         type Hit = Option<(u64, usize, f32)>;
         type Cached = (Vec3, Vec3, State, Hit);
@@ -110,7 +110,8 @@ impl App {
 
                 // Camera: left drag on empty space orbits, right/middle drag pans, wheel zooms.
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                if resp.hovered() && scroll != 0.0 {
+                let sticker_wheel = matches!(&self.tool, Some(Tool::Texture(t)) if t.is_editing());
+                if resp.hovered() && scroll != 0.0 && !sticker_wheel {
                     self.glide = None;
                     self.camera.zoom(scroll);
                 }
@@ -272,8 +273,9 @@ impl App {
                             .is_some_and(|(id, _)| self.scene.selection.contains(&id));
                     }
                 }
+                let texture = self.texture_pointer(ui, &resp, rect, aspect);
                 let settling_grab = matches!(&self.tool, Some(Tool::Settle { bodies, .. }) if bodies.iter().any(|b| b.grab.is_some()));
-                if self.handle.is_some() || settling_grab {
+                if self.handle.is_some() || settling_grab || texture.grab {
                     // A transform handle or suspended body drives the pointer alone.
                 } else if self.emboss_drag && resp.dragged_by(PointerButton::Primary) {
                     let shift = ui.input(|i| i.modifiers.shift);
@@ -445,6 +447,7 @@ impl App {
                                 | Tool::Emboss { .. }
                                 | Tool::Custom { .. }
                                 | Tool::Image { .. }
+                                | Tool::Texture(_)
                                 | Tool::Camera { .. },
                             ) => {}
                             None => {
@@ -548,6 +551,7 @@ impl App {
                 }
                 let cb = FrameCallback {
                     items,
+                    decal: texture.preview,
                     view_proj: self.camera.view_proj(aspect),
                     eye: self.camera.eye(),
                     viewport: glam::Vec2::new(rect.width(), rect.height())

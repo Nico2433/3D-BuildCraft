@@ -1,5 +1,6 @@
 //! Indexed triangle mesh, welding, normals and topology statistics.
 
+use crate::texture::FaceTex;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 
@@ -11,6 +12,9 @@ pub struct Mesh {
     /// RGBA per triangle, painted by area. Empty, or alpha 0 on a triangle, means the
     /// object's colour. Edits that rebuild the mesh drop it; see [`Mesh::face_color`].
     pub colors: Vec<[u8; 4]>,
+    /// Texture per triangle (see [`crate::texture`]). Empty, or layer 0 on a triangle,
+    /// means none. Dropped, like `colors`, by edits that rebuild the mesh.
+    pub tex: Vec<FaceTex>,
 }
 
 /// Vertex data for drawing; see [`Mesh::shading`].
@@ -20,10 +24,16 @@ pub struct Shading {
     pub normals: Vec<Vec3>,
     /// Per vertex: a painted colour, or alpha 0 for the object's.
     pub colors: Vec<[u8; 4]>,
+    /// Per vertex: texture coordinates and the packed layer ([`FaceTex::pack`]), 0 for none.
+    pub uvs: Vec<[f32; 2]>,
+    pub tex: Vec<u32>,
     pub triangles: Vec<[u32; 3]>,
     /// Creases, as pairs of vertex indices.
     pub edges: Vec<[u32; 2]>,
 }
+
+/// A drawn vertex's identity: source vertex, normal, colour, UV bits and packed texture.
+type Corner = (u32, [i32; 3], [u8; 4], [u32; 2], u32);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Aabb {
@@ -93,6 +103,7 @@ impl Mesh {
             positions,
             triangles,
             colors: Vec::new(),
+            tex: Vec::new(),
         }
     }
 
@@ -116,6 +127,7 @@ impl Mesh {
             positions,
             triangles,
             colors: Vec::new(),
+            tex: Vec::new(),
         }
     }
 
@@ -184,6 +196,7 @@ impl Mesh {
                 .collect(),
             triangles: self.triangles.clone(),
             colors: self.colors.clone(),
+            tex: self.tex.clone(),
         };
         // A mirroring transform turns the surface inside out; keep it facing outward.
         if m.determinant() < 0.0 {
@@ -196,6 +209,10 @@ impl Mesh {
         for t in &mut self.triangles {
             t.swap(1, 2);
         }
+        // Corners follow their vertices.
+        for t in &mut self.tex {
+            t.uv.swap(1, 2);
+        }
     }
 
     pub fn append(&mut self, other: &Mesh) {
@@ -205,6 +222,12 @@ impl Mesh {
             let mut theirs = other.colors.clone();
             theirs.resize(other.triangles.len(), [0; 4]);
             self.colors.extend(theirs);
+        }
+        if self.has_tex() || other.has_tex() {
+            self.tex.resize(self.triangles.len(), FaceTex::default());
+            let mut theirs = other.tex.clone();
+            theirs.resize(other.triangles.len(), FaceTex::default());
+            self.tex.extend(theirs);
         }
         let base = self.positions.len() as u32;
         self.positions.extend_from_slice(&other.positions);
@@ -219,6 +242,19 @@ impl Mesh {
     /// Whether triangles carry their own colours (and the list still matches them).
     pub fn has_colors(&self) -> bool {
         self.colors.len() == self.triangles.len() && self.colors.iter().any(|c| c[3] > 0)
+    }
+
+    /// Whether triangles carry textures (and the list still matches them).
+    pub fn has_tex(&self) -> bool {
+        self.tex.len() == self.triangles.len() && self.tex.iter().any(|t| t.layer > 0)
+    }
+
+    /// Triangle `i`'s texture, if it has one.
+    pub fn face_tex(&self, i: usize) -> Option<FaceTex> {
+        if self.tex.len() != self.triangles.len() {
+            return None;
+        }
+        self.tex.get(i).copied().filter(|t| t.layer > 0)
     }
 
     /// Triangle `i`'s own colour, if it was painted.
@@ -322,7 +358,7 @@ impl Mesh {
             }
         }
         let mut out = Shading::default();
-        let mut index: HashMap<(u32, [i32; 3], [u8; 4]), u32> = HashMap::new();
+        let mut index: HashMap<Corner, u32> = HashMap::new();
         let mut corner = vec![[0u32; 3]; self.triangles.len()];
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
@@ -336,11 +372,23 @@ impl Mesh {
                     .normalize_or_zero();
                 // Painted faces get their own vertices, so colours stay crisp.
                 let color = self.face_color(f).unwrap_or([0; 4]);
-                let key = (v, (n * 1000.0).round().as_ivec3().to_array(), color);
+                // Textured corners are split by picture and coordinates too.
+                let (uv, tex) = self
+                    .face_tex(f)
+                    .map_or(([0.0; 2], 0), |t| (t.uv[k], t.pack()));
+                let key = (
+                    v,
+                    (n * 1000.0).round().as_ivec3().to_array(),
+                    color,
+                    uv.map(f32::to_bits),
+                    tex,
+                );
                 corner[f][k] = *index.entry(key).or_insert_with(|| {
                     out.positions.push(self.positions[v as usize]);
                     out.normals.push(n);
                     out.colors.push(color);
+                    out.uvs.push(uv);
+                    out.tex.push(tex);
                     out.positions.len() as u32 - 1
                 });
             }
@@ -526,6 +574,7 @@ impl Mesh {
         let mut map: HashMap<u32, u32> = HashMap::new();
         let mut m = Mesh::default();
         let colored = self.colors.len() == self.triangles.len();
+        let textured = self.tex.len() == self.triangles.len();
         for &i in tris {
             let t = self.triangles[i].map(|v| {
                 *map.entry(v).or_insert_with(|| {
@@ -536,6 +585,9 @@ impl Mesh {
             m.triangles.push(t);
             if colored {
                 m.colors.push(self.colors[i]);
+            }
+            if textured {
+                m.tex.push(self.tex[i]);
             }
         }
         m

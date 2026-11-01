@@ -19,5 +19,7 @@ pub mod settings;
 pub mod slicer;
 pub mod snapping;
 pub mod solid;
+pub mod texture;
+pub mod texture_gen;
 pub mod thumbnail;
 pub mod webcam;

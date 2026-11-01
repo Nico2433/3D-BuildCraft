@@ -88,6 +88,9 @@ impl App {
                             Some(Tool::Paint { .. }) => {
                                 Some((tr(lang, "Color"), Action::ApplyPaint, true))
                             }
+                            Some(Tool::Texture(_)) => {
+                                Some((tr(lang, "Apply"), Action::ApplyTexture, true))
+                            }
                             Some(Tool::Custom { preview, .. }) => {
                                 Some((tr(lang, "Add"), Action::ApplyCustom, preview.is_ok()))
                             }
@@ -125,6 +128,7 @@ impl App {
                                 | Tool::Emboss { .. }
                                 | Tool::Settle { .. }
                                 | Tool::Paint { .. }
+                                | Tool::Texture(_)
                                 | Tool::Custom { .. }
                         )
                     ) && self.pending_import.is_empty();
@@ -461,6 +465,7 @@ impl App {
                     *built = Some(key);
                 }
             }
+            Some(Tool::Texture(_)) => self.texture_settings(ui),
             Some(Tool::Camera { .. } | Tool::Settle { .. }) | None => {}
         }
     }

@@ -94,9 +94,12 @@ impl Object {
     }
 
     pub fn to_model(&self) -> ModelObject {
+        // Files cannot hold textures, so tiled ones leave as their average colour.
+        let mut mesh = (*self.mesh).clone();
+        crate::texture::paint_average_colors(&mut mesh);
         ModelObject {
             name: self.name.clone(),
-            mesh: (*self.mesh).clone(),
+            mesh,
             transform: self.matrix(),
             color: self.color,
         }

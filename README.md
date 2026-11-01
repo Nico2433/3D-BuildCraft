@@ -28,7 +28,7 @@ The window can save itself as a PNG and quit, which is how the pictures in `docs
 cargo run --release -- model.3mf --select-all --lang es --size 1920x1080 --zoom 1.5 --tab edit --screenshot shot.png
 ```
 
-`--tab insert|object|edit|paint|view|help`, `--tool cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|custom|camera|ai|chat|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about` `--mode move|rotate|scale` and `--menu` open a given state.
+`--tab insert|object|edit|paint|view|help`, `--tool cut|simplify|hollow|emboss|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|custom|camera|ai|chat|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about` `--mode move|rotate|scale` and `--menu` open a given state.
 
 ## Test
 

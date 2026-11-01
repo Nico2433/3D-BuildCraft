@@ -39,9 +39,9 @@ const STANDARD: [Rgba; 12] = [
 /// Most recent colours kept.
 pub(super) const RECENT: usize = 6;
 
-const ROW_DARK: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
-const ROW: Color32 = Color32::from_rgb(0x2B, 0x2B, 0x2B);
-const BUTTON: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
+pub(super) const ROW_DARK: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
+pub(super) const ROW: Color32 = Color32::from_rgb(0x2B, 0x2B, 0x2B);
+pub(super) const BUTTON: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
 const KNOB: Color32 = Color32::from_rgb(0x88, 0x17, 0x98);
 
 fn rgb(c: Rgba) -> Color32 {
@@ -57,15 +57,14 @@ fn from_hsv(hsv: [f32; 3]) -> Rgba {
     [r, g, b, 0xFF]
 }
 
-/// Paint's "Selected" swatch with its chevron, and whichever menu is open. True when the
-/// eyedropper was chosen.
-pub(super) fn selected_color(
+/// The "Selected" label, a swatch drawn by `paint_swatch` and a chevron, as Paint's and the
+/// Texture tool's bars have them. Returns the area the menus hang from and whether it was
+/// clicked.
+pub(super) fn selected_header(
     ui: &mut egui::Ui,
     lang: Lang,
-    color: &mut Rgba,
-    menu: &mut PaintMenu,
-    recent: &[Rgba],
-) -> bool {
+    paint_swatch: impl FnOnce(&egui::Painter, egui::Rect),
+) -> (egui::Rect, bool) {
     let label = ui.painter().layout_no_wrap(
         tr(lang, "Selected").to_owned(),
         egui::FontId::proportional(style::LABEL_FONT + 1.3),
@@ -88,11 +87,24 @@ pub(super) fn selected_color(
         Vec2::new(64.0, 30.0),
     );
     let swatch = egui::Rect::from_min_size(rect.min + Vec2::new(0.0, 3.0), Vec2::splat(24.0));
-    ui.painter()
-        .rect_filled(swatch, egui::CornerRadius::ZERO, rgb(*color));
+    paint_swatch(ui.painter(), swatch);
     let chevron = egui::Rect::from_min_size(rect.min + Vec2::new(36.0, 7.0), Vec2::splat(16.0));
     super::icons::paint(ui.painter(), chevron, Icon::ChevronDown, style::TEXT);
-    let opening = resp.clicked();
+    (rect, resp.clicked())
+}
+
+/// Paint's "Selected" swatch with its chevron, and whichever menu is open. True when the
+/// eyedropper was chosen.
+pub(super) fn selected_color(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    color: &mut Rgba,
+    menu: &mut PaintMenu,
+    recent: &[Rgba],
+) -> bool {
+    let (rect, opening) = selected_header(ui, lang, |p, swatch| {
+        p.rect_filled(swatch, egui::CornerRadius::ZERO, rgb(*color));
+    });
     if opening {
         *menu = match menu {
             PaintMenu::Closed => PaintMenu::Swatches,

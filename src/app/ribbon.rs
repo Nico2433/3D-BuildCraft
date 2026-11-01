@@ -227,7 +227,12 @@ impl App {
                                         Some(Action::StartPaint),
                                         true,
                                     ),
-                                    (Icon::Texture, tr(lang, "Texture"), None, true),
+                                    (
+                                        Icon::Texture,
+                                        tr(lang, "Texture"),
+                                        Some(Action::StartTexture),
+                                        true,
+                                    ),
                                 ],
                             );
                         }

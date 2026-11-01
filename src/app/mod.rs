@@ -41,6 +41,7 @@ mod settle;
 mod side_menu;
 mod start;
 mod style;
+mod texture_ui;
 mod thumbs;
 mod tool_bar;
 mod top_bar;
@@ -152,6 +153,8 @@ enum Tool {
         /// The next click on an object takes its colour instead of painting.
         dropper: bool,
     },
+    /// Paint's "Texture": stickers and a brush with a chosen picture.
+    Texture(Box<texture_ui::Texture>),
     Emboss {
         params: Emboss,
         /// The text solid for `built`, or why it could not be made.
@@ -293,6 +296,10 @@ enum Action {
     /// Opens Paint's colour list, or with `true` its "more colours" panel (screenshots).
     PaintMenu(bool),
     ApplyPaint,
+    StartTexture,
+    ApplyTexture,
+    /// Sets the Texture tool up for a screenshot.
+    TexturePreset(texture_ui::Preset),
     StartCustom,
     ApplyCustom,
     StartImage,
@@ -419,7 +426,7 @@ pub struct Launch {
     pub menu: bool,
     /// UI scale; the original's screenshots are at 1.5.
     pub zoom: Option<f32>,
-    /// Tool to open: cut, simplify, hollow, emboss, measure or paint.
+    /// Tool to open: cut, simplify, hollow, emboss, measure, paint or texture.
     pub tool: Option<String>,
     /// Opens Load image with this picture.
     pub image: Option<PathBuf>,
@@ -572,6 +579,9 @@ impl App {
             Some("measure") if launch.measure.is_none() => Some(Action::Measure),
             Some("settle") => Some(Action::Settle),
             Some("paint" | "paint-colors" | "paint-more") => Some(Action::StartPaint),
+            Some(
+                "texture" | "texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush",
+            ) => Some(Action::StartTexture),
             Some("custom") => Some(Action::StartCustom),
             Some("camera") => Some(Action::StartCamera),
             Some("print") => Some(Action::OpenPrint),
@@ -584,6 +594,10 @@ impl App {
         match launch.tool.as_deref() {
             Some("paint-colors") => app.actions.push(Action::PaintMenu(false)),
             Some("paint-more") => app.actions.push(Action::PaintMenu(true)),
+            Some(t @ ("texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush")) => {
+                app.actions
+                    .push(Action::TexturePreset(texture_ui::Preset::from_tool(t)))
+            }
             _ => {}
         }
         // The assistant's chat panel and its settings tab.
@@ -1265,6 +1279,13 @@ impl App {
                     };
                 }
             }
+            Action::StartTexture => {
+                self.tool = Some(Tool::Texture(Box::new(texture_ui::Texture::new(Box::new(
+                    (self.snapshot(), self.history.depth(), self.scene.dirty),
+                )))));
+            }
+            Action::ApplyTexture => self.apply_texture(),
+            Action::TexturePreset(preset) => self.texture_preset(preset),
             Action::ApplyPaint => {
                 if let Some(Tool::Paint { color, .. }) = self.tool.take() {
                     self.remember_color(color);
@@ -1333,10 +1354,12 @@ impl App {
             }
             Action::CancelTool => {
                 // Cancelling an interactive edit restores the scene and undo depth.
-                if let Some(Tool::Paint { before, .. } | Tool::Settle { before, .. }) =
-                    self.tool.take()
-                {
-                    let (snapshot, depth, dirty) = *before;
+                let before = match self.tool.take() {
+                    Some(Tool::Paint { before, .. } | Tool::Settle { before, .. }) => Some(*before),
+                    Some(Tool::Texture(t)) => Some(*t.before),
+                    _ => None,
+                };
+                if let Some((snapshot, depth, dirty)) = before {
                     self.restore_snapshot(snapshot);
                     self.history.truncate(depth);
                     self.scene.dirty = dirty;

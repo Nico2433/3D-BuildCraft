@@ -31,6 +31,12 @@ struct Globals {
     /// Plane (normal xyz, distance w): what lies on its positive side is not drawn. A zero
     /// normal clips nothing.
     clip: [f32; 4],
+    /// World to (u, v, height) of the live sticker preview.
+    decal: [[f32; 4]; 4],
+    /// Sticker normal (xyz) and how far from its plane it still shows (w).
+    decal_n: [f32; 4],
+    /// x: the sticker's texture layer + 1, 0 for no preview.
+    decal_p: [f32; 4],
 }
 
 #[repr(C)]
@@ -39,7 +45,7 @@ struct ObjectUniform {
     model: [[f32; 4]; 4],
     normal: [[f32; 4]; 4],
     color: [f32; 4],
-    /// x selected, y pass (0 object, 1 reflection, 2 shadow)
+    /// x selected, y pass (0 object, 1 reflection, 2 shadow), z takes the sticker preview
     extra: [f32; 4],
 }
 
@@ -50,6 +56,9 @@ struct Vertex {
     normal: [f32; 3],
     /// Painted colour, alpha 0 for the object's.
     color: [u8; 4],
+    uv: [f32; 2],
+    /// [`crate::texture::FaceTex::pack`]
+    tex: u32,
 }
 
 /// What one frame draws. Built by the UI, consumed by the callback.
@@ -75,8 +84,18 @@ pub struct ViewFlags {
     pub reflections: bool,
 }
 
+/// A sticker shown live on one item, before it is baked into the mesh.
+#[derive(Clone, Copy)]
+pub struct DecalPreview {
+    /// Index into the frame's items.
+    pub item: usize,
+    pub decal: crate::texture::Decal,
+    pub layer: u16,
+}
+
 pub struct FrameCallback {
     pub items: Vec<DrawItem>,
+    pub decal: Option<DecalPreview>,
     pub view_proj: Mat4,
     pub eye: Vec3,
     pub flags: ViewFlags,
@@ -134,28 +153,44 @@ pub struct Renderer {
     object_bg: wgpu::BindGroup,
     object_capacity: u64,
     meshes: HashMap<usize, GpuMesh>,
+    /// The texture array and how many registry pictures it already holds.
+    textures: wgpu::Texture,
+    texture_bg: wgpu::BindGroup,
+    textures_loaded: usize,
 }
 
 const SHADER: &str = r#"
-struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32>, clip: vec4<f32> };
+struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32>, clip: vec4<f32>, decal: mat4x4<f32>, decal_n: vec4<f32>, decal_p: vec4<f32> };
 struct Obj { model: mat4x4<f32>, normal: mat4x4<f32>, color: vec4<f32>, extra: vec4<f32> };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> o: Obj;
+@group(2) @binding(0) var tex: texture_2d_array<f32>;
+@group(2) @binding(1) var samp: sampler;
 
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec4<f32> };
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec4<f32>, @location(3) uv: vec2<f32>, @location(4) @interpolate(flat) tx: u32 };
 
-@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec4<f32>) -> VOut {
+@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec4<f32>, @location(3) uv: vec2<f32>, @location(4) tx: u32) -> VOut {
     let w = o.model * vec4<f32>(p, 1.0);
     var out: VOut;
     out.pos = g.view_proj * w;
     out.wpos = w.xyz;
     out.n = (o.normal * vec4<f32>(n, 0.0)).xyz;
     out.c = c;
+    out.uv = uv;
+    out.tx = tx;
     return out;
 }
 
 @fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
     if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
+    // Both pictures are sampled here, in uniform control flow, so they get mip levels.
+    let layer = i32(in.tx & 0xFFFFu) - 1;
+    let sticker_face = (in.tx & 0x10000u) != 0u;
+    var tuv = in.uv;
+    if (sticker_face) { tuv = clamp(tuv, vec2<f32>(0.002), vec2<f32>(0.998)); }
+    let face_tex = textureSample(tex, samp, tuv, max(layer, 0));
+    let dq = (g.decal * vec4<f32>(in.wpos, 1.0)).xyz;
+    let live_tex = textureSample(tex, samp, clamp(dq.xy, vec2<f32>(0.002), vec2<f32>(0.998)), max(i32(g.decal_p.x) - 1, 0));
     let flat_n = normalize(cross(dpdx(in.wpos), dpdy(in.wpos)));
     // Degenerate faces have no normal; use the screen-space one.
     var n = flat_n;
@@ -166,6 +201,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     var base = o.color.rgb;
     // See-through items (the scene behind Custom or an import) keep their one colour.
     if (in.c.a > 0.001 && o.color.a > 0.99) { base = in.c.rgb; }
+    if (o.color.a > 0.99) {
+        var inside = true;
+        if (sticker_face) { inside = all(in.uv >= vec2<f32>(0.0)) && all(in.uv <= vec2<f32>(1.0)); }
+        if (layer >= 0 && inside) { base = mix(base, face_tex.rgb, face_tex.a); }
+        // The sticker being placed, shown on the object under the pointer.
+        let facing = dot(normalize(in.n), g.decal_n.xyz) > 0.25;
+        let within = all(dq.xy >= vec2<f32>(0.0)) && all(dq.xy <= vec2<f32>(1.0)) && abs(dq.z) < g.decal_n.w;
+        if (g.decal_p.x > 0.5 && o.extra.z > 0.5 && o.extra.y < 0.5 && facing && within) {
+            base = mix(base, live_tex.rgb, live_tex.a);
+        }
+    }
     if (g.flags.w < 0.5) { base = vec3<f32>(0.82, 0.82, 0.82); }
     var c = base;
     if (g.flags.x > 0.5) {
@@ -360,6 +406,33 @@ impl Renderer {
             bind_group_layouts: &[&globals_layout, &object_layout],
             push_constant_ranges: &[],
         });
+        let texture_group = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("textures"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let textured_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("textured mesh"),
+            bind_group_layouts: &[&globals_layout, &object_layout, &texture_group],
+            push_constant_ranges: &[],
+        });
+        let (textures, texture_bg) = Self::texture_array(device, &texture_group);
         let floor_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("floor"),
             bind_group_layouts: &[&globals_layout],
@@ -369,7 +442,7 @@ impl Renderer {
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Unorm8x4, 3 => Float32x2, 4 => Uint32],
         };
         let pipeline = |label: &str,
                         layout: &wgpu::PipelineLayout,
@@ -430,7 +503,7 @@ impl Renderer {
         let tri = wgpu::PrimitiveTopology::TriangleList;
         let solid = pipeline(
             "solid",
-            &mesh_layout,
+            &textured_layout,
             "vs",
             "fs",
             std::slice::from_ref(&vertex_layout),
@@ -440,7 +513,7 @@ impl Renderer {
         );
         let xray = pipeline(
             "xray",
-            &mesh_layout,
+            &textured_layout,
             "vs",
             "fs",
             std::slice::from_ref(&vertex_layout),
@@ -559,7 +632,104 @@ impl Renderer {
             object_bg,
             object_capacity,
             meshes: HashMap::new(),
+            textures,
+            texture_bg,
+            textures_loaded: 0,
         }
+    }
+
+    /// The array every picture of the registry is copied into, with its mip levels.
+    fn texture_array(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) -> (wgpu::Texture, wgpu::BindGroup) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("textures"),
+            size: wgpu::Extent3d {
+                width: crate::texture::SIZE,
+                height: crate::texture::SIZE,
+                depth_or_array_layers: crate::texture::LAYERS as u32,
+            },
+            mip_level_count: crate::texture::SIZE.ilog2() + 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("textures"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        (texture, bg)
+    }
+
+    /// Copies pictures added to the registry since the last frame, with their mips.
+    fn upload_textures(&mut self, queue: &wgpu::Queue) {
+        for (k, image) in crate::texture::images_from(self.textures_loaded)
+            .into_iter()
+            .enumerate()
+        {
+            let layer = (self.textures_loaded + k) as u32;
+            let mut level = (*image).clone();
+            for mip in 0.. {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.textures,
+                        mip_level: mip,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: layer,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &level,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * level.width()),
+                        rows_per_image: Some(level.height()),
+                    },
+                    wgpu::Extent3d {
+                        width: level.width(),
+                        height: level.height(),
+                        depth_or_array_layers: 1,
+                    },
+                );
+                if level.width() == 1 {
+                    break;
+                }
+                level = image::imageops::resize(
+                    &level,
+                    level.width() / 2,
+                    level.height() / 2,
+                    image::imageops::FilterType::Triangle,
+                );
+            }
+        }
+        self.textures_loaded += crate::texture::images_from(self.textures_loaded).len();
     }
 
     fn object_buffer(
@@ -595,10 +765,13 @@ impl Renderer {
             .iter()
             .zip(&shading.normals)
             .zip(&shading.colors)
-            .map(|((p, n), c)| Vertex {
+            .zip(shading.uvs.iter().zip(&shading.tex))
+            .map(|(((p, n), c), (uv, tex))| Vertex {
                 pos: p.to_array(),
                 normal: n.to_array(),
                 color: *c,
+                uv: *uv,
+                tex: *tex,
             })
             .collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -673,7 +846,13 @@ impl CallbackTrait for FrameCallback {
             ],
             viewport: [self.viewport.x, self.viewport.y, 0.0, 0.0],
             clip: self.clip.map_or([0.0; 4], |(n, d)| [n.x, n.y, n.z, d]),
+            decal: mat(self.decal.map_or(Mat4::ZERO, |d| d.decal.shader_matrix())),
+            decal_n: self.decal.map_or([0.0; 4], |d| {
+                d.decal.normal.extend(d.decal.reach()).to_array()
+            }),
+            decal_p: [self.decal.map_or(0.0, |d| d.layer as f32), 0.0, 0.0, 0.0],
         };
+        r.upload_textures(queue);
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&globals));
 
         // Three slots per item: the object, its reflection and its shadow; then the slab.
@@ -718,7 +897,12 @@ impl CallbackTrait for FrameCallback {
                     model: mat(model),
                     normal: mat(model.inverse().transpose()),
                     color,
-                    extra: [f(it.selected), pass, 0.0, 0.0],
+                    extra: [
+                        f(it.selected),
+                        pass,
+                        f(self.decal.is_some_and(|d| d.item == i)),
+                        0.0,
+                    ],
                 };
                 let o = slot * OBJECT_STRIDE as usize;
                 bytes[o..o + std::mem::size_of::<ObjectUniform>()]
@@ -907,6 +1091,7 @@ impl CallbackTrait for FrameCallback {
         let slot = |s: u64| [(s * OBJECT_STRIDE) as u32];
         if self.flags.floor && self.flags.reflections && !self.flags.xray && self.eye.z > 0.0 {
             pass.set_pipeline(&r.solid);
+            pass.set_bind_group(2, &r.texture_bg, &[]);
             for (i, it) in self.items.iter().enumerate() {
                 let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
                     continue;
@@ -932,6 +1117,7 @@ impl CallbackTrait for FrameCallback {
             }
         }
         pass.set_pipeline(if self.flags.xray { &r.xray } else { &r.solid });
+        pass.set_bind_group(2, &r.texture_bg, &[]);
         for (i, it) in self.items.iter().enumerate() {
             let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
                 continue;

@@ -109,6 +109,12 @@ pub enum Icon {
     ZoomOut,
     Pencil,
     More,
+    /// A square note with a folded corner and a smile: the Texture tool's sticker.
+    Sticker,
+    /// Four squares: the Texture tool's brush.
+    Brush,
+    /// A hand with a pointing finger: edit the sticker.
+    Hand,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -789,6 +795,45 @@ impl Pen<'_> {
                     (9.0, 19.0),
                 ]);
                 self.line(&[(14.0, 6.0), (18.0, 10.0)]);
+            }
+            Sticker => {
+                self.closed(&[
+                    (4.0, 4.0),
+                    (20.0, 4.0),
+                    (20.0, 14.0),
+                    (14.0, 20.0),
+                    (4.0, 20.0),
+                ]);
+                self.line(&[(20.0, 14.0), (15.0, 14.0), (14.0, 15.0), (14.0, 20.0)]);
+                self.dot(9.0, 9.0, 1.1);
+                self.dot(14.0, 9.0, 1.1);
+                self.arc(11.5, 10.5, 4.5, 0.5, 2.6);
+            }
+            Brush => {
+                for (x, y) in [(3.0, 3.0), (13.0, 3.0), (3.0, 13.0), (13.0, 13.0)] {
+                    self.rect(x, y, x + 8.0, y + 8.0);
+                }
+            }
+            Hand => {
+                self.line(&[
+                    (8.0, 21.0),
+                    (4.0, 14.0),
+                    (4.0, 12.0),
+                    (6.0, 12.0),
+                    (8.0, 15.0),
+                    (8.0, 4.0),
+                    (10.0, 3.0),
+                    (12.0, 4.0),
+                    (12.0, 11.0),
+                    (14.0, 10.0),
+                    (16.0, 11.0),
+                    (16.0, 12.0),
+                    (18.0, 11.0),
+                    (20.0, 12.0),
+                    (20.0, 17.0),
+                    (17.0, 21.0),
+                    (8.0, 21.0),
+                ]);
             }
             More => {
                 for x in [5.0, 12.0, 19.0] {
