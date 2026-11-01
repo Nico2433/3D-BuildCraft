@@ -344,6 +344,11 @@ pub struct App {
     /// Where the screenshot the assistant asked for goes, once it is taken.
     agent_shot: Option<std::sync::mpsc::Sender<crate::mcp::Reply>>,
     print_status_open: bool,
+    /// The printers connected in the slicer with their status, the reading in progress, and
+    /// when the last one finished (None: read the printers again, not only their status).
+    printer_status: PrinterStatus,
+    printer_status_job: Option<std::sync::mpsc::Receiver<PrinterStatus>>,
+    printer_status_at: Option<Instant>,
     /// A Design-page edit in progress: the size it started at, the scene before, and
     /// whether its undo step was pushed.
     design_edit: Option<(Vec3, Snapshot, bool)>,
@@ -377,6 +382,7 @@ pub struct App {
 
 /// A slicer's printer profiles, and the chosen printer's processes and filament slots.
 type SlicerProfiles = (Vec<String>, Vec<String>, Vec<crate::slicer::Filament>);
+type PrinterStatus = Vec<(crate::slicer::Printer, crate::slicer::Status)>;
 
 /// The scene before an interactive tool started: snapshot, undo depth and dirty flag.
 type Checkpoint = (Snapshot, usize, bool);
@@ -906,7 +912,14 @@ impl App {
             return;
         }
         // Wait for a preview that is still being computed.
-        if *frames > 0 && self.jobs.is_empty() && self.profiles_job.is_none() && !smoothing {
+        // The printer status window waits for its first answer.
+        let status_read = !self.print_status_open || self.printer_status_at.is_some();
+        if *frames > 0
+            && self.jobs.is_empty()
+            && self.profiles_job.is_none()
+            && status_read
+            && !smoothing
+        {
             *frames -= 1;
             if *frames == 0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));

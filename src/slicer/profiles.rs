@@ -1,212 +1,11 @@
-//! Slicers: finding the ones installed, reading their filaments and opening a model in the
-//! chosen one. Slicing and sending to the printer stay in the slicer for now.
+//! Reading OrcaSlicer's and Bambu Studio's configuration: printers, filaments, processes and
+//! the project settings to print with.
 
-use crate::host::{host_command, in_flatpak};
-use anyhow::{Context, Result};
+use super::detect::{Slicer, KNOWN};
+use super::host_files::{list_json, read_json};
+use super::status::Printer;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Slicer {
-    pub name: String,
-    /// The program, or on macOS the `.app` bundle.
-    pub path: PathBuf,
-}
-
-/// Known slicers: name, program names on Linux (PATH) and Flatpak ids, Windows paths under
-/// Program Files, macOS app bundles.
-type Known = (
-    &'static str,
-    &'static [&'static str],
-    &'static [&'static str],
-    &'static [&'static str],
-    &'static [&'static str],
-);
-const KNOWN: &[Known] = &[
-    (
-        "PrusaSlicer",
-        &["prusa-slicer", "PrusaSlicer"],
-        &["com.prusa3d.PrusaSlicer"],
-        &["Prusa3D\\PrusaSlicer\\prusa-slicer.exe"],
-        &["PrusaSlicer.app", "Original Prusa Drivers/PrusaSlicer.app"],
-    ),
-    (
-        "OrcaSlicer",
-        &["orca-slicer", "OrcaSlicer"],
-        &[
-            "io.github.softfever.OrcaSlicer",
-            "com.orcaslicer.OrcaSlicer",
-        ],
-        &["OrcaSlicer\\orca-slicer.exe"],
-        &["OrcaSlicer.app"],
-    ),
-    (
-        "Bambu Studio",
-        &["bambu-studio", "BambuStudio"],
-        &["com.bambulab.BambuStudio"],
-        &["Bambu Studio\\bambu-studio.exe"],
-        &["BambuStudio.app"],
-    ),
-    (
-        "SuperSlicer",
-        &["superslicer", "SuperSlicer"],
-        &["com.superslicer.SuperSlicer"],
-        &["SuperSlicer\\superslicer.exe"],
-        &["SuperSlicer.app"],
-    ),
-    (
-        "UltiMaker Cura",
-        &["cura", "UltiMaker-Cura"],
-        &["com.ultimaker.cura"],
-        &["UltiMaker Cura\\UltiMaker-Cura.exe"],
-        &["UltiMaker Cura.app"],
-    ),
-];
-
-/// The slicers installed on this computer.
-pub fn detect() -> Vec<Slicer> {
-    let path: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    let mut roots = Vec::new();
-    if cfg!(target_os = "windows") {
-        for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-            if let Some(dir) = std::env::var_os(var) {
-                roots.push(PathBuf::from(dir));
-            }
-        }
-    } else if cfg!(target_os = "macos") {
-        roots.push(PathBuf::from("/Applications"));
-        if let Some(home) = std::env::var_os("HOME") {
-            roots.push(PathBuf::from(home).join("Applications"));
-        }
-    } else {
-        roots.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
-        if let Some(home) = std::env::var_os("HOME") {
-            roots.push(PathBuf::from(home).join(".local/share/flatpak/exports/bin"));
-        }
-    }
-    // The Flatpak exports are hidden in our own sandbox: list them on the host.
-    let host: Vec<PathBuf> = if in_flatpak() && !roots.is_empty() {
-        host_command("find")
-            .args(&roots)
-            .args(["-maxdepth", "1"])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .map(PathBuf::from)
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    detect_where(&path, &roots, &|p| {
-        p.exists() || host.iter().any(|h| h == p)
-    })
-}
-
-/// [`detect`] over the given PATH folders and install roots.
-pub fn detect_in(path: &[PathBuf], roots: &[PathBuf]) -> Vec<Slicer> {
-    detect_where(path, roots, &|p| p.exists())
-}
-
-fn detect_where(
-    path: &[PathBuf],
-    roots: &[PathBuf],
-    exists: &dyn Fn(&Path) -> bool,
-) -> Vec<Slicer> {
-    let exe = if cfg!(target_os = "windows") {
-        ".exe"
-    } else {
-        ""
-    };
-    KNOWN
-        .iter()
-        .filter_map(|(name, programs, flatpaks, windows, mac)| {
-            let on_path = programs
-                .iter()
-                .flat_map(|p| path.iter().map(move |d| d.join(format!("{p}{exe}"))));
-            let installed: Vec<PathBuf> = if cfg!(target_os = "windows") {
-                windows
-                    .iter()
-                    .flat_map(|w| roots.iter().map(move |r| r.join(w)))
-                    .collect()
-            } else if cfg!(target_os = "macos") {
-                mac.iter()
-                    .flat_map(|m| roots.iter().map(move |r| r.join(m)))
-                    .collect()
-            } else {
-                flatpaks
-                    .iter()
-                    .flat_map(|f| roots.iter().map(move |r| r.join(f)))
-                    .collect()
-            };
-            on_path
-                .chain(installed)
-                .find(|p| exists(p))
-                .map(|path| Slicer {
-                    name: (*name).to_owned(),
-                    path,
-                })
-        })
-        .collect()
-}
-
-/// A slicer picked by hand, named after its file (or its Flatpak export).
-pub fn from_path(path: &Path) -> Slicer {
-    let known = KNOWN.iter().find(|(name, programs, flatpaks, ..)| {
-        let file = path.file_stem().map(|s| s.to_string_lossy().to_lowercase());
-        let file = file.as_deref().unwrap_or("");
-        flatpaks
-            .iter()
-            .any(|f| path.file_name() == Some(f.as_ref()))
-            || programs.iter().any(|p| p.to_lowercase() == file)
-            || name.to_lowercase().replace(' ', "") == file.replace([' ', '-'], "")
-    });
-    Slicer {
-        name: known.map_or_else(
-            || {
-                path.file_stem()
-                    .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
-            },
-            |k| k.0.to_owned(),
-        ),
-        path: path.to_path_buf(),
-    }
-}
-
-/// Opens `model` in the slicer without waiting for it. Put `model` in [`print_dir`] so a
-/// sandboxed slicer can read it.
-pub fn open(slicer: &Path, model: &Path) -> Result<()> {
-    let mut cmd = if slicer.extension().is_some_and(|e| e == "app") {
-        let mut c = Command::new("open");
-        c.arg("-a").arg(slicer);
-        c
-    } else {
-        host_command(slicer)
-    };
-    let mut child = cmd
-        .arg(model)
-        .spawn()
-        .with_context(|| format!("could not start {}", slicer.display()))?;
-    // Reaped when it closes, so it does not linger as a zombie.
-    std::thread::spawn(move || child.wait());
-    Ok(())
-}
-
-/// A folder for files sent to the slicer that a Flatpak slicer can read too. Inside our
-/// Flatpak the app cache is under `~/.var/app`, which other Flatpaks cannot see.
-pub fn print_dir() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) if in_flatpak() => PathBuf::from(home).join(".cache/buildcraft3d/print"),
-        _ => crate::settings::dirs()
-            .map(|d| d.cache_dir().join("print"))
-            .unwrap_or_else(|| std::env::temp_dir().join("buildcraft3d-print")),
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Filament {
@@ -292,7 +91,7 @@ const NOT_SETTINGS: &[&str] = &[
 ];
 
 /// The slicer's configuration file and where its presets are.
-struct Config {
+pub(super) struct Config {
     dir: PathBuf,
     conf: Value,
     /// The folder of the user's presets under `user/`.
@@ -302,7 +101,7 @@ struct Config {
 }
 
 impl Config {
-    fn of(slicer: &Slicer) -> Option<Config> {
+    pub(super) fn of(slicer: &Slicer) -> Option<Config> {
         let (dir, app) = config_dir(slicer)?;
         let mut profiles = vec![dir.join("system")];
         profiles.extend(resource_dirs(&slicer.path, app));
@@ -567,6 +366,43 @@ impl Config {
         names
     }
 
+    /// The printers the slicer can send to: printer presets with a print host, then the ones
+    /// it found on the network (`local_machines`, keyed by IP), without repeating a host.
+    pub(super) fn connected(&self) -> Vec<Printer> {
+        fn bare(host: &str) -> &str {
+            host.rsplit("://")
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/')
+        }
+        let mut found: Vec<Printer> = Vec::new();
+        let mut add = |name: &str, model: &str, host: &str| {
+            let host = host.trim();
+            if !host.is_empty() && !found.iter().any(|p| bare(&p.host) == bare(host)) {
+                found.push(Printer {
+                    name: if name.is_empty() { host } else { name }.to_owned(),
+                    model: model.to_owned(),
+                    host: host.to_owned(),
+                });
+            }
+        };
+        for name in list_json(&self.dir.join(format!("user/{}/machine", self.folder))) {
+            if let Some((machine, _)) = self.preset("machine", &name) {
+                let model = machine["printer_model"].as_str().unwrap_or("");
+                add(&name, model, machine["print_host"].as_str().unwrap_or(""));
+            }
+        }
+        let machines = self.conf["local_machines"]
+            .as_object()
+            .into_iter()
+            .flatten();
+        for (_, m) in machines {
+            let text = |key: &str| m[key].as_str().unwrap_or("");
+            add(text("dev_name"), text("printer_type"), text("dev_ip"));
+        }
+        found
+    }
+
     fn project_settings(&self, printer: &str, process: Option<&str>) -> Option<String> {
         let (machine, machine_changed) = self.preset("machine", printer)?;
         let slots = self.slots(Some(printer));
@@ -726,90 +562,6 @@ fn resource_dirs(program: &Path, app: &str) -> Vec<PathBuf> {
     dirs
 }
 
-/// Files read through the host, by path, with when they were read: a folder is read in one
-/// host call, since one per preset takes seconds for a vendor's hundreds of profiles. The
-/// folder itself is listed too, with no text, so a file missing from it is not asked for.
-static HOST_FILES: std::sync::Mutex<Vec<(PathBuf, std::time::Instant, String)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// How long a file read through the host stays current: one lookup, not across them, so
-/// changes made in the slicer show on the next one.
-const HOST_FILES_FRESH: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The names of the `.json` files in a folder, through the host when our sandbox hides it.
-fn list_json(dir: &Path) -> Vec<String> {
-    let names: Vec<String> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .collect(),
-        Err(_) if in_flatpak() => read_host_folder(dir),
-        Err(_) => Vec::new(),
-    };
-    let mut names: Vec<String> = names
-        .iter()
-        .filter_map(|n| n.strip_suffix(".json").map(str::to_owned))
-        .collect();
-    names.sort();
-    names
-}
-
-/// Reads every `.json` file of a hidden folder through the host into [`HOST_FILES`] and
-/// returns their names.
-fn read_host_folder(dir: &Path) -> Vec<String> {
-    // Name, NUL, contents, NUL for each file; JSON holds no NUL.
-    let script = r#"cd "$1" && for f in *.json; do [ -f "$f" ] && printf '%s\0' "$f" && cat -- "$f" && printf '\0'; done"#;
-    let Ok(out) = host_command("sh")
-        .args(["-c", script, "sh"])
-        .arg(dir)
-        .output()
-    else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let parts: Vec<&str> = text.split('\0').collect();
-    let now = std::time::Instant::now();
-    let mut files = HOST_FILES.lock().unwrap_or_else(|e| e.into_inner());
-    files.retain(|(path, at, _)| path.parent() != Some(dir) && at.elapsed() < HOST_FILES_FRESH);
-    files.push((dir.to_path_buf(), now, String::new()));
-    let mut names = Vec::new();
-    for pair in parts.chunks_exact(2) {
-        files.push((dir.join(pair[0]), now, pair[1].to_owned()));
-        names.push(pair[0].to_owned());
-    }
-    names
-}
-
-/// Reads a JSON file, through the host when our sandbox hides it (another app's `~/.var/app`).
-fn read_json(path: &Path) -> Option<Value> {
-    let host_file = |path: &Path| {
-        let files = HOST_FILES.lock().unwrap_or_else(|e| e.into_inner());
-        files
-            .iter()
-            .find(|(p, at, _)| p == path && at.elapsed() < HOST_FILES_FRESH)
-            .map(|(_, _, text)| text.clone())
-    };
-    let text = std::fs::read_to_string(path).ok().or_else(|| {
-        if !in_flatpak() {
-            return None;
-        }
-        // A preset's folder holds its siblings, which the same lookup is about to read.
-        if path.extension().is_some_and(|e| e == "json") {
-            let dir = path.parent()?;
-            if host_file(dir).is_none() {
-                read_host_folder(dir);
-            }
-            return host_file(path);
-        }
-        host_file(path).or_else(|| {
-            let out = host_command("cat").arg(path).output().ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-        })
-    })?;
-    serde_json::from_str(&text).ok()
-}
-
 /// The material named in a preset name such as "Generic PETG @System"; empty when none.
 fn kind_from_name(name: &str) -> String {
     const KINDS: &[&str] = &[
@@ -830,6 +582,7 @@ fn kind_from_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slicer::from_path;
 
     #[test]
     fn reads_the_current_printers_filaments() {
@@ -877,6 +630,8 @@ mod tests {
                 "OrcaSlicer.conf",
                 r##"{"app": {"preset_folder": "42"}, "presets": {"machine": "K1M"},
                 "models": [{"vendor": "V", "model": "M", "nozzle_diameter": "0.4;0.6"}],
+                "local_machines": {"192.168.1.10": {"dev_ip": "192.168.1.10", "dev_name": "K1",
+                    "printer_type": "Creality K1"}, "10.0.0.2": {"dev_ip": "10.0.0.2", "dev_name": ""}},
                 "orca_presets": [
                     {"machine": "K1M", "process": "Fine", "filament": "Mine", "filament_01": "PLA",
                      "filament_colors": "#FF0000,", "flush_volumes_matrix": "0|5|6|0"},
@@ -967,6 +722,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = orca_config(dir.path());
         assert_eq!(config.printers(), ["K1M", "M 0.4", "Gone"]);
+        // The preset and the printer found on the network at its address are one printer.
+        let printer = |name: &str, model: &str, host: &str| Printer {
+            name: name.into(),
+            model: model.into(),
+            host: host.into(),
+        };
+        assert_eq!(
+            config.connected(),
+            [
+                printer("K1M", "M", "192.168.1.10"),
+                printer("10.0.0.2", "", "10.0.0.2"),
+            ]
+        );
         let names = |p| {
             config
                 .filaments(p)

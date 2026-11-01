@@ -468,6 +468,18 @@ const ES: &[(&str, &str)] = &[
     ("Light", "Claro"),
     ("Dark", "Oscuro"),
     ("Collision", "Colisión"),
+    // 3D printer status
+    ("Offline", "Sin conexión"),
+    ("Idle", "Inactiva"),
+    ("Printing", "Imprimiendo"),
+    ("Paused", "En pausa"),
+    ("Error", "Error"),
+    ("IP address", "Dirección IP"),
+    ("State", "Estado"),
+    ("Progress", "Progreso"),
+    ("File", "Archivo"),
+    ("Nozzle", "Boquilla"),
+    ("Bed", "Cama"),
 ];
 
 #[cfg(test)]

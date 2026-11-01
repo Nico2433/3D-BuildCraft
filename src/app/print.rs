@@ -648,13 +648,26 @@ impl App {
         text(ui, &format!("3D BuildCraft {}", env!("CARGO_PKG_VERSION")));
     }
 
-    /// The "3D printer status" window: no print jobs to show yet.
+    /// The "3D printer status" window: the printers connected in the slicer and what they
+    /// are doing, read again every few seconds while it is open.
     pub(super) fn print_status(&mut self, ctx: &egui::Context) {
+        const EVERY: Duration = Duration::from_secs(5);
         if !self.print_status_open {
+            self.printer_status_at = None;
             return;
+        }
+        if let Some(read) = self
+            .printer_status_job
+            .as_ref()
+            .and_then(|r| r.try_recv().ok())
+        {
+            self.printer_status = read;
+            self.printer_status_job = None;
+            self.printer_status_at = Some(Instant::now());
         }
         let lang = self.settings.lang();
         let mut open = true;
+        let mut refresh = false;
         egui::Window::new(format!("{} - 3D BuildCraft", tr(lang, "3D printer status")))
             .id(egui::Id::new("print_status"))
             .open(&mut open)
@@ -663,19 +676,130 @@ impl App {
             .frame(egui::Frame::window(&ctx.style()).fill(PAGE))
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(style::TEXT);
-                style::icon_button(
+                refresh = style::icon_button(
                     ui,
                     Icon::Rotate,
                     Vec2::splat(36.0),
                     true,
                     style::RIBBON_HOVER,
-                );
+                )
+                .on_hover_text(tr(lang, "Refresh"))
+                .clicked();
                 ui.add_space(16.0);
-                text(ui, tr(lang, "There are no current 3D print jobs."));
-                ui.allocate_space(ui.available_size());
+                // Nothing while the first reading is on its way.
+                if self.printer_status.is_empty() && self.printer_status_at.is_some() {
+                    text(ui, tr(lang, "There are no current 3D print jobs."));
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (printer, status) in &self.printer_status {
+                        printer_row(ui, lang, printer, status);
+                    }
+                    ui.allocate_space(ui.available_size());
+                });
             });
         self.print_status_open = open;
+        if refresh {
+            self.printer_status_at = None;
+        }
+        let due = self.printer_status_at.is_none_or(|t| t.elapsed() >= EVERY);
+        if open && due && self.printer_status_job.is_none() {
+            self.read_printer_status(ctx);
+        }
+        ctx.request_repaint_after(EVERY);
     }
+
+    /// Asks each printer for its status off the UI thread: the ones shown, or after a refresh
+    /// the ones connected in the slicer, read again.
+    fn read_printer_status(&mut self, ctx: &egui::Context) {
+        let known: Vec<_> = self.printer_status.iter().map(|(p, _)| p.clone()).collect();
+        let reread = self.printer_status_at.is_none();
+        let slicer = self.chosen_slicer();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let printers = if reread {
+                // The window can open before the print view looked for slicers.
+                slicer
+                    .or_else(|| crate::slicer::detect().into_iter().next())
+                    .map_or_else(Vec::new, |s| crate::slicer::connected(&s))
+            } else {
+                known
+            };
+            let read = printers
+                .into_iter()
+                .map(|p| {
+                    let status = crate::slicer::status(&p.host);
+                    (p, status)
+                })
+                .collect();
+            let _ = tx.send(read);
+            ctx.request_repaint();
+        });
+        self.printer_status_job = Some(rx);
+    }
+}
+
+/// A printer in the status window: its card, then what it is doing.
+fn printer_row(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    printer: &crate::slicer::Printer,
+    status: &crate::slicer::Status,
+) {
+    use crate::slicer::State;
+    let or_dash = |s: &str| {
+        if s.is_empty() {
+            "-".to_owned()
+        } else {
+            s.to_owned()
+        }
+    };
+    let temperature = |t: Option<f32>| t.map_or_else(|| "-".into(), |t| format!("{t:.0} °C"));
+    let state = match status.state {
+        State::Offline => tr(lang, "Offline"),
+        State::Idle => tr(lang, "Idle"),
+        State::Printing => tr(lang, "Printing"),
+        State::Paused => tr(lang, "Paused"),
+        State::Error => tr(lang, "Error"),
+    };
+    let mut fields = vec![
+        (tr(lang, "Model"), or_dash(&printer.model)),
+        (tr(lang, "IP address"), printer.host.clone()),
+        (tr(lang, "State"), state.to_owned()),
+    ];
+    let online = status.state != State::Offline;
+    if online {
+        fields.extend([
+            (
+                tr(lang, "Progress"),
+                status
+                    .progress
+                    .map_or_else(|| "-".into(), |p| format!("{:.0} %", p * 100.0)),
+            ),
+            (tr(lang, "File"), or_dash(&status.file)),
+            (tr(lang, "Nozzle"), temperature(status.nozzle)),
+            (tr(lang, "Bed"), temperature(status.bed)),
+        ]);
+    }
+    ui.horizontal_top(|ui| {
+        let _ = card(ui, &printer.name, online);
+        ui.add_space(24.0);
+        egui::Grid::new(("printer_status", &printer.host))
+            .num_columns(2)
+            .spacing([24.0, 6.0])
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(
+                        egui::RichText::new(label)
+                            .size(style::LABEL_FONT)
+                            .color(style::TEXT_DIM),
+                    );
+                    text(ui, &value);
+                    ui.end_row();
+                }
+            });
+    });
+    ui.add_space(24.0);
 }
 
 /// A slicer profile drop-down under its heading; nothing when there are no profiles. The
