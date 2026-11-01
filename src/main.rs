@@ -4,7 +4,7 @@
 mod app;
 mod render;
 
-// Re-exported at the binary's root so app.rs and render.rs can write `crate::mesh`, etc.
+// Re-exported at the binary's root so app/ and render/ can write `crate::mesh`, etc.
 use buildcraft3d::*;
 
 use eframe::egui;

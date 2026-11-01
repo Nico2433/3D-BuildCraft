@@ -475,12 +475,22 @@ mod tests {
 
     #[test]
     fn every_ui_text_has_a_spanish_translation() {
-        // Literal texts are written as `tr(lang, "…")` in the UI code, src/app/*.rs.
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/app");
-        let src: String = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-            .collect();
+        // Literal texts are written as `tr(lang, "…")` in the UI code under src/app.
+        fn read_all(dir: &std::path::Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    read_all(&path, out);
+                } else {
+                    out.push_str(&std::fs::read_to_string(path).unwrap());
+                }
+            }
+        }
+        let mut src = String::new();
+        read_all(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app")),
+            &mut src,
+        );
         // rustfmt may break a call over lines, so drop whitespace after `tr(`.
         let mut texts = Vec::new();
         for part in src.split("tr(").skip(1) {

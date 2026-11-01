@@ -4,11 +4,8 @@ use super::*;
 use crate::snapping;
 use std::sync::Arc;
 
-#[path = "viewport_drag.rs"]
 mod drag;
-#[path = "viewport_frame.rs"]
 mod frame;
-#[path = "viewport_overlay.rs"]
 mod overlay;
 
 impl App {

@@ -2,13 +2,11 @@
 //! texture, the camera, a QR code or a built-in texture or stencil), and the two ways to
 //! put it on an object: a sticker projected where the pointer is, or a brush that tiles it
 //! over the faces under the pointer. The maths and the picture registry are in
-//! `crate::texture`; the shader draws the live sticker preview (see `render.rs`).
+//! `crate::texture`; the shader draws the live sticker preview (see `render/shader.rs`).
 
 use super::icons::Icon;
 use super::style;
-#[path = "texture_menu.rs"]
 mod menu;
-#[path = "texture_preset.rs"]
 mod preset;
 use super::*;
 use crate::render::DecalPreview;
