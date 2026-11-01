@@ -379,24 +379,6 @@ pub fn natural_size(mesh: &Arc<Mesh>, model: &Mat4, fraction: f32) -> f32 {
     (b.size().max_element() * fraction).max(0.5)
 }
 
-/// Triangles the brush covers around triangle `tri` hit at `at` (world space): the flat
-/// region it lies in, plus, on curved surfaces, the triangles within `radius` that face
-/// about the same way.
-pub fn brush_faces(mesh: &Mesh, model: &Mat4, tri: usize, at: Vec3, radius: f32) -> Vec<usize> {
-    let mut faces = mesh.face_region(tri, 5.0);
-    let n = world_normal(mesh, tri, model);
-    for i in 0..mesh.triangles.len() {
-        let (p, m) = world_triangle(mesh, i, model);
-        if m.dot(n) > 0.75
-            && ((p[0] + p[1] + p[2]) / 3.0 - at).length() <= radius
-            && !faces.contains(&i)
-        {
-            faces.push(i);
-        }
-    }
-    faces
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

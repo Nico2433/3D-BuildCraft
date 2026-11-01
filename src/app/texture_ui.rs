@@ -83,6 +83,8 @@ pub(super) struct Texture {
     /// The picture in use: a registry layer.
     layer: u16,
     mode: Mode,
+    /// How far a brush stroke spreads over the connected surface, 0..1, as Paint's.
+    coverage: f32,
     menu: bool,
     url: String,
     transparent: bool,
@@ -127,6 +129,7 @@ impl Texture {
             before,
             layer: texture::layer_of(Kind::Paper).unwrap_or(0),
             mode: Mode::Sticker,
+            coverage: 1.0,
             menu: false,
             url: String::new(),
             transparent: true,
@@ -202,6 +205,12 @@ impl App {
             }
         }
         style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
+        if t.mode == Mode::Brush {
+            style::label(ui, tr(lang, "Coverage"));
+            style::slider(ui, &mut t.coverage, 0.0..=1.0, 148.0, 0);
+            self.tool = Some(Tool::Texture(t));
+            return;
+        }
         let editing = t.editing.is_some();
         if style::option(ui, Icon::Hand, tr(lang, "Edit sticker"), editing).clicked() {
             self.texture_edit_sticker(&mut t);
@@ -710,7 +719,7 @@ impl App {
                 if pressed && t.last_face != Some((hit.0, hit.1)) {
                     let new_stroke = t.last_face.is_none();
                     t.last_face = Some((hit.0, hit.1));
-                    self.texture_dab(t.layer, hit, new_stroke);
+                    self.texture_dab(t, hit, new_stroke);
                     t.hint = false;
                 }
             }
@@ -748,19 +757,14 @@ impl App {
     }
 
     /// Tiles the picture over the faces around a brush hit. A stroke is one undo step.
-    fn texture_dab(&mut self, layer: u16, hit: (u64, usize, Vec3), new_stroke: bool) {
-        let (id, tri, at) = hit;
+    fn texture_dab(&mut self, t: &Texture, hit: (u64, usize, Vec3), new_stroke: bool) {
+        let (layer, (id, tri, _)) = (t.layer, hit);
         let Some(o) = self.scene.get(id) else {
             return;
         };
         let (mesh, model) = (o.mesh.clone(), o.matrix());
-        let faces = texture::brush_faces(
-            &mesh,
-            &model,
-            tri,
-            at,
-            texture::natural_size(&mesh, &model, 0.08),
-        );
+        // As Paint's coverage: how far the area spreads over the connected surface.
+        let faces = mesh.face_region(tri, t.coverage.clamp(0.0, 1.0) * 180.0);
         let tile = texture::natural_size(&mesh, &model, 0.5);
         let out = Arc::new(texture::apply_box(&mesh, &model, &faces, layer, tile));
         texture::remember(layer);
@@ -909,8 +913,9 @@ impl App {
             }
             (Preset::Brush, Some(hit)) => {
                 t.set_brush();
+                t.coverage = 0.3;
                 t.layer = texture::layer_of(Kind::Walnut).unwrap_or(t.layer);
-                self.texture_dab(t.layer, hit, true);
+                self.texture_dab(&t, hit, true);
                 if let Some(o) = self.scene.get(hit.0) {
                     // The highest face too, so the brush shows on more than one side.
                     let model = o.matrix();
@@ -932,7 +937,7 @@ impl App {
                     });
                     if let Some(tri) = top {
                         let at = hit.2;
-                        self.texture_dab(t.layer, (hit.0, tri, at), false);
+                        self.texture_dab(&t, (hit.0, tri, at), false);
                     }
                 }
             }
