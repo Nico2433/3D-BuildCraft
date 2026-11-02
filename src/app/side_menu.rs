@@ -304,10 +304,19 @@ impl App {
             );
             let changed = self.about_draft != self.scene.file_info(&self.scene_title());
             if ui.add_enabled(changed, update).clicked() {
-                self.scene.info = self.about_draft.clone();
-                self.scene.dirty = true;
+                self.set_model_info(self.about_draft.clone());
             }
         });
+    }
+
+    /// Replaces the scene's 3MF metadata, as the panel's Update button does; the scene has
+    /// unsaved changes when it differs.
+    pub(super) fn set_model_info(&mut self, info: io::ModelInfo) {
+        if info != self.scene.file_info(&self.scene_title()) {
+            self.scene.dirty = true;
+        }
+        self.scene.info = info.clone();
+        self.about_draft = info;
     }
 
     fn recent_panel(&mut self, ui: &mut egui::Ui) {

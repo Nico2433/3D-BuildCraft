@@ -29,6 +29,7 @@ const VIEWPORT_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
 mod actions;
 mod add_dialog;
 mod agent;
+mod agent_print;
 mod assistant_ui;
 mod dialogs;
 mod gizmo;
