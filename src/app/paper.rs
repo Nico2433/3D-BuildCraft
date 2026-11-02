@@ -40,6 +40,11 @@ impl App {
         self.paper.job = Some(rx);
     }
 
+    /// Whether the print dialog is open.
+    pub(super) fn paper_dialog_open(&self) -> bool {
+        self.paper.job.is_some()
+    }
+
     /// Notes the app window for the dialog and tells how a finished print went.
     pub(super) fn paper_job(&mut self, frame: &eframe::Frame) {
         if self.paper.window.is_none() {

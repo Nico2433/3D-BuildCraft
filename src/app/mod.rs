@@ -30,6 +30,7 @@ mod actions;
 mod add_dialog;
 mod agent;
 mod agent_model;
+mod agent_print;
 mod assistant_ui;
 mod dialogs;
 mod gizmo;

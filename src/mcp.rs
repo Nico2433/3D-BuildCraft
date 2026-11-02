@@ -190,13 +190,14 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "print",
-            "Only when the user explicitly asks to print: open the scene in the user's chosen slicer, where it is sliced and sent to the printer.",
+            "Only when the user explicitly asks to print: open the scene in the user's chosen slicer, where it is sliced and sent to the printer. The file carries the printer profile, print profile and filaments chosen with print_setup.",
             none.clone(),
         ),
         tool("screenshot", "A picture of the app window as it is now.", none),
     ]
     .into_iter()
     .chain(model_tools())
+    .chain(print_tools())
     .collect()
 }
 
@@ -313,6 +314,47 @@ fn model_tools() -> Vec<Value> {
                 "invert": flag("light is high instead of dark"),
                 "textures": flag("colour the top with the picture, default true"),
             }, "required": ["path"] }),
+        ),
+    ]
+}
+
+/// The tools for the model's metadata, the 3D print setup and printing on paper.
+fn print_tools() -> Vec<Value> {
+    let none = json!({ "type": "object", "properties": {} });
+    let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
+    let field = |what: &str| json!({ "type": "string", "description": what });
+    vec![
+        tool(
+            "model_info",
+            "Read or set the model's metadata (\"About the model\"), saved in 3MF files and sent to the slicer. With no arguments it only reads. Given fields replace those fields; an empty string clears one. The title also names the window and the print file.",
+            json!({ "type": "object", "properties": {
+                "title": field("model title"),
+                "designer": field("who designed it"),
+                "copyright": field("copyright notice"),
+                "license_terms": field("licence, e.g. CC BY 4.0"),
+                "description": field("free text"),
+            } }),
+        ),
+        tool(
+            "print_setup",
+            "Read or change the 3D print setup without printing. With no arguments it returns the detected slicers, the chosen slicer, its printer profiles, the print profiles of the chosen printer, the printer's filament slots (numbered from 1) and the slot each scene colour prints with. Given arguments are applied in order: slicer, printer, process, filament, filaments; each list in the answer is read again after the change. Changing the slicer clears the printer and process; changing the printer clears the process. Nothing here prints.",
+            json!({ "type": "object", "properties": {
+                "slicer": field("a slicer name from slicers, or the path of a slicer program"),
+                "printer": field("a printer profile name from printers"),
+                "process": field("a print profile name from processes"),
+                "filament": { "type": "integer", "minimum": 1, "description": "filament slot for every scene colour" },
+                "filaments": { "type": "array", "description": "filament slot per scene colour", "items": { "type": "object", "properties": { "color": field("a scene colour, #RRGGBB"), "slot": { "type": "integer", "minimum": 1 } }, "required": ["color", "slot"] } },
+            } }),
+        ),
+        tool(
+            "printer_status",
+            "Read-only: the printers connected in the slicer and what they are doing (state, progress, file, nozzle and bed temperatures in °C). Offline means it did not answer within two seconds.",
+            none.clone(),
+        ),
+        tool(
+            "print_on_paper",
+            "Only when the user explicitly asks to print on paper: draw the scene and open the system print dialog, where the user picks the printer and confirms.",
+            none,
         ),
     ]
 }

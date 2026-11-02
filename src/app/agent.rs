@@ -123,6 +123,13 @@ impl App {
         if tool == "measure" {
             return Ok(vec![mcp::text(&mcp::measure(&self.scene, a)?.to_string())]);
         }
+        // These leave the user's open tool alone.
+        if matches!(
+            tool,
+            "model_info" | "print_setup" | "printer_status" | "print_on_paper"
+        ) {
+            return self.agent_print_tool(tool, a, ctx);
+        }
         let edits = !matches!(tool, "get_scene" | "select");
         if edits {
             self.tool = None;
@@ -264,18 +271,7 @@ impl App {
                 }
                 self.save_to(path);
             }
-            "print" => {
-                if self.scene.objects.is_empty() {
-                    return Err("the scene is empty".into());
-                }
-                if self.settings.slicer.is_none() {
-                    self.apply(Action::DetectSlicers, ctx);
-                }
-                if self.settings.slicer.is_none() {
-                    return Err("no slicer found; the user can choose one in 3D print".into());
-                }
-                self.apply(Action::SendToSlicer, ctx);
-            }
+            "print" => self.agent_print(ctx)?,
             other => return Err(format!("unknown tool: {other}")),
         }
         // A tool that failed stays open in the UI; close it, the agent gets the error.
