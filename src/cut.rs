@@ -34,6 +34,18 @@ impl CutPlane {
         }
     }
 
+    /// The plane through `point` whose normal (the "top" side) is `normal`; `None` for a
+    /// zero or non-finite normal.
+    pub fn through(point: Vec3, normal: Vec3) -> Option<Self> {
+        let n = normal.try_normalize()?;
+        let (z, y, x) = Quat::from_rotation_arc(Vec3::Z, n).to_euler(EulerRot::ZYX);
+        Some(Self {
+            center: point,
+            offset: 0.0,
+            rotation: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+        })
+    }
+
     pub fn quat(&self) -> Quat {
         let r = self.rotation * (std::f32::consts::PI / 180.0);
         Quat::from_euler(EulerRot::ZYX, r.z, r.y, r.x)

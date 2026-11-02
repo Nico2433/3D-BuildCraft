@@ -408,18 +408,9 @@ impl App {
 
     /// Bakes a sticker into the object's mesh as one undo step.
     pub(super) fn texture_place(&mut self, t: &mut Texture, id: u64, decal: Decal, layer: u16) {
-        let Some(o) = self.scene.get(id) else {
+        let Some((before, after)) = self.bake_decal(id, decal, layer) else {
             return;
         };
-        let before = o.mesh.clone();
-        let after = Arc::new(texture::apply_decal(&before, &o.matrix(), &decal, layer));
-        let put = after.clone();
-        self.edit(|s| {
-            if let Some(o) = s.get_mut(id) {
-                o.mesh = put;
-            }
-        });
-        texture::remember(layer);
         t.hint = false;
         t.last = Some(Placed {
             id,
@@ -430,15 +421,51 @@ impl App {
         });
     }
 
+    /// Bakes a sticker into object `id` as one undo step; the mesh before and after.
+    pub(super) fn bake_decal(
+        &mut self,
+        id: u64,
+        decal: Decal,
+        layer: u16,
+    ) -> Option<(Arc<Mesh>, Arc<Mesh>)> {
+        let o = self.scene.get(id)?;
+        let before = o.mesh.clone();
+        let after = Arc::new(texture::apply_decal(&before, &o.matrix(), &decal, layer));
+        let put = after.clone();
+        self.edit(|s| {
+            if let Some(o) = s.get_mut(id) {
+                o.mesh = put;
+            }
+        });
+        texture::remember(layer);
+        Some((before, after))
+    }
+
     /// Tiles the picture over the faces around a brush hit. A stroke is one undo step.
     pub(super) fn texture_dab(&mut self, t: &Texture, hit: (u64, usize, Vec3), new_stroke: bool) {
-        let (layer, (id, tri, _)) = (t.layer, hit);
+        let (id, tri, _) = hit;
+        self.texture_box(id, Some((tri, t.coverage)), t.layer, new_stroke);
+    }
+
+    /// Tiles the picture on `layer` over object `id` with box mapping: the area around
+    /// `(triangle, coverage)` as the brush paints it, or the whole object for `None`.
+    /// `new_stroke` makes it a new undo step; otherwise it joins the last one.
+    pub(super) fn texture_box(
+        &mut self,
+        id: u64,
+        area: Option<(usize, f32)>,
+        layer: u16,
+        new_stroke: bool,
+    ) {
         let Some(o) = self.scene.get(id) else {
             return;
         };
         let (mesh, model) = (o.mesh.clone(), o.matrix());
         // As Paint's coverage: how far the area spreads over the connected surface.
-        let faces = mesh.face_region(tri, t.coverage.clamp(0.0, 1.0) * 180.0);
+        let faces = match area {
+            Some((tri, coverage)) => mesh.face_region(tri, coverage.clamp(0.0, 1.0) * 180.0),
+            None => (0..mesh.triangles.len()).collect(),
+        };
         let tile = texture::natural_size(&mesh, &model, 0.5);
         let out = Arc::new(texture::apply_box(&mesh, &model, &faces, layer, tile));
         texture::remember(layer);

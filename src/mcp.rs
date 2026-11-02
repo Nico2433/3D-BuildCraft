@@ -154,11 +154,6 @@ pub fn tools() -> Vec<Value> {
             json!({ "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "integer" } } }, "required": ["ids"] }),
         ),
         tool(
-            "insert_shape",
-            "Add a basic shape on the floor; it becomes the selection. Returns its id.",
-            json!({ "type": "object", "properties": { "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"] } }, "required": ["shape"] }),
-        ),
-        tool(
             "transform",
             "Move, rotate or resize the selection. position is the centre of its bounding box; bottom sets min Z, left/right set min/max X, front/back set min/max Y, after position (left then right, front then back). To stack on an object, bottom = that object's top. rotation is degrees about X, Y, Z (each selected object), size is the bounding box in mm (the bottom stays where it was unless position or bottom is given).",
             json!({ "type": "object", "properties": { "position": vec3("centre, mm"), "rotation": vec3("degrees"), "size": vec3("mm, all > 0"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
@@ -184,16 +179,6 @@ pub fn tools() -> Vec<Value> {
             json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of faces to remove, 0..1" } }, "required": ["remove"] }),
         ),
         tool(
-            "split",
-            "Cut the selection with a horizontal plane.",
-            json!({ "type": "object", "properties": { "z": { "type": "number", "description": "height of the plane, mm" }, "keep": { "type": "string", "enum": ["top", "bottom", "both"] } }, "required": ["z"] }),
-        ),
-        tool(
-            "emboss_text",
-            "Emboss (or engrave) text onto the top of the one selected object, projected straight down, centred unless offset moves it.",
-            json!({ "type": "object", "properties": { "text": { "type": "string" }, "size": { "type": "number", "description": "letter height, mm" }, "depth": { "type": "number", "description": "mm" }, "engrave": { "type": "boolean" }, "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] from the centre, mm" } }, "required": ["text"] }),
-        ),
-        tool(
             "open",
             "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
             json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }, "required": ["path"] }),
@@ -209,6 +194,126 @@ pub fn tools() -> Vec<Value> {
             none.clone(),
         ),
         tool("screenshot", "A picture of the app window as it is now.", none),
+    ]
+    .into_iter()
+    .chain(model_tools())
+    .collect()
+}
+
+/// Modelling tools: shapes, painting, textures, materials, Split, Emboss and adding files.
+fn model_tools() -> Vec<Value> {
+    let vec3 = |what: &str| json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": what });
+    let num = |what: &str| json!({ "type": "number", "description": what });
+    let int = |what: &str| json!({ "type": "integer", "description": what });
+    let flag = |what: &str| json!({ "type": "boolean", "description": what });
+    let text = |what: &str| json!({ "type": "string", "description": what });
+    let one_of = |names: &[&str], what: &str| json!({ "type": "string", "enum": names, "description": what });
+    let color = |what: &str| text(&format!("{what}, #RRGGBB"));
+    let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
+    let textures: Vec<String> = crate::texture_gen::Kind::all().map(|k| k.name()).collect();
+    let textures: Vec<&str> = textures.iter().map(String::as_str).collect();
+    let point = "a world point in mm on (or within 5 mm of) the surface; the nearest triangle is used. Points from get_scene bounds work, e.g. [center x, center y, top] is the middle of a flat top";
+    vec![
+        tool(
+            "insert_shape",
+            "Add a shape on the floor at the centre; it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness. One undo step.",
+            json!({ "type": "object", "properties": {
+                "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"] },
+                "size": vec3("bounding box [x, y, z] in mm, all > 0; applied last, the bottom stays on the floor"),
+                "custom": { "type": "object", "description": "Custom tool settings", "properties": {
+                    "latitude": int("subdivisions from bottom to top (box, sphere, torus), 3..48, default 10"),
+                    "longitude": int("subdivisions around (or across for the cube), 3..48, default 10"),
+                    "width": num("mm across, 1..1000, default 40; the shape keeps its proportions across"),
+                    "height": num("mm, 1..1000, default 40"),
+                    "roundness": int("0 (sharp) to 10 (round), default 0"),
+                } },
+            }, "required": ["shape"] }),
+        ),
+        tool(
+            "split",
+            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). The kept pieces stay in place and become the selection.",
+            json!({ "type": "object", "properties": {
+                "z": num("height of a horizontal plane, mm"),
+                "point": vec3("a point the plane passes through, mm"),
+                "normal": vec3("direction the plane faces (its top side), any length > 0"),
+                "rotation": vec3("the Split tool's plane angles in degrees about X, Y, Z (as an object's rotation); [0, 0, 0] is level"),
+                "keep": one_of(&["top", "bottom", "both"], "default top"),
+            } }),
+        ),
+        tool(
+            "emboss_text",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, a star, heart or circle, or the dark areas of a picture. planar projects straight down onto the top, centred unless offset or at moves it; cylindrical and spherical wrap it around the object's vertical axis or centre on its front (-Y). A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            json!({ "type": "object", "properties": {
+                "pattern": one_of(&["text", "star", "heart", "circle", "image"], "default text"),
+                "text": text("the text, for pattern text"),
+                "image": text("PNG or JPEG path, for pattern image"),
+                "font": text("installed font family; default the bundled font"),
+                "size": num("capital letter height for text, overall height for shapes and images, mm, default 10"),
+                "depth": num("height above the surface (or depth when engraving), mm, default 1"),
+                "engrave": flag("cut into the surface instead of raising"),
+                "bevel": flag("slope the edges"),
+                "angle": num("turn in its own plane, degrees"),
+                "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
+                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the centre of the top (planar) or along the surface from the front (cylindrical, spherical)" },
+                "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset"),
+                "top_color": color("colour of the top layer"),
+                "side_color": color("colour of the sides of a raised pattern"),
+            } }),
+        ),
+        tool(
+            "paint_area",
+            "Paint the surface region around a point, as the Color tool's click. coverage 0 paints the flat face there; higher values spread across edges that bend up to coverage × 180 degrees, so 1 paints the whole connected surface. Does not change the selection. One undo step.",
+            json!({ "type": "object", "properties": {
+                "point": vec3(point),
+                "color": color("the paint"),
+                "coverage": num("0..1, default 0"),
+                "id": int("object to paint; default the object nearest to point"),
+            }, "required": ["point", "color"] }),
+        ),
+        tool(
+            "set_material",
+            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through), with a colour that replaces any painted areas. One undo step.",
+            json!({ "type": "object", "properties": {
+                "type": one_of(&["none", "simple", "realistic", "translucent"], "the material"),
+                "color": color("default the first selected object's colour; not used with none"),
+            }, "required": ["type"] }),
+        ),
+        tool(
+            "apply_texture",
+            "Put a built-in texture or a picture on the selection, as Paint → Texture. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker projects it once at point, facing out of the surface. One undo step.",
+            json!({ "type": "object", "properties": {
+                "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes)"),
+                "image": text("PNG or JPEG path, instead of texture"),
+                "mode": one_of(&["brush", "sticker"], "default brush"),
+                "point": vec3(point),
+                "coverage": num("brush with point: 0..1, default 1 (the whole connected surface)"),
+                "id": int("a selected object to use; default the selected object nearest to point"),
+                "size": num("sticker width, mm; default 40% of the object's longest side"),
+                "angle": num("sticker turn about the surface normal, degrees"),
+            } }),
+        ),
+        tool(
+            "import",
+            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
+            json!({ "type": "object", "properties": {
+                "path": text("model file path"),
+                "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF and glTF carry their own"),
+            }, "required": ["path"] }),
+        ),
+        tool(
+            "load_image",
+            "Turn a picture into a solid, as Load image, added on the floor at the centre and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert. One undo step.",
+            json!({ "type": "object", "properties": {
+                "path": text("PNG or JPEG path"),
+                "method": one_of(&["contour", "height_map", "edge", "stamp"], "default contour"),
+                "size": num("mm along the longer side (the height for edge), default 80"),
+                "depth": num("most relief, mm, default 3"),
+                "levels": int("contour steps, 2..8, default 8"),
+                "smooth": num("blur before sampling, 0..1, default 1"),
+                "invert": flag("light is high instead of dark"),
+                "textures": flag("colour the top with the picture, default true"),
+            }, "required": ["path"] }),
+        ),
     ]
 }
 

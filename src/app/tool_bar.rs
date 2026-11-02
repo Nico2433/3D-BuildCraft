@@ -320,10 +320,7 @@ impl App {
                 let key = (*shape, *lat, *lon, *width, *height, *roundness);
                 let dragging = ui.input(|i| i.pointer.any_down());
                 if built.as_ref() != Some(&key) && !dragging {
-                    let mesh = crate::primitives::custom(*shape, *lat, *lon, *width, *height);
-                    *preview = crate::solid::round(&mesh, *roundness as f32 / 10.0)
-                        .map(std::sync::Arc::new)
-                        .map_err(|e| format!("{e:#}"));
+                    *preview = custom_mesh(key);
                     *built = Some(key);
                 }
             }
@@ -539,8 +536,18 @@ fn color_combo(ui: &mut egui::Ui, salt: &str, lang: Lang, color: &mut Option<Rgb
     }
 }
 
+/// Custom's shape for its settings: (shape, latitude, longitude, width, height, roundness).
+pub(super) fn custom_mesh(
+    (shape, lat, lon, width, height, roundness): (Primitive, usize, usize, f32, f32, u8),
+) -> Result<std::sync::Arc<Mesh>, String> {
+    let mesh = crate::primitives::custom(shape, lat, lon, width, height);
+    crate::solid::round(&mesh, roundness as f32 / 10.0)
+        .map(std::sync::Arc::new)
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// The shapes Custom offers, in the original's order.
-const CUSTOM_SHAPES: [Primitive; 5] = [
+pub(super) const CUSTOM_SHAPES: [Primitive; 5] = [
     Primitive::Cube,
     Primitive::Sphere,
     Primitive::Cone,
@@ -549,7 +556,7 @@ const CUSTOM_SHAPES: [Primitive; 5] = [
 ];
 
 /// Latitude and longitude steps offered by Custom.
-const SEGMENTS: [usize; 12] = [3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48];
+pub(super) const SEGMENTS: [usize; 12] = [3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48];
 
 /// A drop-down of whole numbers; a value not in the list shows as the nearest one.
 fn number_dropdown(ui: &mut egui::Ui, id: &str, values: &[usize], v: &mut usize) {

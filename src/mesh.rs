@@ -337,6 +337,19 @@ impl Mesh {
         out
     }
 
+    /// The triangle nearest to world point `p` when the mesh is placed by `model`, with
+    /// the nearest point on it. Degenerate triangles are skipped; `None` when none is left.
+    pub fn closest_triangle(&self, model: &Mat4, p: Vec3) -> Option<(usize, Vec3)> {
+        self.triangle_positions()
+            .enumerate()
+            .filter(|(_, [a, b, c])| (*b - *a).cross(*c - *a).length_squared() > 0.0)
+            .map(|(i, t)| {
+                let [a, b, c] = t.map(|v| model.transform_point3(v));
+                (i, closest_on_triangle(p, a, b, c))
+            })
+            .min_by(|x, y| x.1.distance_squared(p).total_cmp(&y.1.distance_squared(p)))
+    }
+
     pub fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
         (b - a).cross(c - a).normalize_or_zero()
     }
@@ -658,6 +671,39 @@ pub fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
     }
     let t = e2.dot(q) * inv;
     (t > 0.0).then_some(t)
+}
+
+/// The point of triangle `abc` closest to `p` (Ericson, Real-Time Collision Detection 5.1.5).
+pub fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
 }
 
 pub fn ray_aabb(origin: Vec3, dir: Vec3, b: &Aabb) -> bool {
