@@ -630,7 +630,7 @@ mod tests {
                 "OrcaSlicer.conf",
                 r##"{"app": {"preset_folder": "42"}, "presets": {"machine": "K1M"},
                 "models": [{"vendor": "V", "model": "M", "nozzle_diameter": "0.4;0.6"}],
-                "local_machines": {"192.168.1.10": {"dev_ip": "192.168.1.10", "dev_name": "K1",
+                "local_machines": {"192.0.2.10": {"dev_ip": "192.0.2.10", "dev_name": "K1",
                     "printer_type": "Creality K1"}, "10.0.0.2": {"dev_ip": "10.0.0.2", "dev_name": ""}},
                 "orca_presets": [
                     {"machine": "K1M", "process": "Fine", "filament": "Mine", "filament_01": "PLA",
@@ -641,7 +641,7 @@ mod tests {
             (
                 "user/42/machine/K1M.json",
                 r#"{"name": "K1M", "inherits": "M 0.4", "from": "User", "machine_start_gcode": "GO",
-                "print_host": "192.168.1.10"}"#,
+                "print_host": "192.0.2.10"}"#,
             ),
             (
                 "user/42/filament/Mine.json",
@@ -731,7 +731,7 @@ mod tests {
         assert_eq!(
             config.connected(),
             [
-                printer("K1M", "M", "192.168.1.10"),
+                printer("K1M", "M", "192.0.2.10"),
                 printer("10.0.0.2", "", "10.0.0.2"),
             ]
         );
