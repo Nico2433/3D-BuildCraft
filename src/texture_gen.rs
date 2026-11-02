@@ -80,6 +80,28 @@ impl Kind {
     pub fn is_stencil(self) -> bool {
         Self::STENCILS.contains(&self)
     }
+
+    /// Every built-in picture: the textures, then the stencils.
+    pub fn all() -> impl Iterator<Item = Kind> {
+        Self::TEXTURES.into_iter().chain(Self::STENCILS)
+    }
+
+    /// A stable snake_case name, for agents and files: `WaterDrops` is "water_drops".
+    pub fn name(self) -> String {
+        let mut out = String::new();
+        for (i, c) in format!("{self:?}").chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+        out
+    }
+
+    /// The picture called `name` (see [`Kind::name`]), ignoring case.
+    pub fn from_name(name: &str) -> Option<Kind> {
+        Self::all().find(|k| k.name().eq_ignore_ascii_case(name.trim()))
+    }
 }
 
 type Rgb = [f32; 3];

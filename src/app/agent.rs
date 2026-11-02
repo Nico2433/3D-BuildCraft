@@ -106,7 +106,14 @@ impl App {
     fn agent_call(&mut self, tool: &str, a: &Value, ctx: &egui::Context) -> Reply {
         let selection_needed = matches!(
             tool,
-            "transform" | "set_color" | "hollow" | "simplify" | "split" | "emboss_text"
+            "transform"
+                | "set_color"
+                | "hollow"
+                | "simplify"
+                | "split"
+                | "emboss_text"
+                | "set_material"
+                | "apply_texture"
         ) || (tool == "edit"
             && !matches!(a["operation"].as_str(), Some("undo" | "redo")));
         if selection_needed && self.scene.selection.is_empty() {
@@ -115,6 +122,13 @@ impl App {
         // A tool left open by the user would catch the edit; the agent's call wins.
         if tool == "measure" {
             return Ok(vec![mcp::text(&mcp::measure(&self.scene, a)?.to_string())]);
+        }
+        // These leave the user's open tool alone.
+        if matches!(
+            tool,
+            "model_info" | "print_setup" | "printer_status" | "print_on_paper"
+        ) {
+            return self.agent_print_tool(tool, a, ctx);
         }
         let edits = !matches!(tool, "get_scene" | "select");
         if edits {
@@ -134,14 +148,7 @@ impl App {
                 }
                 self.scene.selection = ids.into_iter().collect();
             }
-            "insert_shape" => {
-                let name = a["shape"].as_str().unwrap_or("");
-                let shape = Primitive::ALL
-                    .into_iter()
-                    .find(|p| p.label().eq_ignore_ascii_case(name))
-                    .ok_or_else(|| format!("unknown shape: {name}"))?;
-                self.apply(Action::Insert(shape), ctx);
-            }
+            "insert_shape" => self.agent_insert_shape(a, ctx)?,
             "transform" => {
                 let rotation = vec3(&a["rotation"])?;
                 let size = vec3(&a["size"])?;
@@ -229,53 +236,13 @@ impl App {
                 self.tool = Some(Tool::Simplify { level });
                 self.apply(Action::ApplySimplify, ctx);
             }
-            "split" => {
-                let z = a["z"].as_f64().filter(|z| z.is_finite());
-                let z = z.ok_or("z must be a number")? as f32;
-                let keep = match a["keep"].as_str().unwrap_or("top") {
-                    "top" => Keep::Top,
-                    "bottom" => Keep::Bottom,
-                    "both" => Keep::Both,
-                    k => return Err(format!("unknown keep: {k}")),
-                };
-                let plane = crate::cut::CutPlane::at_height(z);
-                self.tool = Some(Tool::Cut { plane, keep });
-                self.apply(Action::ApplyCut, ctx);
-            }
-            "emboss_text" => {
-                let mut params = Emboss {
-                    text: a["text"].as_str().unwrap_or("").to_owned(),
-                    ..Emboss::default()
-                };
-                if params.text.trim().is_empty() {
-                    return Err("text is empty".into());
-                }
-                if !a["size"].is_null() {
-                    params.size = positive(&a["size"], "size")?;
-                }
-                if !a["depth"].is_null() {
-                    params.depth = positive(&a["depth"], "depth")?;
-                }
-                params.engrave = a["engrave"].as_bool().unwrap_or(false);
-                if !a["offset"].is_null() {
-                    let xy: Option<Vec<f32>> = a["offset"].as_array().map(|v| {
-                        v.iter()
-                            .filter_map(|x| x.as_f64().filter(|x| x.is_finite()))
-                            .map(|x| x as f32)
-                            .collect()
-                    });
-                    match xy.as_deref() {
-                        Some(&[x, y]) => params.offset = glam::Vec2::new(x, y),
-                        _ => return Err("offset must be [x, y]".into()),
-                    }
-                }
-                self.tool = Some(Tool::Emboss {
-                    params,
-                    preview: Err(String::new()),
-                    built: None,
-                });
-                self.apply(Action::ApplyEmboss, ctx);
-            }
+            "split" => self.agent_split(a, ctx)?,
+            "emboss_text" => self.agent_emboss(a, ctx)?,
+            "paint_area" => self.agent_paint_area(a, ctx)?,
+            "set_material" => self.agent_material(a, ctx)?,
+            "apply_texture" => self.agent_texture(a)?,
+            "import" => self.agent_import(a, ctx)?,
+            "load_image" => self.agent_load_image(a, ctx)?,
             "open" => {
                 let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
                 if !path.is_file() {
@@ -304,18 +271,7 @@ impl App {
                 }
                 self.save_to(path);
             }
-            "print" => {
-                if self.scene.objects.is_empty() {
-                    return Err("the scene is empty".into());
-                }
-                if self.settings.slicer.is_none() {
-                    self.apply(Action::DetectSlicers, ctx);
-                }
-                if self.settings.slicer.is_none() {
-                    return Err("no slicer found; the user can choose one in 3D print".into());
-                }
-                self.apply(Action::SendToSlicer, ctx);
-            }
+            "print" => self.agent_print(ctx)?,
             other => return Err(format!("unknown tool: {other}")),
         }
         // A tool that failed stays open in the UI; close it, the agent gets the error.
@@ -365,7 +321,7 @@ impl App {
 }
 
 /// An optional `[x, y, z]`; anything else is an error.
-fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
+pub(super) fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
     if v.is_null() {
         return Ok(None);
     }
@@ -381,14 +337,14 @@ fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
     }
 }
 
-fn positive(v: &Value, name: &str) -> Result<f32, String> {
+pub(super) fn positive(v: &Value, name: &str) -> Result<f32, String> {
     match v.as_f64() {
         Some(x) if x.is_finite() && x > 0.0 => Ok(x as f32),
         _ => Err(format!("{name} must be a number greater than 0")),
     }
 }
 
-fn parse_hex(s: &str) -> Option<Rgba> {
+pub(super) fn parse_hex(s: &str) -> Option<Rgba> {
     let h = s.strip_prefix('#').unwrap_or(s);
     if h.len() != 6 || !h.is_ascii() {
         return None;

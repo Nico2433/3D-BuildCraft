@@ -109,10 +109,7 @@ impl App {
         if focused && !ctx.data(|d| d.get_temp(was_focused).unwrap_or(true)) {
             self.load_filaments(ctx);
         }
-        if let Some(profiles) = self.profiles_job.as_ref().and_then(|r| r.try_recv().ok()) {
-            (self.printers, self.processes, self.filaments) = profiles;
-            self.profiles_job = None;
-        }
+        self.take_profiles(false);
         ctx.data_mut(|d| d.insert_temp(was_focused, focused));
 
         egui::TopBottomPanel::bottom("print_bar")
@@ -357,7 +354,7 @@ impl App {
     }
 
     /// The chosen slicer, as found on this computer or named after its file.
-    fn chosen_slicer(&self) -> Option<crate::slicer::Slicer> {
+    pub(super) fn chosen_slicer(&self) -> Option<crate::slicer::Slicer> {
         let path = self.settings.slicer.as_ref()?;
         let found = self.slicers.iter().find(|s| &s.path == path).cloned();
         Some(found.unwrap_or_else(|| crate::slicer::from_path(path)))
@@ -386,8 +383,29 @@ impl App {
         self.profiles_job = Some(rx);
     }
 
+    /// Takes the profiles [`Self::load_filaments`] read, once they are there; with `wait`,
+    /// waits for a reading in progress.
+    pub(super) fn take_profiles(&mut self, wait: bool) {
+        let Some(rx) = &self.profiles_job else {
+            return;
+        };
+        let read = if wait {
+            rx.recv().ok()
+        } else {
+            match rx.try_recv() {
+                Ok(p) => Some(p),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        if let Some(profiles) = read {
+            (self.printers, self.processes, self.filaments) = profiles;
+        }
+        self.profiles_job = None;
+    }
+
     /// The filament slot that prints `color`: the one picked for it, else the closest.
-    fn filament_slot(&self, color: Rgba) -> usize {
+    pub(super) fn filament_slot(&self, color: Rgba) -> usize {
         if let Some((_, slot)) = self.filament_of.iter().find(|(c, _)| *c == color) {
             return (*slot).min(self.filaments.len().saturating_sub(1));
         }
@@ -403,7 +421,7 @@ impl App {
 
     /// The colours that print: painted areas', and objects' where faces are left unpainted.
     /// Read again only when an object's mesh or colour changed.
-    fn scene_colors(&mut self) -> Vec<Rgba> {
+    pub(super) fn scene_colors(&mut self) -> Vec<Rgba> {
         let cache = &mut self.scene_colors;
         let objects = &self.scene.objects;
         // Meshes are replaced, never changed in place, so a mesh is known by its pointer;
@@ -739,25 +757,39 @@ impl App {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let printers = if reread {
-                // The window can open before the print view looked for slicers.
-                slicer
-                    .or_else(|| crate::slicer::detect().into_iter().next())
-                    .map_or_else(Vec::new, |s| crate::slicer::connected(&s))
+                connected_printers(slicer)
             } else {
                 known
             };
-            let read = printers
-                .into_iter()
-                .map(|p| {
-                    let status = crate::slicer::status(&p.host);
-                    (p, status)
-                })
-                .collect();
-            let _ = tx.send(read);
+            let _ = tx.send(read_status(printers));
             ctx.request_repaint();
         });
         self.printer_status_job = Some(rx);
     }
+}
+
+/// The printers connected in `slicer`, or in the first slicer found when none is chosen:
+/// the status window can open before the print view looked for slicers.
+pub(super) fn connected_printers(
+    slicer: Option<crate::slicer::Slicer>,
+) -> Vec<crate::slicer::Printer> {
+    slicer
+        .or_else(|| crate::slicer::detect().into_iter().next())
+        .map_or_else(Vec::new, |s| crate::slicer::connected(&s))
+}
+
+/// Asks each printer for its status, all at once: an offline one takes the full timeout.
+pub(super) fn read_status(printers: Vec<crate::slicer::Printer>) -> PrinterStatus {
+    let statuses: Vec<_> = std::thread::scope(|scope| {
+        let asks: Vec<_> = printers
+            .iter()
+            .map(|p| scope.spawn(|| crate::slicer::status(&p.host)))
+            .collect();
+        asks.into_iter()
+            .map(|a| a.join().unwrap_or_default())
+            .collect()
+    });
+    printers.into_iter().zip(statuses).collect()
 }
 
 /// A printer in the status window: its card, then what it is doing.
