@@ -184,8 +184,8 @@ impl App {
         if normal.is_some() && rotation.is_some() {
             return Err("give normal or rotation, not both".into());
         }
-        if z.is_none() && at.is_none() {
-            return Err("give z, or point (with normal or rotation for a slanted plane)".into());
+        if z.is_none() && at.is_none() && normal.is_none() && rotation.is_none() {
+            return Err("give z, point, normal or rotation".into());
         }
         let mut centre = at.unwrap_or(self.scene.selection_aabb().center());
         if let Some(z) = z {

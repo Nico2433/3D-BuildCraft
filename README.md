@@ -54,7 +54,7 @@ macOS builds are planned but not published yet.
 
 The assistant button in the top bar opens a chat with Chat and Settings tabs. Settings turns the assistant on and picks what it talks to: an installed agent (Claude Code or Codex, found on PATH), a command of your own, or a model endpoint (OpenAI-compatible such as Ollama, LM Studio, OpenAI or OpenRouter, or Anthropic-compatible). API keys go to the system keychain, never to the settings file.
 
-The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file, load an image, open, save, print, screenshot). Each change shows as it happens and is an undo step.
+The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file, load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
 
 The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)" and add the command to your agent, for example with Claude Code:
 
