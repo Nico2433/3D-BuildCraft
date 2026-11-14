@@ -91,6 +91,7 @@ impl App {
             agent: agent_rx,
             agent_tx,
             listener: None,
+            mcp_http: None,
             chat: Default::default(),
             agent_shot: None,
             print_status_open: false,

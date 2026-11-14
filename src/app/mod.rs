@@ -345,8 +345,11 @@ pub struct App {
     /// over the local port.
     agent: std::sync::mpsc::Receiver<agent::Request>,
     agent_tx: std::sync::mpsc::Sender<agent::Request>,
-    /// The local MCP port while the assistant needs it, or why it could not open.
+    /// The local port for `--mcp` commands while external agents are on, or why it could
+    /// not open.
     listener: Option<Result<crate::mcp::Listener, String>>,
+    /// The MCP server agents reach at their registered URL, while external agents are on.
+    mcp_http: Option<Result<crate::mcp::http::Server, String>>,
     chat: assistant_ui::ChatState,
     /// Where the screenshot the assistant asked for goes, once it is taken.
     agent_shot: Option<std::sync::mpsc::Sender<crate::mcp::Reply>>,
@@ -1075,6 +1078,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // Stop accepting agent calls and remove the endpoint before other cleanup.
         self.listener = None;
+        self.mcp_http = None;
         self.tool = None;
         self.autosave.clear();
         let _ = self.settings.save();

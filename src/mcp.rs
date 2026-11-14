@@ -1,9 +1,13 @@
 //! A Model Context Protocol server, so an AI agent can use the app's tools: JSON-RPC 2.0
-//! over stdio, one message per line. The tools themselves run in the app; this module
-//! only speaks the protocol and describes them.
+//! over stdio, one message per line, or over HTTP from the open app (`http`). The tools
+//! themselves run in the app; this module only speaks the protocol and describes them.
+
+pub mod http;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// What a tool call answers when no app window takes MCP calls.
 pub const NOT_OPEN: &str =
@@ -26,11 +30,7 @@ pub fn serve(
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&msg, &mut call),
-            Err(e) => Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
-        };
-        if let Some(r) = reply {
+        if let Some(r) = reply(line.as_bytes(), &mut call) {
             writeln!(output, "{r}")?;
             output.flush()?;
         }
@@ -38,9 +38,25 @@ pub fn serve(
     Ok(())
 }
 
+/// The JSON-RPC error code for a message that is not JSON.
+const PARSE_ERROR: i32 = -32700;
+
+/// The answer to one JSON-RPC message, or None when it needs none.
+fn reply(message: &[u8], call: &mut impl FnMut(&str, Value) -> Reply) -> Option<Value> {
+    match serde_json::from_slice::<Value>(message) {
+        Ok(msg) => handle(&msg, call),
+        Err(e) => Some(error(
+            Value::Null,
+            PARSE_ERROR,
+            &format!("parse error: {e}"),
+        )),
+    }
+}
+
 fn handle(msg: &Value, call: &mut impl FnMut(&str, Value) -> Reply) -> Option<Value> {
-    // Notifications (no id) get no answer.
+    // Notifications (no id) and the client's own responses (no method) get no answer.
     let id = msg.get("id")?.clone();
+    msg.get("method")?;
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     let result = match msg["method"].as_str().unwrap_or("") {
         "initialize" => {
@@ -364,10 +380,10 @@ fn endpoint_file() -> Option<std::path::PathBuf> {
     crate::settings::dirs().map(|d| d.data_local_dir().join("mcp.json"))
 }
 
-/// The app's MCP server on a local port, so agents started elsewhere (or by the in-app
-/// chat) work on the window that is already open. Stops when dropped.
+/// The local port the `--mcp` stdio bridge forwards tool calls to, so commands started
+/// elsewhere work on the window that is already open. Stops when dropped.
 pub struct Listener {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Listener {
@@ -376,64 +392,82 @@ impl Listener {
     pub fn start(
         call: impl Fn(&str, Value) -> Reply + Clone + Send + 'static,
     ) -> anyhow::Result<Self> {
-        use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
         let token = uuid::Uuid::new_v4().to_string();
         let file = endpoint_file().ok_or_else(|| anyhow::anyhow!("no data folder"))?;
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let port = listener.local_addr()?.port();
-        options.open(&file)?.write_all(
+        write_private(
+            &file,
             json!({ "port": port, "token": token })
                 .to_string()
                 .as_bytes(),
         )?;
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let quit = stop.clone();
-        std::thread::spawn(move || {
-            while !quit.load(Ordering::Relaxed) {
-                let stream = match listener.accept() {
-                    Ok((s, _)) => s,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        continue;
-                    }
-                    Err(e) => {
-                        log::warn!("MCP listener: {e}");
-                        break;
-                    }
-                };
-                let (call, token) = (call.clone(), token.clone());
-                std::thread::spawn(move || {
-                    let _ = stream.set_nonblocking(false);
-                    let Ok(out) = stream.try_clone() else { return };
-                    let mut input = std::io::BufReader::new(stream);
-                    let mut first = String::new();
-                    if input.read_line(&mut first).is_err() || first.trim() != token {
-                        return;
-                    }
-                    if let Err(e) = serve(input, out, call) {
-                        log::info!("MCP client left: {e}");
-                    }
-                });
+        let stop = accept(listener, move |stream| {
+            let Ok(out) = stream.try_clone() else { return };
+            let mut input = std::io::BufReader::new(stream);
+            let mut first = String::new();
+            if input.read_line(&mut first).is_err() || first.trim() != token {
+                return;
             }
-            if let Some(f) = endpoint_file() {
-                let _ = std::fs::remove_file(f);
+            if let Err(e) = serve(input, out, call.clone()) {
+                log::info!("MCP client left: {e}");
             }
-        });
+        })?;
         Ok(Self { stop })
     }
 }
 
+/// Writes a file only this user can read, creating its folder.
+fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options.open(file)?;
+    // The mode above applies only to a new file.
+    #[cfg(unix)]
+    f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    f.write_all(bytes)
+}
+
+/// Hands each connection to `listener` to `serve` on its own thread, until the returned
+/// flag is set; the port closes soon after.
+fn accept(
+    listener: std::net::TcpListener,
+    serve: impl Fn(std::net::TcpStream) + Clone + Send + 'static,
+) -> std::io::Result<Arc<AtomicBool>> {
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let quit = stop.clone();
+    std::thread::spawn(move || {
+        while !quit.load(Ordering::Relaxed) {
+            let stream = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("MCP listener: {e}");
+                    break;
+                }
+            };
+            let serve = serve.clone();
+            std::thread::spawn(move || {
+                let _ = stream.set_nonblocking(false);
+                serve(stream);
+            });
+        }
+    });
+    Ok(stop)
+}
+
 impl Drop for Listener {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(f) = endpoint_file() {
             let _ = std::fs::remove_file(f);
         }

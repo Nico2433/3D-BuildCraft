@@ -56,13 +56,15 @@ The assistant button in the top bar opens a chat with Chat and Settings tabs. Se
 
 The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file, load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
 
-The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)" and add the command to your agent, for example with Claude Code:
+The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)": while the app is open, it serves MCP over HTTP at a local URL, `http://127.0.0.1:47833/mcp/<token>`, and stops when the app closes. The agent starts no process of ours; it talks to the open window. The settings list the agents found on this computer (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity) with a switch that registers the URL, and show the URL and the command to copy, for example:
 
 ```bash
-claude mcp add buildcraft3d -- /path/to/buildcraft3d --mcp
+claude mcp add -s user --transport http buildcraft3d http://127.0.0.1:47833/mcp/<token>
 ```
 
-With the app open, `--mcp` attaches to that window through a local port (127.0.0.1, with a token in a file only you can read); otherwise it opens a window of its own.
+The token is made once and kept in the config folder (readable by you only), so the URL stays the same between runs; the port is `mcp_port` under `[ai]` in the settings file. Registrations from older versions (the `--mcp` command) show as outdated; turning the switch on replaces them.
+
+`buildcraft3d --mcp` still serves MCP on stdio, for custom commands and clients without HTTP: with the app open it attaches to that window through a local port (127.0.0.1, with a token in a file only you can read); otherwise it opens a window of its own.
 
 ## Not yet
 

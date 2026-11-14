@@ -35,3 +35,7 @@ Expose the edits the UI already funnels through as a tool interface an agent can
 ## Update 2026-10-28
 
 The in-app chat no longer launches installed agents (Claude Code, Codex) or a custom command. The chat uses API endpoints the user configures; external agents connect over MCP: the user adds `buildcraft3d --mcp` to their own agent.
+
+## Update 2026-11-14
+
+Agents are registered with a URL instead of the `--mcp` command. With `--mcp`, every agent session started a `buildcraft3d --mcp` process that lived as long as the agent (in the Flatpak it showed as a running background app). Now the open app serves MCP over Streamable HTTP itself (`src/mcp/http.rs`, one JSON-RPC message per POST answered with JSON, 202 for notifications, 405 for GET), so the server lives and dies with the window and with the "External agents (MCP)" switch. It listens on 127.0.0.1 at a fixed port (`ai.mcp_port`, 47833) so registrations survive restarts. The secret is a UUID in the URL path, kept in the config folder with mode 0600, because Codex cannot send inline headers while every agent takes a plain URL; a wrong path or token gets 404. Host must be `127.0.0.1:<port>` or `localhost:<port>` and an Origin, if sent, the same over http, else 403, which keeps web pages out through DNS rebinding or cross-site requests. Tool calls take the same `agent::caller` path as before. `--mcp` and its token-line port remain for custom commands.
