@@ -228,6 +228,12 @@ fn model_tools() -> Vec<Value> {
     let color = |what: &str| text(&format!("{what}, #RRGGBB"));
     let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
     let textures: Vec<String> = crate::texture_gen::Kind::all().map(|k| k.name()).collect();
+    // Text, every built-in shape by name, and a picture.
+    let shapes: Vec<String> = crate::emboss::Shape::ALL.iter().map(|s| s.name()).collect();
+    let patterns: Vec<&str> = std::iter::once("text")
+        .chain(shapes.iter().map(String::as_str))
+        .chain(["image"])
+        .collect();
     let textures: Vec<&str> = textures.iter().map(String::as_str).collect();
     let point = "a world point in mm on (or within 5 mm of) the surface; the nearest triangle is used. Points from get_scene bounds work, e.g. [center x, center y, top] is the middle of a flat top";
     vec![
@@ -259,9 +265,9 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, a star, heart or circle, or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the original's shapes (named in pattern), or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
             json!({ "type": "object", "properties": {
-                "pattern": one_of(&["text", "star", "heart", "circle", "image"], "default text"),
+                "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text("the text, for pattern text"),
                 "image": text("PNG or JPEG path, for pattern image"),
                 "font": text("installed font family; default the bundled font"),

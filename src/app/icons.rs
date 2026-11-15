@@ -117,6 +117,10 @@ pub enum Icon {
     /// Stars, filled and in outline: Emboss's top and side colours.
     StarFilled,
     StarOutline,
+    /// A capital A with serifs: Emboss's text pattern.
+    SerifA,
+    /// A framed picture of a hill under the sun: load an image as the pattern.
+    Picture,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -847,6 +851,26 @@ impl Pen<'_> {
             }
             StarFilled => self.fill_concave(&star()),
             StarOutline => self.closed(&star()),
+            SerifA => {
+                // A thin left stroke, a thick right one, the bar and the serifs.
+                self.fill(&[(11.0, 2.5), (12.4, 4.4), (6.0, 21.0), (4.8, 21.0)]);
+                self.fill(&[(10.6, 2.0), (13.6, 2.0), (20.6, 21.0), (17.0, 21.0)]);
+                self.fill(&[(7.5, 13.6), (16.2, 13.6), (16.7, 15.0), (7.0, 15.0)]);
+                self.fill(&[(2.6, 20.4), (8.4, 20.4), (8.4, 21.8), (2.6, 21.8)]);
+                self.fill(&[(14.6, 20.4), (22.4, 20.4), (22.4, 21.8), (14.6, 21.8)]);
+                self.fill(&[(9.0, 2.0), (13.6, 2.0), (13.6, 3.2), (9.0, 3.2)]);
+            }
+            Picture => {
+                self.rect(3.0, 5.0, 21.0, 19.0);
+                self.fill_concave(&[
+                    (5.0, 17.0),
+                    (10.0, 10.0),
+                    (13.0, 14.0),
+                    (15.5, 11.5),
+                    (19.0, 17.0),
+                ]);
+                self.dot(16.5, 8.5, 1.6);
+            }
             KeepTop => {
                 self.fill(&[(12.0, 3.0), (15.0, 12.0), (9.0, 12.0)]);
                 self.line(&[(7.0, 15.0), (17.0, 15.0)]);

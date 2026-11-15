@@ -287,7 +287,7 @@ impl App {
                 }))
             }
             Action::ApplyEmboss => self.apply_emboss(),
-            Action::EmbossPreset(preset) => self.emboss_preset(&preset),
+            Action::EmbossPreset(preset) => self.emboss_preset(&preset, ctx),
             Action::StartPaint => {
                 let color = self
                     .scene

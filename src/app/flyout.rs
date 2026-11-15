@@ -149,6 +149,22 @@ impl Menu<'_> {
         self.row(label, enabled, h, TEXT_INSET, |_, _, _| {})
     }
 
+    /// A button row 64 points high with an icon, drawn by `icon` in its square in the
+    /// given colour, before its label, as the original's Pattern menu. True when clicked.
+    pub(super) fn icon_row(
+        &mut self,
+        label: &str,
+        icon: impl FnOnce(&egui::Painter, egui::Rect, Color32),
+    ) -> bool {
+        self.row(label, true, 64.0, 69.0, |p, r, c| {
+            let square = egui::Rect::from_center_size(
+                egui::pos2(r.left() + 32.0, r.center().y),
+                Vec2::splat(30.0),
+            );
+            icon(p, square, c);
+        })
+    }
+
     fn row(
         &mut self,
         label: &str,

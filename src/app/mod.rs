@@ -34,7 +34,9 @@ mod agent_print;
 mod assistant_ui;
 mod dialogs;
 mod emboss_bar;
+mod emboss_pattern;
 mod flyout;
+mod font_preview;
 mod gizmo;
 mod icons;
 mod jobs;
@@ -204,6 +206,8 @@ enum Tool {
         opened: Vec3,
         /// Which colour button's menu is open (0 top, 1 sides) and that menu.
         menu: (usize, paint_menu::PaintMenu),
+        /// The Pattern menu is open.
+        pattern_menu: bool,
     },
 }
 
@@ -217,6 +221,7 @@ impl Tool {
             built: None,
             lock: true,
             menu: (0, paint_menu::PaintMenu::Closed),
+            pattern_menu: false,
         }
     }
 
@@ -340,6 +345,8 @@ pub struct App {
     glide: Option<(OrbitCamera, OrbitCamera, Instant)>,
     /// Installed font families, loaded when the Emboss panel first needs them.
     font_list: Option<Vec<String>>,
+    /// Installed fonts loaded for the Font list's "abc" samples.
+    font_previews: font_preview::FontPreviews,
     toasts: Vec<Toast>,
     invalid: BTreeSet<u64>,
     restore: Vec<PathBuf>,

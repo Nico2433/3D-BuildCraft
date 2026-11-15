@@ -250,3 +250,50 @@ fn wrapped_star_engraving_on_a_sphere_removes_volume() {
         );
     }
 }
+
+#[test]
+fn every_shape_embosses_a_closed_solid_onto_a_cube() {
+    let cube = Primitive::Cube.build();
+    let volume = cube.stats().volume;
+    for shape in Shape::ALL {
+        let edit = Emboss {
+            pattern: Pattern::Shape(shape),
+            size: 20.0,
+            ..Emboss::default()
+        };
+        let solid = emboss::text_solid(&cube, &edit).unwrap();
+        let stats = solid.stats();
+        assert!(stats.is_closed_manifold(), "{shape:?} {stats:?}");
+        assert!(stats.volume > 0.0, "{shape:?}");
+        let out = emboss::apply(&cube, &edit).unwrap().object;
+        assert_closed(&out);
+        assert!(out.stats().volume > volume + 1.0, "{shape:?}");
+    }
+}
+
+#[test]
+fn ring_no_sign_and_smiley_keep_their_holes() {
+    let cube = Primitive::Cube.build();
+    let volume = |shape| {
+        emboss::text_solid(
+            &cube,
+            &Emboss {
+                pattern: Pattern::Shape(shape),
+                size: 20.0,
+                ..Emboss::default()
+            },
+        )
+        .unwrap()
+        .stats()
+        .volume
+    };
+    let disc = volume(Shape::Circle);
+    for (shape, at_most) in [
+        (Shape::Ring, 0.65),
+        (Shape::NoSign, 0.75),
+        (Shape::Smiley, 0.95),
+    ] {
+        let v = volume(shape);
+        assert!(v < disc * at_most, "{shape:?}: {v} vs disc {disc}");
+    }
+}

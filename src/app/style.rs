@@ -417,10 +417,28 @@ pub fn dropdown_rows(
     row: Vec2,
     paint: impl Fn(&egui::Painter, Rect, usize),
 ) -> bool {
+    let field = |p: &egui::Painter, r: Rect| row_text(p, r, current, 10.0);
+    dropdown_painted(ui, id, width, field, count, selected, open, row, paint)
+}
+
+/// [`dropdown_rows`] with the field's contents painted by `current` (given a painter
+/// clipped before the chevron and the field's rect).
+#[allow(clippy::too_many_arguments)]
+pub fn dropdown_painted(
+    ui: &mut Ui,
+    id: egui::Id,
+    width: f32,
+    current: impl FnOnce(&egui::Painter, Rect),
+    count: usize,
+    selected: &mut usize,
+    open: &mut bool,
+    row: Vec2,
+    paint: impl Fn(&egui::Painter, Rect, usize),
+) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
     field_box(ui, rect, resp.hovered() || *open);
     let text = rect.with_max_x(rect.right() - 30.0);
-    row_text(&ui.painter().with_clip_rect(text), rect, current, 10.0);
+    current(&ui.painter().with_clip_rect(text), rect);
     let chevron = Rect::from_center_size(
         rect.right_center() - Vec2::new(16.0, 0.0),
         Vec2::splat(14.0),
@@ -460,7 +478,7 @@ pub fn dropdown_rows(
 const LIST_ROWS: usize = 12;
 
 /// `text` at the left of `rect`, `inset` in, as the fields and lists write it.
-fn row_text(p: &egui::Painter, rect: Rect, text: &str, inset: f32) {
+pub fn row_text(p: &egui::Painter, rect: Rect, text: &str, inset: f32) {
     p.text(
         rect.left_center() + Vec2::new(inset, 0.0),
         egui::Align2::LEFT_CENTER,

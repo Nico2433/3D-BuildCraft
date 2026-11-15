@@ -16,8 +16,10 @@ use std::sync::OnceLock;
 
 mod outlines;
 mod preview;
+mod shapes;
 use outlines::pattern_outlines;
 pub use preview::{preview, Anchor, Preview};
+pub use shapes::{shape_fill, Filled, Shape};
 
 /// How the pattern is sent onto the object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -55,25 +57,6 @@ pub enum Pattern {
     Shape(Shape),
     /// Dark, opaque pixels of the image form the pattern.
     Image(PathBuf),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shape {
-    Star,
-    Heart,
-    Circle,
-}
-
-impl Shape {
-    pub const ALL: [Shape; 3] = [Shape::Star, Shape::Heart, Shape::Circle];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Shape::Star => "Star",
-            Shape::Heart => "Heart",
-            Shape::Circle => "Circle",
-        }
-    }
 }
 
 /// How the pattern sits on the object. Lengths in mm, angle in degrees.
@@ -550,11 +533,63 @@ fn clip(top: &[[u32; 3]], hits: &[Option<(Vec3, Vec3)>], rise: &[f32]) -> Option
             kept_rise.push(rise[v]);
         }
     }
-    Some(Piece {
+    let mut piece = Piece {
         top: kept.iter().map(|t| t.map(|v| new[v as usize])).collect(),
         hits: kept_hits,
         rise: kept_rise,
-    })
+    };
+    split_pinches(&mut piece);
+    Some(piece)
+}
+
+/// Gives each fan of triangles round a vertex its own copy of that vertex. Cutting a
+/// piece at the object's edge can leave two parts touching at a single corner; sharing
+/// it, their walls would share an upright edge and the solid would not be closed.
+fn split_pinches(piece: &mut Piece) {
+    let mut around: Vec<Vec<usize>> = vec![Vec::new(); piece.hits.len()];
+    for (t, tri) in piece.top.iter().enumerate() {
+        for &v in tri {
+            around[v as usize].push(t);
+        }
+    }
+    for (v, tris) in around.iter().enumerate() {
+        // Fans: triangles round `v` joined through an edge from `v` they share.
+        let mut fan: Vec<usize> = (0..tris.len()).collect();
+        let root = |fan: &[usize], mut k: usize| {
+            while fan[k] != k {
+                k = fan[k];
+            }
+            k
+        };
+        let others = |t: usize| piece.top[t].into_iter().filter(move |&w| w as usize != v);
+        for a in 0..tris.len() {
+            for b in a + 1..tris.len() {
+                if others(tris[a]).any(|w| others(tris[b]).any(|x| x == w)) {
+                    let (ra, rb) = (root(&fan, a), root(&fan, b));
+                    fan[ra] = rb;
+                }
+            }
+        }
+        // The first fan keeps the vertex; each other fan gets one new copy.
+        let first = root(&fan, 0);
+        let mut copies: HashMap<usize, u32> = HashMap::new();
+        for k in 0..tris.len() {
+            let lead = root(&fan, k);
+            if lead == first {
+                continue;
+            }
+            let copy = *copies.entry(lead).or_insert_with(|| {
+                piece.hits.push(piece.hits[v]);
+                piece.rise.push(piece.rise[v]);
+                piece.hits.len() as u32 - 1
+            });
+            for w in piece.top[tris[k]].iter_mut() {
+                if *w as usize == v {
+                    *w = copy;
+                }
+            }
+        }
+    }
 }
 
 /// The points along a closed `contour` with no gap longer than `step`.
@@ -1087,10 +1122,11 @@ mod tests {
                 size: 20.0,
                 ..Emboss::default()
             };
-            let t = text_solid(&Primitive::Cube.build(), &e).unwrap();
-            closed(&t);
-            let b = t.aabb();
-            assert!((b.max.y - b.min.y - 20.0).abs() < 0.01, "{s:?} {b:?}");
+            // Wide ones (the flag) are cut at the cube's edge, so the size is measured
+            // on the flat pattern.
+            closed(&text_solid(&Primitive::Cube.build(), &e).unwrap());
+            let size = pattern_size(&e).unwrap();
+            assert!((size.y - 20.0).abs() < 0.01, "{s:?} {size}");
         }
     }
 

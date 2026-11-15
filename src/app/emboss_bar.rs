@@ -3,6 +3,7 @@
 //! below, then our Engrave switch (its size is in the bottom bar, as the
 //! original's). Each row keeps a label next to its control.
 
+use super::font_preview::FontPreviews;
 use super::icons::{self, Icon};
 use super::paint_menu::{self, MenuRow, PaintMenu, Picked};
 use super::style;
@@ -20,19 +21,21 @@ impl App {
             preview,
             built,
             menu,
+            pattern_menu,
             ..
         }) = &mut self.tool
         else {
             return;
         };
         let font_list = &mut self.font_list;
+        let previews = &mut self.font_previews;
         let recent = &self.settings.recent_colors;
         let mut picked = None;
         ui.add_space(12.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 7.0;
             row(ui, |ui| {
-                pattern_dropdown(ui, lang, params);
+                emboss_pattern::pattern_control(ui, lang, params, pattern_menu);
                 ui.add_space(GROUP);
                 style::label(ui, tr(lang, "Projection"));
                 let names = Projection::ALL.map(|p| tr(lang, p.label()));
@@ -62,7 +65,7 @@ impl App {
             row(ui, |ui| {
                 // The switch after the text and font: the switch, its name and gaps.
                 let switch = 50.0 + label_width(ui, tr(lang, "Engrave")) + 2.0 * 6.0 + GAP + 17.0;
-                text_and_font(ui, lang, params, font_list, switch);
+                text_and_font(ui, lang, params, (font_list, previews), switch);
                 style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
                 toggle(ui, &mut params.engrave, tr(lang, "Engrave"));
             });
@@ -91,38 +94,28 @@ impl App {
 }
 
 impl App {
-    /// Sets Emboss up for a screenshot: `spherical` picks that projection.
-    pub(super) fn emboss_preset(&mut self, preset: &str) {
-        let Some(Tool::Emboss { params, .. }) = &mut self.tool else {
+    /// Sets Emboss up for a screenshot: `spherical` picks that projection, `pattern`
+    /// opens the Pattern menu, `fonts` the Font list, and a shape's name (`heart`,
+    /// `no_sign`...) embosses that shape 30 mm high.
+    pub(super) fn emboss_preset(&mut self, preset: &str, ctx: &egui::Context) {
+        let Some(Tool::Emboss {
+            params,
+            pattern_menu,
+            ..
+        }) = &mut self.tool
+        else {
             return;
         };
-        if preset == "spherical" {
-            params.projection = Projection::Spherical;
-        }
-    }
-}
-
-/// The pattern: text, a shape, or an image (which asks for the picture).
-fn pattern_dropdown(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss) {
-    style::label(ui, tr(lang, "Pattern"));
-    let mut patterns: Vec<&str> = vec![tr(lang, "Text")];
-    patterns.extend(Shape::ALL.map(|s| tr(lang, s.label())));
-    patterns.push(tr(lang, "Image"));
-    let mut k = match &params.pattern {
-        Pattern::Text => 0,
-        Pattern::Shape(s) => 1 + Shape::ALL.iter().position(|o| o == s).unwrap_or(0),
-        Pattern::Image(_) => patterns.len() - 1,
-    };
-    if style::dropdown(ui, "emboss_pattern", fit(ui, &patterns), &patterns, &mut k) {
-        if k == 0 {
-            params.pattern = Pattern::Text;
-        } else if let Some(&s) = Shape::ALL.get(k - 1) {
-            params.pattern = Pattern::Shape(s);
-        } else if let Some(p) = rfd::FileDialog::new()
-            .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
-            .pick_file()
-        {
-            params.pattern = Pattern::Image(p);
+        match preset {
+            "spherical" => params.projection = Projection::Spherical,
+            "pattern" => *pattern_menu = true,
+            "fonts" => ctx.data_mut(|d| d.insert_temp(font_list_open(), true)),
+            name => {
+                if let Some(s) = Shape::from_name(name) {
+                    params.pattern = Pattern::Shape(s);
+                    params.size = 30.0;
+                }
+            }
         }
     }
 }
@@ -132,11 +125,12 @@ fn text_and_font(
     ui: &mut egui::Ui,
     lang: Lang,
     params: &mut Emboss,
-    font_list: &mut Option<Vec<String>>,
+    fonts: (&mut Option<Vec<String>>, &mut FontPreviews),
     after: f32,
 ) {
     match &params.pattern {
         Pattern::Text => {
+            let (font_list, previews) = fonts;
             let fonts = font_list.get_or_insert_with(crate::emboss::font_families);
             let mut names = vec![tr(lang, "Built-in")];
             names.extend(fonts.iter().map(String::as_str));
@@ -145,8 +139,8 @@ fn text_and_font(
                 .as_ref()
                 .and_then(|f| fonts.iter().position(|o| o == f))
                 .map_or(0, |k| k + 1);
-            // As wide as the chosen font's name, so it is never cut.
-            let width = fit(ui, &[names[k]]).max(fit(ui, &names[..1]));
+            // As wide as the chosen font's name and sample, so they are never cut.
+            let width = (FontPreviews::row_width(ui, names[k]) + 10.0 + 34.0).ceil();
             let (text, font) = (tr(lang, "Text"), tr(lang, "Font"));
             // The text field gives up room in a narrow window, so `after` (the width of
             // what follows the font) still fits.
@@ -156,7 +150,7 @@ fn text_and_font(
             style::text_field(ui, &mut params.text, field, "");
             ui.add_space(GAP);
             style::label(ui, font);
-            if style::dropdown(ui, "emboss_font", width, &names, &mut k) {
+            if font_dropdown(ui, &names, &mut k, previews) {
                 params.font = k.checked_sub(1).map(|k| fonts[k].clone());
             }
         }
@@ -167,6 +161,52 @@ fn text_and_font(
         }
         Pattern::Shape(_) => {}
     }
+}
+
+/// The Font drop-down: each font's name followed by "abc" in that font, as the original's
+/// (`names[0]` is the built-in font). The fonts of the rows on screen load as they are
+/// seen. True when another was chosen into `k`.
+fn font_dropdown(
+    ui: &mut egui::Ui,
+    names: &[&str],
+    k: &mut usize,
+    previews: &mut FontPreviews,
+) -> bool {
+    let font_of = |j: usize| (j > 0).then(|| names[j]);
+    let id = egui::Id::new("emboss_font");
+    let open_id = font_list_open();
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    let width = (FontPreviews::row_width(ui, names[*k]) + 10.0 + 34.0).ceil();
+    // The list is as wide as its longest row, measured only while it is open.
+    let list_w = if open {
+        let longest = names
+            .iter()
+            .map(|n| FontPreviews::row_width(ui, n))
+            .fold(0.0, f32::max);
+        width.max(longest + 2.0 * 10.0 + 16.0)
+    } else {
+        width
+    };
+    previews.begin(ui.ctx());
+    let wanted = std::cell::RefCell::new(Vec::new());
+    let current = *k;
+    let changed = {
+        let previews = &*previews;
+        let row = |p: &egui::Painter, r: egui::Rect, j: usize| {
+            previews.paint_row(p, r, names[j], font_of(j), &wanted);
+        };
+        let field = |p: &egui::Painter, r: egui::Rect| row(p, r, current);
+        let size = Vec2::new(list_w, style::FIELD_H);
+        style::dropdown_painted(ui, id, width, field, names.len(), k, &mut open, size, row)
+    };
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+    previews.load(ui.ctx(), wanted.into_inner());
+    changed
+}
+
+/// Where the Font list keeps whether it is open.
+fn font_list_open() -> egui::Id {
+    egui::Id::new("emboss_font").with("open")
 }
 
 /// "Color" with a button for the top (a filled star) and one for the sides (an outline

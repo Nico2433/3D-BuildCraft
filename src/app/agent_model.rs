@@ -222,11 +222,10 @@ impl App {
         };
         params.pattern = match a["pattern"].as_str().unwrap_or("text") {
             "text" => Pattern::Text,
-            "star" => Pattern::Shape(Shape::Star),
-            "heart" => Pattern::Shape(Shape::Heart),
-            "circle" => Pattern::Shape(Shape::Circle),
             "image" => Pattern::Image(file(a, "image")?),
-            p => return Err(format!("unknown pattern: {p}")),
+            p => {
+                Pattern::Shape(Shape::from_name(p).ok_or_else(|| format!("unknown pattern: {p}"))?)
+            }
         };
         if params.pattern == Pattern::Text && params.text.trim().is_empty() {
             return Err("text is empty".into());

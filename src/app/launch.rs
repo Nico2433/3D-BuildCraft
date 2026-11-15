@@ -66,6 +66,7 @@ impl App {
             rotate_selection: BTreeSet::new(),
             glide: None,
             font_list: None,
+            font_previews: Default::default(),
             toasts: Vec::new(),
             invalid: BTreeSet::new(),
             // A screenshot shows the requested state, not a recovery prompt.
