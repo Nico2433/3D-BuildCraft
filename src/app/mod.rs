@@ -34,6 +34,7 @@ mod agent_print;
 mod assistant_ui;
 mod dialogs;
 mod emboss_bar;
+mod flyout;
 mod gizmo;
 mod icons;
 mod jobs;

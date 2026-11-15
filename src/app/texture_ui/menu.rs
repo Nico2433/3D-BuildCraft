@@ -1,7 +1,7 @@
 //! The "Selected" menu of the Texture tool: picking a picture from a file, the camera, a QR
 //! code or the built-in textures and stencils.
 
-use super::super::paint_menu::{BUTTON, ROW, ROW_DARK};
+use super::super::flyout::{Flyout, Grid, Mark, Menu, BUTTON, ROW_DARK};
 use super::*;
 
 impl App {
@@ -24,161 +24,87 @@ impl App {
             .collect();
         let kinds: Vec<egui::TextureId> = t.thumbs.kinds.iter().map(|h| h.id()).collect();
         let selected = t.layer;
-        let mut pick = None;
         let top = ctx.screen_rect().top() + 32.0;
-        let area = egui::Area::new(egui::Id::new("texture_menu"))
-            .fixed_pos(egui::pos2(swatch.right() + 12.0, top))
-            .order(egui::Order::Foreground)
-            .fade_in(false)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                let font = egui::FontId::proportional(13.0);
-                // The three button rows.
-                for (k, (label, enabled)) in [
-                    (tr(lang, "Load"), true),
-                    (tr(lang, "Texture picker"), true),
-                    (tr(lang, "Camera"), camera_ok),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let sense = if enabled {
-                        Sense::click()
-                    } else {
-                        Sense::hover()
-                    };
-                    let (r, resp) = ui.allocate_exact_size(Vec2::new(PANEL_W, 49.0), sense);
-                    let fill = if enabled && resp.hovered() {
-                        Color32::from_gray(0x63)
-                    } else {
-                        BUTTON
-                    };
-                    ui.painter().rect_filled(r, egui::CornerRadius::ZERO, fill);
-                    ui.painter().text(
-                        r.left_center() + Vec2::new(12.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        label,
-                        font.clone(),
-                        if enabled {
-                            style::TEXT
-                        } else {
-                            style::TEXT_DIM
-                        },
-                    );
-                    let (sep, _) = ui.allocate_exact_size(Vec2::new(PANEL_W, 2.0), Sense::hover());
-                    ui.painter().rect_filled(sep, egui::CornerRadius::ZERO, ROW);
-                    if resp.clicked() {
-                        pick = Some(match k {
-                            0 => Pick::Load,
-                            1 => Pick::Picker,
-                            _ => Pick::Camera,
-                        });
-                    }
+        let shown = Flyout::new(
+            "texture_menu",
+            egui::pos2(swatch.right() + 12.0, top),
+            PANEL_W,
+        )
+        .heights(49.0, 41.0)
+        .show(ctx, opening, |m| {
+            let mut pick = None;
+            for (choice, label, enabled) in [
+                (Pick::Load, tr(lang, "Load"), true),
+                (Pick::Picker, tr(lang, "Texture picker"), true),
+                (Pick::Camera, tr(lang, "Camera"), camera_ok),
+            ] {
+                if m.button_row(label, enabled) {
+                    pick = Some(choice);
                 }
-                if self.texture_qr_block(ui, lang, t) {
-                    pick = Some(Pick::Qr);
+            }
+            if self.texture_qr_block(m, lang, t) {
+                pick = Some(Pick::Qr);
+            }
+            // Recent materials, then the texture grid and the stencils.
+            let picture = |ids: &[egui::TextureId]| {
+                let ids = ids.to_vec();
+                move |p: &egui::Painter, k: usize, r: egui::Rect| {
+                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    p.image(ids[k], r, uv, Color32::WHITE);
                 }
-                // Recent materials, then the texture grid and the stencils.
-                let header = |ui: &mut egui::Ui, text: &str| {
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(PANEL_W, 41.0), Sense::hover());
-                    ui.painter()
-                        .rect_filled(r, egui::CornerRadius::ZERO, ROW_DARK);
-                    ui.painter().text(
-                        r.left_center() + Vec2::new(12.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        text,
-                        font.clone(),
-                        style::TEXT,
-                    );
+            };
+            m.header(tr(lang, "Recent materials"));
+            if !recent.is_empty() {
+                let grid = Grid {
+                    columns: recent.len(),
+                    tile: 40.0,
+                    pitch: 46.0,
+                    first: Vec2::new(25.0, 26.0),
+                    extra: 6.0,
+                    fill: ROW_DARK,
+                    mark: Mark::Picture,
                 };
-                // A picture button: image in `r`, boxed when hovered or in use.
-                let swatch_button = |ui: &mut egui::Ui,
-                                     r: egui::Rect,
-                                     id: egui::TextureId,
-                                     k: usize,
-                                     on: bool|
-                 -> bool {
-                    let resp = ui.interact(r, ui.id().with(("texture_cell", k)), Sense::click());
-                    ui.painter().image(
-                        id,
-                        r,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    if resp.hovered() || on {
-                        ui.painter().rect_stroke(
-                            r,
-                            egui::CornerRadius::ZERO,
-                            Stroke::new(2.0_f32, if on { style::TOGGLE_ON } else { style::TEXT }),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    resp.clicked()
+                let ids: Vec<egui::TextureId> = recent.iter().map(|r| r.1).collect();
+                let on = |k: usize| recent[k].0 == selected;
+                if let Some(k) = m.tile_grid(recent.len(), &grid, on, picture(&ids)) {
+                    pick = Some(Pick::Layer(recent[k].0));
+                }
+            }
+            m.header(tr(lang, "Texture"));
+            // The textures, then the stencils a little apart.
+            let stencils = Kind::TEXTURES.len();
+            for (group, first, extra) in [
+                (&Kind::TEXTURES[..], 0, 4.0),
+                (&Kind::STENCILS[..], stencils, 8.0),
+            ] {
+                let grid = Grid {
+                    columns: 6,
+                    tile: CELL,
+                    pitch: CELL + GAP,
+                    first: Vec2::splat(5.0 + CELL / 2.0) - Vec2::new(0.0, 1.0),
+                    extra,
+                    fill: ROW_DARK,
+                    mark: Mark::Picture,
                 };
-                header(ui, tr(lang, "Recent materials"));
-                if !recent.is_empty() {
-                    let (band, _) =
-                        ui.allocate_exact_size(Vec2::new(PANEL_W, 52.0), Sense::hover());
-                    ui.painter()
-                        .rect_filled(band, egui::CornerRadius::ZERO, ROW_DARK);
-                    for (k, (layer, id)) in recent.iter().enumerate() {
-                        let r = egui::Rect::from_min_size(
-                            band.min + Vec2::new(5.0 + k as f32 * 46.0, 6.0),
-                            Vec2::splat(40.0),
-                        );
-                        if swatch_button(ui, r, *id, 100 + k, *layer == selected) {
-                            pick = Some(Pick::Layer(*layer));
-                        }
-                    }
+                let on =
+                    |k: usize| texture::known_layer(group[k]) == Some(selected) && selected != 0;
+                if let Some(k) = m.tile_grid(group.len(), &grid, on, picture(&kinds[first..])) {
+                    pick = Some(Pick::Kind(group[k]));
                 }
-                header(ui, tr(lang, "Texture"));
-                let rows = [(0, 4, 4.0), (24, 1, 4.0)];
-                for (first, count, pad) in rows {
-                    let h = count as f32 * (CELL + GAP) + pad + if first > 0 { 4.0 } else { 0.0 };
-                    let (area, _) = ui.allocate_exact_size(Vec2::new(PANEL_W, h), Sense::hover());
-                    ui.painter()
-                        .rect_filled(area, egui::CornerRadius::ZERO, ROW_DARK);
-                    let n = if first == 0 { 24 } else { 6 };
-                    for j in 0..n {
-                        let r = egui::Rect::from_min_size(
-                            area.min
-                                + Vec2::new(
-                                    5.0 + (j % 6) as f32 * (CELL + GAP),
-                                    pad + (j / 6) as f32 * (CELL + GAP),
-                                ),
-                            Vec2::splat(CELL),
-                        );
-                        let k = first + j;
-                        let layer = if k < 24 {
-                            Kind::TEXTURES.get(k)
-                        } else {
-                            Kind::STENCILS.get(k - 24)
-                        }
-                        .and_then(|kind| texture::known_layer(*kind));
-                        let on = layer == Some(selected) && selected != 0;
-                        if swatch_button(ui, r, kinds[k], k, on) {
-                            let kind = if k < 24 {
-                                Kind::TEXTURES[k]
-                            } else {
-                                Kind::STENCILS[k - 24]
-                            };
-                            pick = Some(Pick::Kind(kind));
-                        }
-                    }
-                }
-            });
-        if pick.is_some() || (!opening && area.response.clicked_elsewhere()) {
+            }
+            pick
+        });
+        if shown.inner.is_some() || shown.dismissed {
             t.menu = false;
         }
-        pick
+        shown.inner
     }
 
     /// "Generate QR texture for" with its field and button, and the transparency switch.
     /// True when a QR picture was asked for.
-    fn texture_qr_block(&mut self, ui: &mut egui::Ui, lang: Lang, t: &mut Texture) -> bool {
-        let (block, _) = ui.allocate_exact_size(Vec2::new(PANEL_W, 78.0), Sense::hover());
-        ui.painter()
-            .rect_filled(block, egui::CornerRadius::ZERO, BUTTON);
+    fn texture_qr_block(&mut self, m: &mut Menu, lang: Lang, t: &mut Texture) -> bool {
+        let block = m.band(78.0, BUTTON);
+        let ui = &mut *m.ui;
         let font = egui::FontId::proportional(13.0);
         let label = ui.painter().layout_no_wrap(
             tr(lang, "Generate QR texture for").to_owned(),
