@@ -44,17 +44,18 @@ impl CallbackTrait for FrameCallback {
         r.upload_textures(queue);
         queue.write_buffer(&r.globals_buf, 0, bytemuck::bytes_of(&globals));
 
-        // Three slots per item: the object, its reflection and its shadow; then the slab.
+        // Three slots per item: the object, its reflection and its shadow; then the slabs.
         let n = self.items.len();
-        if 3 * n as u64 + 1 > r.object_capacity {
-            r.object_capacity = (3 * n as u64 + 1).next_power_of_two();
+        let slots = 3 * n + self.slabs.len();
+        if slots as u64 > r.object_capacity {
+            r.object_capacity = (slots as u64).next_power_of_two();
             let (b, bg) = Renderer::object_buffer(device, &r.object_layout, r.object_capacity);
             r.object_buf = b;
             r.object_bg = bg;
         }
         let mut bytes = std::mem::take(&mut r.object_bytes);
         bytes.clear();
-        bytes.resize((3 * n + 1) * OBJECT_STRIDE as usize, 0);
+        bytes.resize(slots * OBJECT_STRIDE as usize, 0);
         let mut live = HashSet::new();
         for (i, it) in self.items.iter().enumerate() {
             let key = Arc::as_ptr(&it.mesh) as usize;
@@ -110,14 +111,14 @@ impl CallbackTrait for FrameCallback {
                 gm.lines = Some((buf, idx.len() as u32));
             }
         }
-        if let Some((model, color)) = self.slab {
+        for (k, s) in self.slabs.iter().enumerate() {
             let u = ObjectUniform {
-                model: mat(model),
+                model: mat(s.model),
                 normal: mat(Mat4::IDENTITY),
-                color,
-                extra: [0.0; 4],
+                color: s.color,
+                extra: [f(s.edge), 0.0, 0.0, 0.0],
             };
-            let o = 3 * n * OBJECT_STRIDE as usize;
+            let o = (3 * n + k) * OBJECT_STRIDE as usize;
             bytes[o..o + std::mem::size_of::<ObjectUniform>()]
                 .copy_from_slice(bytemuck::bytes_of(&u));
         }
@@ -201,10 +202,12 @@ impl CallbackTrait for FrameCallback {
         for i in glass {
             draw_item(pass, i);
         }
-        if self.slab.is_some() {
+        if !self.slabs.is_empty() {
             pass.set_pipeline(&r.slab);
-            pass.set_bind_group(1, &r.object_bg, &slot(3 * n));
-            pass.draw(0..6, 0..1);
+            for k in 0..self.slabs.len() as u64 {
+                pass.set_bind_group(1, &r.object_bg, &slot(3 * n + k));
+                pass.draw(0..6, 0..1);
+            }
         }
         if self.flags.wireframe {
             pass.set_pipeline(&r.wire);

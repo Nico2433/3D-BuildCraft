@@ -91,6 +91,15 @@ pub struct ViewFlags {
     pub reflections: bool,
 }
 
+/// The unit square -1..1 in XY under `model`, filled with `color`.
+#[derive(Clone, Copy)]
+pub struct Slab {
+    pub model: Mat4,
+    pub color: [f32; 4],
+    /// A solid line a pixel or two wide along its border.
+    pub edge: bool,
+}
+
 /// A sticker shown live on one item, before it is baked into the mesh.
 #[derive(Clone, Copy)]
 pub struct DecalPreview {
@@ -110,9 +119,9 @@ pub struct FrameCallback {
     pub viewport: glam::Vec2,
     /// A plane (normal, distance) whose positive side is cut away, as in the Split preview.
     pub clip: Option<(Vec3, f32)>,
-    /// A translucent square (the Split plane): the unit square -1..1 in XY under this
-    /// matrix, with its colour. Depth tested, so objects hide it.
-    pub slab: Option<(Mat4, [f32; 4])>,
+    /// Translucent squares: the Split plane and the floor bands under objects that need
+    /// repair. Depth tested, so objects hide them.
+    pub slabs: Vec<Slab>,
 }
 
 struct GpuMesh {

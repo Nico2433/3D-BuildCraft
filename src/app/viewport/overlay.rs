@@ -97,16 +97,6 @@ impl App {
             }
             g.paint(&painter, hot, self.field);
         }
-        for id in &self.invalid {
-            if let Some(o) = self.scene.get(*id) {
-                draw_footprint(
-                    &painter,
-                    &o.world_aabb(),
-                    Stroke::new(3.0_f32, Color32::from_rgb(0xE8, 0x11, 0x23)),
-                    &to_screen,
-                );
-            }
-        }
         if let Some(Tool::Measure { points, hover }) = &self.tool {
             // The placed points are blue and the live one green, as the original's.
             let live = if points.len() < 2 { *hover } else { None };
@@ -133,29 +123,6 @@ impl App {
                 }
             }
         }
-    }
-}
-
-/// The outline of the box's base, where it stands: the original marks an object that
-/// needs repair with a red rectangle on the floor, not a whole box.
-fn draw_footprint(
-    painter: &egui::Painter,
-    b: &Aabb,
-    stroke: Stroke,
-    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
-) {
-    if !b.is_valid() {
-        return;
-    }
-    let corners = [
-        Vec3::new(b.min.x, b.min.y, b.min.z),
-        Vec3::new(b.max.x, b.min.y, b.min.z),
-        Vec3::new(b.max.x, b.max.y, b.min.z),
-        Vec3::new(b.min.x, b.max.y, b.min.z),
-    ];
-    let points: Option<Vec<Pos2>> = corners.into_iter().map(to_screen).collect();
-    if let Some(points) = points {
-        painter.add(egui::Shape::closed_line(points, stroke));
     }
 }
 

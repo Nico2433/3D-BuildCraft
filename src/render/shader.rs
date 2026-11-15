@@ -159,10 +159,10 @@ struct SlabOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
     return out;
 }
 
-// Translucent fill with a solid edge line a pixel or two wide.
+// Translucent fill, with a solid edge line a pixel or two wide when extra.x is set.
 @fragment fn fs_slab(in: SlabOut) -> @location(0) vec4<f32> {
     let edge = (1.0 - abs(in.uv)) / fwidth(in.uv);
-    if (min(edge.x, edge.y) < 1.5) { return vec4<f32>(o.color.rgb, 1.0); }
+    if (o.extra.x > 0.5 && min(edge.x, edge.y) < 1.5) { return vec4<f32>(o.color.rgb, 1.0); }
     return vec4<f32>(o.color.rgb, o.color.a);
 }
 
