@@ -310,126 +310,127 @@ impl App {
         };
         let lang = self.settings.lang();
         let size = Vec2::new(236.0, 355.0);
-        let area = egui::Area::new(egui::Id::new("grid_flyout"))
-            .fixed_pos(at - Vec2::new(size.x / 2.0, 0.0))
-            .order(egui::Order::Foreground)
-            .fade_in(false)
-            .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(size, Sense::click());
-                let p = ui.painter();
-                p.rect_filled(rect, egui::CornerRadius::ZERO, Color32::from_gray(0x2B));
-                let head = egui::Rect::from_min_size(rect.min, Vec2::new(size.x, 40.0));
-                p.rect_filled(head, egui::CornerRadius::ZERO, Color32::from_gray(0x19));
-                p.rect_stroke(
-                    rect,
-                    egui::CornerRadius::ZERO,
-                    Stroke::new(1.0_f32, Color32::from_gray(0x76)),
-                    egui::StrokeKind::Inside,
-                );
-                let text = |pos: Pos2, t: &str, size: f32| {
-                    p.text(
-                        pos,
-                        Align2::LEFT_CENTER,
-                        t,
-                        egui::FontId::proportional(size),
-                        style::TEXT,
-                    )
-                };
-                text(
-                    head.left_center() + Vec2::new(12.0, 0.0),
-                    tr(lang, "Grid properties"),
-                    12.0,
-                );
-                text(
-                    rect.min + Vec2::new(20.0, 75.0),
-                    tr(lang, "Grid mode"),
-                    14.0,
-                );
-                let r = &mut self.settings.render;
-                // (shown, tone): None hides the floor.
-                let modes = [
-                    (tr(lang, "Grid None"), false, 0),
-                    (tr(lang, "Light"), true, 1),
-                    (tr(lang, "Dark"), true, 2),
-                    (tr(lang, "Default"), true, 0),
-                ];
-                let mut changed = false;
-                for (k, (label, shown, tone)) in modes.into_iter().enumerate() {
-                    let row = egui::Rect::from_min_size(
-                        rect.min + Vec2::new(20.0, 95.0 + 40.0 * k as f32),
-                        Vec2::new(size.x - 40.0, 40.0),
-                    );
-                    let resp = ui.interact(row, ui.id().with(("grid_mode", k)), Sense::click());
-                    let current = r.grid == shown && (!shown || r.grid_tone == tone);
-                    let fill = style::interaction_fill(
-                        &resp,
-                        true,
-                        current,
-                        style::Bar {
-                            active: Color32::from_rgb(0x12, 0x4A, 0x62),
-                            ..style::RIBBON_BAR
-                        },
-                    );
+        let shown =
+            super::flyout::Flyout::new("grid_flyout", at - Vec2::new(size.x / 2.0, 0.0), size.x)
+                .show(ctx, just_opened, |m| {
+                    // Its own look on the flyout: a darker header over a grey panel, outlined.
+                    let head = m.band(40.0, Color32::from_gray(0x19));
+                    m.band(size.y - head.height(), Color32::from_gray(0x2B));
+                    let ui = &mut *m.ui;
+                    let rect = egui::Rect::from_min_size(head.min, size);
                     let p = ui.painter();
-                    p.rect_filled(row, egui::CornerRadius::ZERO, fill);
-                    let icon = egui::Rect::from_center_size(
-                        row.left_center() + Vec2::new(22.0, 0.0),
-                        Vec2::splat(20.0),
+                    p.rect_stroke(
+                        rect,
+                        egui::CornerRadius::ZERO,
+                        Stroke::new(1.0_f32, Color32::from_gray(0x76)),
+                        egui::StrokeKind::Inside,
                     );
-                    let (light, dark) = (Color32::from_gray(0x9F), Color32::from_gray(0x86));
-                    match k {
-                        0 => {
-                            let s = Stroke::new(1.5_f32, style::TEXT);
-                            p.circle_stroke(icon.center(), 9.0, s);
-                            let d = Vec2::splat(6.4);
-                            p.line_segment([icon.center() - d, icon.center() + d], s);
+                    let text = |pos: Pos2, t: &str, size: f32| {
+                        p.text(
+                            pos,
+                            Align2::LEFT_CENTER,
+                            t,
+                            egui::FontId::proportional(size),
+                            style::TEXT,
+                        )
+                    };
+                    text(
+                        head.left_center() + Vec2::new(12.0, 0.0),
+                        tr(lang, "Grid properties"),
+                        12.0,
+                    );
+                    text(
+                        rect.min + Vec2::new(20.0, 75.0),
+                        tr(lang, "Grid mode"),
+                        14.0,
+                    );
+                    let r = &mut self.settings.render;
+                    // (shown, tone): None hides the floor.
+                    let modes = [
+                        (tr(lang, "Grid None"), false, 0),
+                        (tr(lang, "Light"), true, 1),
+                        (tr(lang, "Dark"), true, 2),
+                        (tr(lang, "Default"), true, 0),
+                    ];
+                    let mut changed = false;
+                    for (k, (label, shown, tone)) in modes.into_iter().enumerate() {
+                        let row = egui::Rect::from_min_size(
+                            rect.min + Vec2::new(20.0, 95.0 + 40.0 * k as f32),
+                            Vec2::new(size.x - 40.0, 40.0),
+                        );
+                        let resp = ui.interact(row, ui.id().with(("grid_mode", k)), Sense::click());
+                        let current = r.grid == shown && (!shown || r.grid_tone == tone);
+                        let fill = style::interaction_fill(
+                            &resp,
+                            true,
+                            current,
+                            style::Bar {
+                                active: Color32::from_rgb(0x12, 0x4A, 0x62),
+                                ..style::RIBBON_BAR
+                            },
+                        );
+                        let p = ui.painter();
+                        p.rect_filled(row, egui::CornerRadius::ZERO, fill);
+                        let icon = egui::Rect::from_center_size(
+                            row.left_center() + Vec2::new(22.0, 0.0),
+                            Vec2::splat(20.0),
+                        );
+                        let (light, dark) = (Color32::from_gray(0x9F), Color32::from_gray(0x86));
+                        match k {
+                            0 => {
+                                let s = Stroke::new(1.5_f32, style::TEXT);
+                                p.circle_stroke(icon.center(), 9.0, s);
+                                let d = Vec2::splat(6.4);
+                                p.line_segment([icon.center() - d, icon.center() + d], s);
+                            }
+                            1 => {
+                                p.rect_filled(icon, egui::CornerRadius::ZERO, light);
+                            }
+                            2 => {
+                                p.rect_filled(icon, egui::CornerRadius::ZERO, dark);
+                            }
+                            _ => {
+                                let (l, rr) = icon.split_left_right_at_fraction(0.5);
+                                p.rect_filled(l, egui::CornerRadius::ZERO, light);
+                                p.rect_filled(rr, egui::CornerRadius::ZERO, dark);
+                            }
                         }
-                        1 => {
-                            p.rect_filled(icon, egui::CornerRadius::ZERO, light);
-                        }
-                        2 => {
-                            p.rect_filled(icon, egui::CornerRadius::ZERO, dark);
-                        }
-                        _ => {
-                            let (l, rr) = icon.split_left_right_at_fraction(0.5);
-                            p.rect_filled(l, egui::CornerRadius::ZERO, light);
-                            p.rect_filled(rr, egui::CornerRadius::ZERO, dark);
+                        p.text(
+                            row.left_center() + Vec2::new(44.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(14.0),
+                            style::TEXT,
+                        );
+                        if resp.clicked() {
+                            (r.grid, r.grid_tone) = (shown, tone);
+                            changed = true;
                         }
                     }
-                    p.text(
-                        row.left_center() + Vec2::new(44.0, 0.0),
+                    ui.painter().text(
+                        rect.min + Vec2::new(20.0, 290.0),
                         Align2::LEFT_CENTER,
-                        label,
+                        tr(lang, "Show grid labels"),
                         egui::FontId::proportional(14.0),
                         style::TEXT,
                     );
-                    if resp.clicked() {
-                        (r.grid, r.grid_tone) = (shown, tone);
-                        changed = true;
+                    let mut child =
+                        ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                            rect.min + Vec2::new(20.0, 309.0),
+                            Vec2::new(200.0, 24.0),
+                        )));
+                    // The flyout packs its rows tight; the switch keeps its label's gap.
+                    child.spacing_mut().item_spacing = ctx.style().spacing.item_spacing;
+                    child.horizontal(|ui| {
+                        changed |=
+                            style::switch(ui, &mut r.grid_labels, tr(lang, "On"), tr(lang, "Off"))
+                                .changed();
+                    });
+                    if changed {
+                        let _ = self.settings.save();
                     }
-                }
-                ui.painter().text(
-                    rect.min + Vec2::new(20.0, 290.0),
-                    Align2::LEFT_CENTER,
-                    tr(lang, "Show grid labels"),
-                    egui::FontId::proportional(14.0),
-                    style::TEXT,
-                );
-                let mut child =
-                    ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                        rect.min + Vec2::new(20.0, 309.0),
-                        Vec2::new(200.0, 24.0),
-                    )));
-                child.horizontal(|ui| {
-                    changed |=
-                        style::switch(ui, &mut r.grid_labels, tr(lang, "On"), tr(lang, "Off"))
-                            .changed();
                 });
-                if changed {
-                    let _ = self.settings.save();
-                }
-            });
-        if !just_opened && area.response.clicked_elsewhere() {
+        if shown.dismissed {
             self.grid_menu = None;
         }
     }
