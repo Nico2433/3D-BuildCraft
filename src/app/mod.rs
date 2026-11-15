@@ -280,6 +280,7 @@ const CLIP_TEXT: &str = "3D BuildCraft objects";
 const REPAIRING: &str = "Repairing...";
 const LOADING: &str = "Loading...";
 const SMOOTHING: &str = "Smoothing...";
+const SIMPLIFYING: &str = "Simplifying...";
 
 struct Toast {
     text: String,
@@ -502,6 +503,23 @@ impl App {
                     format!("{} {fixed}/{total}", tr(lang, "Objects repaired:")),
                     fixed < total,
                 );
+            }
+            jobs::Done::Simplified(Some(meshes)) => {
+                self.edit(|s| {
+                    for (id, old, mesh) in meshes {
+                        // Objects edited or deleted meanwhile keep what they have now.
+                        if let Some(o) = s
+                            .get_mut(id)
+                            .filter(|o| std::sync::Arc::ptr_eq(&o.mesh, &old))
+                        {
+                            o.mesh = std::sync::Arc::new(mesh);
+                        }
+                    }
+                });
+                self.refresh_invalid();
+            }
+            jobs::Done::Simplified(None) => {
+                self.toast(tr(lang, "Simplification produced an invalid solid"), true)
             }
             jobs::Done::Smoothed { gen, result } => self.smooth_done(gen, result),
             jobs::Done::Loaded {

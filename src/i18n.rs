@@ -459,6 +459,7 @@ const ES: &[(&str, &str)] = &[
     ("Show grid labels", "Mostrar etiquetas de cuadrícula"),
     ("Repairing...", "Reparando..."),
     ("Loading...", "Cargando..."),
+    ("Simplifying...", "Simplificando..."),
     ("The operation failed.", "La operación falló."),
     ("Pitch", "Tono"),
     ("Yaw", "Yaw"),

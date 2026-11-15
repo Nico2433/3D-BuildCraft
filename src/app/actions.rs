@@ -238,17 +238,7 @@ impl App {
             Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
             Action::ApplySimplify => {
                 if let Some(Tool::Simplify { level }) = self.tool.take() {
-                    let mut result = Ok(());
-                    self.edit(|s| result = s.simplify_selected(1.0 - level));
-                    if result.is_err() {
-                        self.toast(
-                            tr(
-                                self.settings.lang(),
-                                "Simplification produced an invalid solid",
-                            ),
-                            true,
-                        );
-                    }
+                    self.start_simplify(1.0 - level, ctx);
                 }
             }
             Action::ApplyCut => {
@@ -486,6 +476,35 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+    }
+
+    /// Simplify runs on a thread behind a progress card: large meshes take seconds.
+    /// Every selected object is reduced or none is.
+    fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
+        let meshes: Vec<(u64, std::sync::Arc<Mesh>)> = self
+            .scene
+            .selected()
+            .map(|o| (o.id, o.mesh.clone()))
+            .collect();
+        // One object gives no steps to count, so its bar fills with time.
+        let steps = if meshes.len() > 1 {
+            meshes.len() as u32
+        } else {
+            0
+        };
+        self.jobs
+            .push(jobs::Job::spawn(SIMPLIFYING, steps, ctx, move |done| {
+                jobs::Done::Simplified(
+                    meshes
+                        .into_iter()
+                        .map(|(id, mesh)| {
+                            let reduced = mesh.try_simplified(keep).ok();
+                            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Some((id, mesh, reduced?))
+                        })
+                        .collect(),
+                )
+            }));
     }
 
     fn start_repair(&mut self, ctx: &egui::Context) {

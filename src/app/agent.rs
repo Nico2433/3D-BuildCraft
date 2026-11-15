@@ -235,6 +235,7 @@ impl App {
                 }
                 self.tool = Some(Tool::Simplify { level });
                 self.apply(Action::ApplySimplify, ctx);
+                self.wait_jobs();
             }
             "split" => self.agent_split(a, ctx)?,
             "emboss_text" => self.agent_emboss(a, ctx)?,
