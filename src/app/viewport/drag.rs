@@ -597,7 +597,7 @@ impl App {
                 self.history.push(h.before);
             }
         }
-        self.emboss_drag = false;
+        self.emboss_drag = None;
     }
 
     /// The measure marker takes the place of the cursor.

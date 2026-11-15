@@ -191,8 +191,9 @@ enum Tool {
     },
     Emboss {
         params: Emboss,
-        /// The text solid for `built`, or why it could not be made.
-        preview: Result<std::sync::Arc<Mesh>, String>,
+        /// The outlines, card and handle anchor shown for `built`, or why the pattern
+        /// cannot be applied.
+        preview: Result<std::sync::Arc<crate::emboss::Preview>, String>,
         /// What the preview was made for: the settings and the one selected object (id,
         /// mesh and transform), so undo or a new selection rebuilds it.
         built: Option<EmbossKey>,
@@ -309,8 +310,9 @@ pub struct App {
     pending_import: Vec<PendingImport>,
     /// Loading and repairing, running on their own threads.
     jobs: Vec<jobs::Job>,
-    /// The Emboss tool is moving (or, with Shift, turning) the pattern.
-    emboss_drag: bool,
+    /// The Emboss tool's drag under way: placing the pattern (Shift turns it) or one of
+    /// its handles.
+    emboss_drag: Option<viewport::EmbossDrag>,
     /// Dragging one of the selection's handles (move, turn or size).
     handle: Option<viewport::HandleDrag>,
     rotate_angles: [f32; 3],

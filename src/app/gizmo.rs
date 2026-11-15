@@ -325,7 +325,7 @@ impl Gizmo {
 }
 
 /// A double arrow through `at`, `half` long each way.
-fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
+pub(super) fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
     let (a, b) = (at - half, at + half);
     painter.line_segment([a, b], Stroke::new(3.0_f32, color));
     let d = half.normalized();
@@ -345,7 +345,7 @@ fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
 }
 
 /// Two arrow heads one after the other, pointing along `out`; `out`'s length (0..1) sizes them.
-fn chevrons(painter: &egui::Painter, at: Pos2, out: Vec2, color: Color32) {
+pub(super) fn chevrons(painter: &egui::Painter, at: Pos2, out: Vec2, color: Color32) {
     let k = out.length().clamp(0.35, 1.0);
     let d = out.normalized();
     let n = d.rot90();

@@ -77,7 +77,7 @@ impl App {
         );
         if built.as_ref() != Some(&key) {
             *preview = match target {
-                Some(o) => crate::emboss::text_solid(&o.world_mesh(), params)
+                Some(o) => crate::emboss::preview(&o.world_mesh(), params)
                     .map(std::sync::Arc::new)
                     .map_err(|e| format!("{e:#}")),
                 None => Err(tr(lang, "Select one object").to_string()),

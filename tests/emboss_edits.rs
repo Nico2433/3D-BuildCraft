@@ -126,8 +126,11 @@ fn text_uses_the_world_space_surface_of_a_rotated_lifted_cube() {
 }
 
 #[test]
-fn text_wider_than_the_object_is_rejected() {
-    assert!(emboss::text_solid(&Primitive::Cube.build(), &emboss("WWWWWWWW")).is_err());
+fn text_wider_than_the_object_is_cut_at_its_edges() {
+    let text = emboss::text_solid(&Primitive::Cube.build(), &emboss("WWWWWWWW")).unwrap();
+    assert_closed(&text);
+    let b = text.aabb();
+    assert!(b.min.x >= -20.0 - 1e-3 && b.max.x <= 20.0 + 1e-3, "{b:?}");
 }
 
 #[test]

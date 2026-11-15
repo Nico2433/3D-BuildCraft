@@ -97,6 +97,7 @@ impl App {
             }
             g.paint(&painter, hot, self.field);
         }
+        self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
         if let Some(Tool::Measure { points, hover }) = &self.tool {
             // The placed points are blue and the live one green, as the original's.
             let live = if points.len() < 2 { *hover } else { None };

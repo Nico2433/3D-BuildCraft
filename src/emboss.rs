@@ -8,7 +8,7 @@ use crate::boolean::{self, Op};
 use crate::cut::fill;
 use crate::io::Rgba;
 use crate::mesh::{ray_triangle, Mesh};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use glam::{Mat4, Vec2, Vec3};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
@@ -16,8 +16,10 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 mod outlines;
+mod preview;
 mod surface;
 use outlines::pattern_outlines;
+pub use preview::{preview, Anchor, Preview};
 
 /// How the pattern is sent onto the object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -345,78 +347,161 @@ impl Piece {
     }
 }
 
-fn pieces(target: &Mesh, e: &Emboss) -> Result<Vec<Piece>> {
+/// Said when no part of the pattern lands on the object.
+const MISSES: &str = "The pattern does not fit on the object; move it onto the object";
+
+/// The pattern laid out in its plane: each piece's contours turned by the angle and moved
+/// to the offset, with their bounds and the spacing of the rays that send it onto the
+/// object.
+struct Layout {
+    pieces: Vec<Vec<Vec<Vec2>>>,
+    lo: Vec2,
+    hi: Vec2,
+    /// Half the pattern's width and height before it is turned.
+    half: Vec2,
+    step: f32,
+}
+
+fn layout(e: &Emboss) -> Result<Layout> {
     let finite = [e.size, e.depth, e.angle, e.offset.x, e.offset.y]
         .iter()
         .all(|v| v.is_finite());
     if !(finite && e.size > 0.0 && e.depth > 0.0) {
         bail!("Size and depth must be greater than zero");
     }
+    let mut pieces = pattern_outlines(e)?;
+    if pieces.is_empty() {
+        bail!("Nothing to emboss: type some text or pick a pattern");
+    }
+    let bounds = |pieces: &Vec<Vec<Vec<Vec2>>>| {
+        pieces
+            .iter()
+            .flatten()
+            .flatten()
+            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
+                (lo.min(*p), hi.max(*p))
+            })
+    };
+    let (lo, hi) = bounds(&pieces);
+    let half = (hi - lo) * 0.5;
+    for p in pieces.iter_mut().flatten().flatten() {
+        *p = turn(e, *p);
+    }
+    let (lo, hi) = bounds(&pieces);
+    Ok(Layout {
+        pieces,
+        lo,
+        hi,
+        half,
+        step: (e.size / 16.0).clamp(0.2, 2.0),
+    })
+}
+
+/// A point of the flat pattern (centred on the origin) turned by the angle and moved to
+/// the offset in the pattern plane.
+fn turn(e: &Emboss, p: Vec2) -> Vec2 {
+    let (sin, cos) = e.angle.to_radians().sin_cos();
+    e.offset + Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos)
+}
+
+/// The pieces sent onto the object. Parts whose rays miss it are cut away, so a pattern
+/// hanging over an edge stops there; it is an error only when nothing lands on it.
+fn pieces(target: &Mesh, e: &Emboss) -> Result<Vec<Piece>> {
+    let l = layout(e)?;
+    let surface = Surface::new(target, e, l.step, l.lo, l.hi);
+    let pieces: Vec<Piece> = l
+        .pieces
+        .iter()
+        .filter_map(|contours| piece(contours, e, l.step, &surface))
+        .collect();
+    if pieces.is_empty() {
+        bail!(MISSES);
+    }
+    Ok(pieces)
+}
+
+/// One piece: its outlines filled, refined so it can bend with the surface, and sent onto
+/// it; `None` when none of it lands on the object.
+fn piece(contours: &[Vec<Vec2>], e: &Emboss, step: f32, surface: &Surface) -> Option<Piece> {
     // Narrower than half a stroke of a light font, so strokes still reach full height.
     let bevel_width = e.size * 0.04;
-    let step = (e.size / 16.0).clamp(0.2, 2.0);
     // A bevel needs fine points along the outline; inside, the normal step is enough.
     let edge_step = if e.bevel {
         step.min(bevel_width / 2.0).max(0.1)
     } else {
         step
     };
-    let (sin, cos) = e.angle.to_radians().sin_cos();
-    let place = |p: Vec2| e.offset + Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos);
-    let outlines = pattern_outlines(e)?;
-    if outlines.is_empty() {
-        bail!("Nothing to emboss: type some text or pick a pattern");
+    // Outlines with no edge longer than `edge_step`.
+    let mut positions = Vec::new();
+    let mut loops = Vec::new();
+    for contour in contours {
+        let mut ids = Vec::new();
+        for a in densify(contour, edge_step) {
+            ids.push(positions.len() as u32);
+            positions.push(a.extend(0.0));
+        }
+        loops.push(ids);
     }
-    let (lo, hi) = outlines
+    // `fill` faces down; the top face must face up.
+    let flat: Vec<[u32; 3]> = fill(&positions, &loops)
+        .into_iter()
+        .map(|[a, b, c]| [a, c, b])
+        .collect();
+    let top = refine(&mut positions, flat, step);
+    let rise = if e.bevel {
+        bevel(&positions, &top, bevel_width)
+    } else {
+        vec![1.0; positions.len()]
+    };
+    let hits: Vec<_> = positions
         .iter()
-        .flatten()
-        .flatten()
-        .map(|&p| place(p))
-        .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
-    let surface = Surface::new(target, e, step, lo, hi);
-    outlines
+        .map(|q| surface.hit(q.truncate()))
+        .collect();
+    clip(&top, &hits, &rise)
+}
+
+/// Keeps the triangles of `top` whose corners all land on the object, with only the
+/// vertices they use (in their order, so an uncut piece is unchanged); the walls
+/// [`Piece::solid`] builds round what is left close it.
+fn clip(top: &[[u32; 3]], hits: &[Option<(Vec3, Vec3)>], rise: &[f32]) -> Option<Piece> {
+    let kept: Vec<[u32; 3]> = top
         .iter()
-        .map(|contours| {
-            // Flat face in the pattern's plane: outlines with no edge longer than
-            // `edge_step`, filled, then refined so it can bend with the surface.
-            let mut positions = Vec::new();
-            let mut loops = Vec::new();
-            for contour in contours {
-                let mut ids = Vec::new();
-                for (i, &a) in contour.iter().enumerate() {
-                    let b = contour[(i + 1) % contour.len()];
-                    let parts = ((b - a).length() / edge_step).ceil().max(1.0) as usize;
-                    for k in 0..parts {
-                        ids.push(positions.len() as u32);
-                        positions.push(place(a.lerp(b, k as f32 / parts as f32)).extend(0.0));
-                    }
-                }
-                loops.push(ids);
-            }
-            // `fill` faces down; the top face must face up.
-            let flat: Vec<[u32; 3]> = fill(&positions, &loops)
-                .into_iter()
-                .map(|[a, b, c]| [a, c, b])
-                .collect();
-            let top = refine(&mut positions, flat, step);
-            let rise = if e.bevel {
-                bevel(&positions, &top, bevel_width)
-            } else {
-                vec![1.0; positions.len()]
-            };
-            let hits = positions
-                .iter()
-                .map(|q| {
-                    surface.hit(q.truncate()).ok_or_else(|| {
-                        anyhow!(
-                            "The pattern does not fit on the object; make it smaller or move it"
-                        )
-                    })
-                })
-                .collect::<Result<_>>()?;
-            Ok(Piece { top, hits, rise })
-        })
-        .collect()
+        .filter(|t| t.iter().all(|&v| hits[v as usize].is_some()))
+        .copied()
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let mut new = vec![u32::MAX; hits.len()];
+    for &v in kept.iter().flatten() {
+        new[v as usize] = 0;
+    }
+    let (mut kept_hits, mut kept_rise) = (Vec::new(), Vec::new());
+    for (v, n) in new.iter_mut().enumerate() {
+        if let (0, Some(hit)) = (*n, hits[v]) {
+            *n = kept_hits.len() as u32;
+            kept_hits.push(hit);
+            kept_rise.push(rise[v]);
+        }
+    }
+    Some(Piece {
+        top: kept.iter().map(|t| t.map(|v| new[v as usize])).collect(),
+        hits: kept_hits,
+        rise: kept_rise,
+    })
+}
+
+/// The points along a closed `contour` with no gap longer than `step`.
+fn densify(contour: &[Vec2], step: f32) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    for (i, &a) in contour.iter().enumerate() {
+        let b = contour[(i + 1) % contour.len()];
+        let parts = ((b - a).length() / step).ceil().max(1.0) as usize;
+        for k in 0..parts {
+            out.push(a.lerp(b, k as f32 / parts as f32));
+        }
+    }
+    out
 }
 
 /// Height fraction per vertex: `BEVEL_EDGE` on the outline, rising to 1 at `width` in.
@@ -532,17 +617,30 @@ impl Frame {
 
     /// The ray for pattern-plane point `q`: from outside the object, pointing in.
     fn ray(&self, q: Vec2) -> (Vec3, Vec3) {
+        (self.lift(q, 1.0), -self.normal(q))
+    }
+
+    /// Pattern-plane point `q` on the surface the rays start from, `h` past the object:
+    /// a plane in front of the face, or a cylinder round the vertical axis.
+    fn lift(&self, q: Vec2, h: f32) -> Vec3 {
         let n = self.normal(q);
-        let origin = match self.kind {
+        match self.kind {
             Projection::Planar => {
-                let [u, v, n] = self.axes;
-                self.center + u * q.x + v * q.y + n * (self.top + 1.0)
+                let [u, v, _] = self.axes;
+                self.center + u * q.x + v * q.y + n * (self.top + h)
             }
             Projection::Cylindrical => {
-                self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + 1.0)
+                self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + h)
             }
-        };
-        (origin, -n)
+        }
+    }
+
+    /// The pattern plane's right and up at `q`, in world space.
+    fn tangents(&self, q: Vec2) -> [Vec3; 2] {
+        match self.kind {
+            Projection::Planar => [self.axes[0], self.axes[1]],
+            Projection::Cylindrical => [Vec3::Z.cross(self.normal(q)), Vec3::Z],
+        }
     }
 
     /// The pattern-plane point whose ray passes through `p`.

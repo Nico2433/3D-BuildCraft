@@ -60,7 +60,7 @@ impl App {
             clipboard: Vec::new(),
             pending_import: Vec::new(),
             jobs: Vec::new(),
-            emboss_drag: false,
+            emboss_drag: None,
             handle: None,
             rotate_angles: [0.0; 3],
             rotate_selection: BTreeSet::new(),

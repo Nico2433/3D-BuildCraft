@@ -72,23 +72,6 @@ impl App {
                 }),
             );
         }
-        if let Some(Tool::Emboss {
-            preview: Ok(text),
-            params,
-            ..
-        }) = &self.tool
-        {
-            items.push(DrawItem {
-                mesh: text.clone(),
-                model: glam::Mat4::IDENTITY,
-                color: params
-                    .top_color
-                    .filter(|_| !params.engrave)
-                    .unwrap_or([0xF7, 0x8B, 0x1F, 0xFF]),
-                selected: false,
-                material: Material::None,
-            });
-        }
         let cb = FrameCallback {
             items,
             decal: preview,

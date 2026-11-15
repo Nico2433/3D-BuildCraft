@@ -28,6 +28,11 @@ pub const FIELD_BLUE: Color32 = Color32::from_rgb(0x3E, 0x53, 0x5C);
 pub const CARD: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
 pub const CARD_ERROR: Color32 = Color32::from_rgb(0xEC, 0x1C, 0x24);
 pub const CARD_INFO: Color32 = Color32::from_rgb(0x22, 0xBD, 0xEF);
+/// Emboss preview lines: the card the pattern is projected from, its border and the
+/// projection cylinder.
+pub const EMBOSS_CARD: Color32 = Color32::from_rgb(0xB4, 0xE6, 0x96);
+pub const EMBOSS_BORDER: Color32 = Color32::from_rgba_premultiplied(0x6C, 0x8A, 0x5A, 0xA0);
+pub const EMBOSS_GUIDE: Color32 = Color32::from_rgba_premultiplied(0xA0, 0xA0, 0xA0, 0xC0);
 pub const TOGGLE_ON: Color32 = Color32::from_rgb(0x01, 0x5E, 0x86);
 pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
