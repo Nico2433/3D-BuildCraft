@@ -191,7 +191,7 @@ impl App {
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
             Some("extrude-outline") => Some(Action::StartOutline),
-            Some("emboss" | "emboss-colors") => Some(Action::StartEmboss),
+            Some(t) if t.starts_with("emboss") => Some(Action::StartEmboss),
             Some("measure") if launch.measure.is_none() => Some(Action::Measure),
             Some("settle") => Some(Action::Settle),
             Some("paint" | "paint-colors" | "paint-more") => Some(Action::StartPaint),
@@ -250,6 +250,9 @@ impl App {
         }
         match launch.tool.as_deref() {
             Some("paint-colors" | "emboss-colors") => self.actions.push(Action::PaintMenu(false)),
+            Some(t) if t.starts_with("emboss-") => self
+                .actions
+                .push(Action::EmbossPreset(t["emboss-".len()..].to_string())),
             Some("paint-more") => self.actions.push(Action::PaintMenu(true)),
             Some(
                 t @ ("texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush"

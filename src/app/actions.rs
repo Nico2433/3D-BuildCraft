@@ -48,6 +48,9 @@ pub(super) enum Action {
     ApplyHollow,
     StartEmboss,
     ApplyEmboss,
+    /// Sets the Emboss tool up for a screenshot (`--tool emboss-spherical` and so on):
+    /// the part of the name after "emboss-".
+    EmbossPreset(String),
     StartPaint,
     StartMaterial,
     ApplyMaterial,
@@ -284,6 +287,7 @@ impl App {
                 }))
             }
             Action::ApplyEmboss => self.apply_emboss(),
+            Action::EmbossPreset(preset) => self.emboss_preset(&preset),
             Action::StartPaint => {
                 let color = self
                     .scene

@@ -271,6 +271,7 @@ const ES: &[(&str, &str)] = &[
     ("Projection", "Proyección"),
     ("Planar", "Planar"),
     ("Cylindrical", "Cilíndrica"),
+    ("Spherical", "Esférica"),
     ("Bevel", "Bisel"),
     ("Conform", "Amoldar"),
     (

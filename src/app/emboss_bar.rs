@@ -99,6 +99,18 @@ impl App {
     }
 }
 
+impl App {
+    /// Sets Emboss up for a screenshot: `spherical` picks that projection.
+    pub(super) fn emboss_preset(&mut self, preset: &str) {
+        let Some(Tool::Emboss { params, .. }) = &mut self.tool else {
+            return;
+        };
+        if preset == "spherical" {
+            params.projection = Projection::Spherical;
+        }
+    }
+}
+
 /// The pattern: text, a shape, or an image (which asks for the picture).
 fn pattern_dropdown(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss) {
     style::label(ui, tr(lang, "Pattern"));

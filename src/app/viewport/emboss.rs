@@ -1,6 +1,7 @@
 //! The Emboss tool in the view, drawn over the scene as the original does: the pattern's
 //! outlines in white where they land, the card they are projected from in pale green
-//! (with the projection cylinder for Cylindrical), and the handles for the bottom bar's
+//! (with the projection cylinder for Cylindrical, a wire sphere for Spherical), and the
+//! handles for the bottom bar's
 //! mode, the object handles themselves: two move arrows along the pattern's plane, a turn
 //! ring round it with its arrow, or arrows at its right and top edges and a dot at its
 //! corner to size.

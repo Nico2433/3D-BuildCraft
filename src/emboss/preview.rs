@@ -1,6 +1,7 @@
 //! What the Emboss tool shows before it is applied, as lines in world space: the pattern's
 //! outlines where they land on the object, the flat "card" they are projected from,
-//! floating off the surface, and for Cylindrical a ring showing the projection cylinder.
+//! floating off the surface, and a guide for the curved projections: rings showing the
+//! projection cylinder for Cylindrical, a wire sphere round the object for Spherical.
 //! It uses the same layout and rays as [`super::apply`], so what is shown is what is made.
 
 use super::{layout, pieces, Emboss, Frame, Projection, Surface, MISSES};
@@ -20,7 +21,8 @@ pub struct Preview {
     /// The card's border.
     pub border: Vec<Vec3>,
     /// Cylindrical: rings round the whole object at the card's top and bottom, joined
-    /// by two upright lines.
+    /// by two upright lines. Spherical: a wire sphere at the card's distance, a few
+    /// circles of latitude and longitude.
     pub guide: Vec<Vec<Vec3>>,
     pub anchor: Anchor,
 }
@@ -84,11 +86,15 @@ pub fn preview(target: &Mesh, e: &Emboss) -> Result<Preview> {
     let corners = corners.map(|p| super::turn(e, p));
     let rim = super::densify(&corners, l.step.max(1.0));
     out.border = closed(rim.iter().map(|&q| frame.lift(q, gap)));
-    if e.projection == Projection::Cylindrical {
-        let (bottom, top) = corners
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(a, b), q| (a.min(q.y), b.max(q.y)));
-        out.guide = guide(frame, e.offset.x, bottom, top, gap);
+    match e.projection {
+        Projection::Planar => {}
+        Projection::Cylindrical => {
+            let (bottom, top) = corners
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), q| (a.min(q.y), b.max(q.y)));
+            out.guide = guide(frame, e.offset.x, bottom, top, gap);
+        }
+        Projection::Spherical => out.guide = wire_sphere(frame, e.offset.x, gap),
     }
     let [right, up] = frame.tangents(e.offset);
     out.anchor = Anchor {
@@ -139,8 +145,11 @@ fn closed(points: impl Iterator<Item = Vec3>) -> Vec<Vec3> {
 /// a full ring at each, and two upright lines a quarter turn either side of `x`.
 fn guide(frame: &Frame, x: f32, bottom: f32, top: f32, gap: f32) -> Vec<Vec<Vec3>> {
     let turn = TAU * frame.radius;
-    let ring =
-        |y: f32| closed((0..96).map(|k| frame.lift(Vec2::new(x + turn * k as f32 / 96.0, y), gap)));
+    let ring = |y: f32| {
+        closed(
+            (0..ROUND).map(|k| frame.lift(Vec2::new(x + turn * k as f32 / ROUND as f32, y), gap)),
+        )
+    };
     let mut lines = vec![ring(bottom), ring(top)];
     for side in [-1.0, 1.0] {
         let x = x + side * PI / 2.0 * frame.radius;
@@ -148,6 +157,35 @@ fn guide(frame: &Frame, x: f32, bottom: f32, top: f32, gap: f32) -> Vec<Vec<Vec3
             frame.lift(Vec2::new(x, bottom), gap),
             frame.lift(Vec2::new(x, top), gap),
         ]);
+    }
+    lines
+}
+
+/// Points round a full turn of the projection's circles.
+const ROUND: usize = 96;
+
+/// The projection sphere at the card's distance, as the original's guide: circles of
+/// latitude at the equator and 50° either side, and meridians every 45° from the one
+/// through `x` (each a full circle through both poles).
+fn wire_sphere(frame: &Frame, x: f32, gap: f32) -> Vec<Vec<Vec3>> {
+    let r = frame.radius;
+    let turn = TAU * r;
+    let at = |az: f32, el: f32| frame.lift(Vec2::new(az, el), gap);
+    let mut lines: Vec<Vec<Vec3>> = [-50.0_f32, 0.0, 50.0]
+        .iter()
+        .map(|deg| {
+            let el = deg.to_radians() * r;
+            closed((0..ROUND).map(|k| at(x + turn * k as f32 / ROUND as f32, el)))
+        })
+        .collect();
+    for k in 0..4 {
+        let az = x + k as f32 * PI / 4.0 * r;
+        // Up the near side from the south pole, then down the far side.
+        let half = ROUND / 2;
+        let el = |j: usize| (j as f32 / half as f32 - 0.5) * PI * r;
+        let mut line: Vec<Vec3> = (0..=half).map(|j| at(az, el(j))).collect();
+        line.extend((0..=half).rev().map(|j| at(az + PI * r, el(j))));
+        lines.push(line);
     }
     lines
 }
@@ -199,6 +237,44 @@ mod tests {
                 "{q}"
             );
         }
+    }
+
+    #[test]
+    fn spherical_preview_has_a_wire_sphere_and_a_curved_card() {
+        let e = Emboss {
+            projection: Projection::Spherical,
+            ..Emboss::default()
+        };
+        let p = preview(&Primitive::Sphere.build(), &e).unwrap();
+        // Three circles of latitude and four meridians, all on the card's sphere.
+        assert_eq!(p.guide.len(), 7);
+        let centre = Vec3::new(0.0, 0.0, 20.0);
+        let r = 20.0 + card_gap(&e);
+        for q in p.guide.iter().flatten() {
+            assert!((q.distance(centre) - r).abs() < 0.1, "{q}");
+        }
+        // The guide reaches both poles.
+        let (lo, hi) = p
+            .guide
+            .iter()
+            .flatten()
+            .fold((f32::MAX, f32::MIN), |(a, b), q| (a.min(q.z), b.max(q.z)));
+        assert!((hi - (20.0 + r)).abs() < 0.1 && (lo - (20.0 - r)).abs() < 0.1);
+        // The card is curved on that sphere, in front (−Y), and the outlines land on the
+        // sphere's surface.
+        for q in p.card.iter().flatten().chain(&p.border) {
+            assert!((q.distance(centre) - r).abs() < 0.1 && q.y < 0.0, "{q}");
+        }
+        for q in p.surface.iter().flatten() {
+            assert!((q.distance(centre) - 20.0).abs() < 0.5 && q.y < 0.0, "{q}");
+        }
+        // Right is along the equator and up towards the pole at the front.
+        assert!(
+            p.anchor.right.abs_diff_eq(Vec3::X, 1e-4),
+            "{}",
+            p.anchor.right
+        );
+        assert!(p.anchor.up.abs_diff_eq(Vec3::Z, 1e-4), "{}", p.anchor.up);
     }
 
     #[test]
