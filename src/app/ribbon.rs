@@ -190,6 +190,12 @@ impl App {
                                     has_sel,
                                 ),
                                 (
+                                    Icon::ExtrudeOutline,
+                                    tr(lang, "Extrude outline"),
+                                    Some(Action::StartOutline),
+                                    has_sel,
+                                ),
+                                (
                                     Icon::Merge,
                                     tr(lang, "Merge"),
                                     Some(Action::Boolean(Op::Union)),

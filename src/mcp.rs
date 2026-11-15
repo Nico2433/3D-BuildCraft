@@ -196,7 +196,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "open",
-            "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
+            "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
             json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }, "required": ["path"] }),
         ),
         tool(
@@ -311,11 +311,21 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "import",
-            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
+            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
             json!({ "type": "object", "properties": {
                 "path": text("model file path"),
-                "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF and glTF carry their own"),
+                "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
             }, "required": ["path"] }),
+        ),
+        tool(
+            "extrude_outline",
+            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a keychain or badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection. One undo step.",
+            json!({ "type": "object", "properties": {
+                "side": one_of(&["outside", "inside"], "outside: a ring around the outline; inside: a band just within its edge. Default outside"),
+                "width": num("border width, mm, default 2"),
+                "height": num("border height from the object's bottom, mm; default the selection's height"),
+                "keep_model": flag("merge the border with the object (default true); false leaves only the border"),
+            } }),
         ),
         tool(
             "load_image",

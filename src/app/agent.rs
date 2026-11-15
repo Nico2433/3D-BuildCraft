@@ -244,6 +244,7 @@ impl App {
             "apply_texture" => self.agent_texture(a)?,
             "import" => self.agent_import(a, ctx)?,
             "load_image" => self.agent_load_image(a, ctx)?,
+            "extrude_outline" => self.agent_extrude_outline(a)?,
             "open" => {
                 let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
                 if !path.is_file() {

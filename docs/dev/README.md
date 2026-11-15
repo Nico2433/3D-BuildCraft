@@ -9,7 +9,7 @@ Notes kept while building 3D BuildCraft, for anyone who wants to work on it.
   [ADR-0003 the UI copies the original](decisions/ADR-0003-ui-copies-the-original.md),
   [ADR-0004 an AI agent can drive the tools](decisions/ADR-0004-ai-agent-can-drive-the-tools.md).
 - Progress log: [2026-10-27](log/2026-10-27.md), [2026-10-28](log/2026-10-28.md),
-  [2026-10-29 to 2026-11-01](log/2026-11-01.md), [2026-11-14](log/2026-11-14.md).
+  [2026-10-29 to 2026-11-01](log/2026-11-01.md), [2026-11-14](log/2026-11-14.md), [2026-11-15](log/2026-11-15.md).
 - The original Microsoft 3D Builder, as studied before the port (behaviour, file formats,
   UI measurements; no Microsoft code or assets): [overview](original/overview.md),
   [architecture](original/architecture.md), [data model](original/data-model.md),

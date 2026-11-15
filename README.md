@@ -23,6 +23,7 @@ macOS builds are planned but not published yet.
 
 **Files**
 - Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window. Unitless formats (STL, OBJ, PLY) ask for the units.
+- Import SVG drawings: filled areas (with their holes) and stroked lines become 3 mm solids, one object per colour, at the drawing's real size.
 - Undo/redo, autosave with recovery after a crash, recent files, start screen.
 - About the model: title, designer, copyright, license terms and description, kept in the 3MF metadata. The window title follows the model title.
 
@@ -31,7 +32,7 @@ macOS builds are planned but not published yet.
 - Add dialog: recent files as thumbnails, local 3D libraries (your own folders, browsed and searched with thumbnails), Load image as a height relief or an outline, Camera (a webcam photo).
 - Select (click, Ctrl/Shift for more, box selection), move, rotate and scale with handles or exact values in the bottom bar. Objects snap to each other's edges and centres with alignment guides; hold Alt while dragging to turn snapping off.
 - Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances.
-- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down.
+- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains).
 - Emboss text (bundled or installed font), a shape or an image onto an object: planar, cylindrical or spherical, raised or engraved, with bevel and separate top and side colours.
 - Open or non-manifold meshes are flagged with a red rectangle on the floor and can be repaired.
 
@@ -54,7 +55,7 @@ macOS builds are planned but not published yet.
 
 The assistant button in the top bar opens a chat with Chat and Settings tabs. Settings turns the assistant on and picks what it talks to: an installed agent (Claude Code or Codex, found on PATH), a command of your own, or a model endpoint (OpenAI-compatible such as Ollama, LM Studio, OpenAI or OpenRouter, or Anthropic-compatible). API keys go to the system keychain, never to the settings file.
 
-The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file, load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
+The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, extrude an outline, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file (SVG too), load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
 
 The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)": while the app is open, it serves MCP over HTTP at a local URL, `http://127.0.0.1:47833/mcp/<token>`, and stops when the app closes. The agent starts no process of ours; it talks to the open window. The settings list the agents found on this computer (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity) with a switch that registers the URL, and show the URL and the command to copy, for example:
 
@@ -102,7 +103,7 @@ cargo run --release -- model.3mf --select-all --lang en --size 1920x1080 --zoom 
 Options that open a given state:
 
 - `--tab insert|object|edit|paint|view|help`, `--mode move|rotate|scale`, `--menu`, `--select-all`
-- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
+- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
 - `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`
 - `--image <file>` opens Load image, `--library <folder>` a 3D library
 

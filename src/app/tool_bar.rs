@@ -79,6 +79,11 @@ impl App {
                             Some(Tool::Smooth { .. }) => {
                                 Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
                             }
+                            Some(Tool::Outline { .. }) => Some((
+                                tr(lang, "Extrude outline"),
+                                Action::ApplyOutline,
+                                self.outline_ready(),
+                            )),
                             Some(Tool::Hollow { .. }) => {
                                 Some((tr(lang, "Hollow"), Action::ApplyHollow, true))
                             }
@@ -236,6 +241,24 @@ impl App {
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, tr(lang, "Smooth edges"));
                 style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"));
+            }
+            Some(Tool::Outline { opts, .. }) => {
+                use crate::outline::Side;
+                ui.add_space(12.0);
+                style::label(ui, tr(lang, "Side"));
+                let names = Side::ALL.map(|s| tr(lang, s.label()));
+                let mut k = Side::ALL.iter().position(|s| *s == opts.side).unwrap_or(0);
+                if style::dropdown(ui, "outline_side", 120.0, &names, &mut k) {
+                    opts.side = Side::ALL[k];
+                }
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::label(ui, tr(lang, "Width"));
+                style::unit_field(ui, &mut opts.width, "mm", 0.1..=50.0);
+                style::label(ui, tr(lang, "Height"));
+                style::unit_field(ui, &mut opts.height, "mm", 0.1..=1000.0);
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::label(ui, tr(lang, "Keep model"));
+                style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"));
             }
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);

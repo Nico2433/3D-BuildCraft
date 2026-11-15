@@ -5,6 +5,7 @@ pub mod gltf_io;
 pub mod obj;
 pub mod ply;
 pub mod stl;
+pub mod svg;
 pub mod threemf;
 
 use crate::mesh::Mesh;
@@ -72,6 +73,8 @@ pub enum Format {
     Ply,
     Gltf,
     Glb,
+    /// Import only: a flat drawing extruded.
+    Svg,
 }
 
 impl Format {
@@ -93,6 +96,7 @@ impl Format {
             "ply" => Format::Ply,
             "gltf" => Format::Gltf,
             "glb" => Format::Glb,
+            "svg" => Format::Svg,
             _ => return None,
         })
     }
@@ -105,6 +109,7 @@ impl Format {
             Format::Ply => "ply",
             Format::Gltf => "gltf",
             Format::Glb => "glb",
+            Format::Svg => "svg",
         }
     }
 
@@ -116,11 +121,12 @@ impl Format {
             Format::Ply => "PLY",
             Format::Gltf => "glTF",
             Format::Glb => "GLB",
+            Format::Svg => "SVG",
         }
     }
 }
 
-pub const OPEN_EXTENSIONS: [&str; 6] = ["3mf", "stl", "obj", "ply", "gltf", "glb"];
+pub const OPEN_EXTENSIONS: [&str; 7] = ["3mf", "stl", "obj", "ply", "gltf", "glb", "svg"];
 
 /// The file name without extension, "Object" when it has none.
 pub fn file_stem(path: &Path) -> &str {
@@ -145,8 +151,12 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
         Format::Obj => obj::read(path)?,
         Format::Ply => vec![ply::read(path, &stem)?],
         Format::Gltf | Format::Glb => gltf_io::read(path)?,
+        Format::Svg => svg::read(path)?,
     };
-    let units_known = matches!(format, Format::ThreeMf | Format::Gltf | Format::Glb);
+    let units_known = matches!(
+        format,
+        Format::ThreeMf | Format::Gltf | Format::Glb | Format::Svg
+    );
     Ok(LoadedModel {
         objects,
         info,
@@ -165,6 +175,7 @@ pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()
         Format::Ply => ply::write(path, objects),
         Format::Gltf => gltf_io::write(path, objects, false),
         Format::Glb => gltf_io::write(path, objects, true),
+        Format::Svg => bail!("SVG files can only be imported"),
     }
 }
 

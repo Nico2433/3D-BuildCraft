@@ -42,6 +42,8 @@ pub(super) enum Action {
     StartSmooth,
     ApplySmooth,
     ExtrudeDown,
+    StartOutline,
+    ApplyOutline,
     StartHollow,
     ApplyHollow,
     StartEmboss,
@@ -252,7 +254,7 @@ impl App {
                         amount: 0.0,
                         edges: true,
                         before: self.checkpoint(),
-                        run: smooth::Run::new(self.scene.selected_ids(), 0.0, true),
+                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, true)),
                     });
                 }
             }
@@ -263,6 +265,8 @@ impl App {
             Action::ExtrudeDown => {
                 self.modify_selected(|m| crate::solid::extrude_down(m, 0.0));
             }
+            Action::StartOutline => self.start_outline(),
+            Action::ApplyOutline => self.apply_outline(),
             Action::StartHollow => self.tool = Some(Tool::Hollow { wall: 1.0 }),
             Action::ApplyHollow => {
                 // The panel stays open when it fails, so the wall can be changed.
@@ -563,6 +567,7 @@ impl App {
                 Tool::Paint { before, .. }
                 | Tool::Settle { before, .. }
                 | Tool::Smooth { before, .. }
+                | Tool::Outline { before, .. }
                 | Tool::Material { before, .. },
             ) => Some(*before),
             Some(Tool::Texture(t)) => Some(*t.before),
