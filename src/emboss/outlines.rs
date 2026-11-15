@@ -8,7 +8,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::PathBuf;
 
 /// The pattern as closed outlines, one list of contours per piece, centred on the origin
-/// and scaled to `size`.
+/// scaled to `size` and stretched sideways by `stretch`.
 pub(super) fn pattern_outlines(e: &Emboss) -> Result<Vec<Vec<Vec<Vec2>>>> {
     let mut pieces = match &e.pattern {
         Pattern::Text => text_outlines(&e.text, e.font.as_deref(), e.size)?,
@@ -28,6 +28,7 @@ pub(super) fn pattern_outlines(e: &Emboss) -> Result<Vec<Vec<Vec<Vec2>>>> {
         Pattern::Text => 1.0,
         _ => e.size / (hi.y - lo.y).max(1e-6),
     };
+    let scale = Vec2::new(scale * e.stretch, scale);
     for p in pieces.iter_mut().flatten().flatten() {
         *p = (*p - mid) * scale;
     }

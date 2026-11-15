@@ -197,10 +197,25 @@ enum Tool {
         /// What the preview was made for: the settings and the one selected object (id,
         /// mesh and transform), so undo or a new selection rebuilds it.
         built: Option<EmbossKey>,
+        /// Width and height keep their proportion when one is changed (the bar's lock).
+        lock: bool,
+        /// [`Emboss::extents`] when the tool opened: 100 % in the bottom bar.
+        opened: Vec3,
     },
 }
 
 impl Tool {
+    /// Emboss opening with `params`, nothing previewed yet and the size lock on.
+    fn emboss(params: Emboss) -> Self {
+        Tool::Emboss {
+            opened: params.extents(),
+            params,
+            preview: Err(String::new()),
+            built: None,
+            lock: true,
+        }
+    }
+
     /// A measurement with its points preset, for screenshots: see `Launch::measure`.
     fn measure_preset(spec: &str) -> Self {
         let mut points = vec![];

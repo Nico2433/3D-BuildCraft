@@ -361,6 +361,10 @@ const ES: &[(&str, &str)] = &[
     ("Scale", "Escalar"),
     ("Select one object", "Selecciona un objeto"),
     ("Uniform scale", "Escala uniforme"),
+    (
+        "Keep the width and height in proportion",
+        "Mantener la proporción entre ancho y alto",
+    ),
     ("ft", "pie"),
     // Viewport and dialogs
     ("Import model", "Importar modelo"),

@@ -80,6 +80,9 @@ pub struct Emboss {
     pub font: Option<String>,
     /// Capital letter height for text, overall height for shapes and images.
     pub size: f32,
+    /// Width as a multiple of the pattern's natural width at `size`: 1 keeps its own
+    /// proportions, more stretches it sideways (see [`rescale`]).
+    pub stretch: f32,
     /// Height above the surface, or depth below it when engraving.
     pub depth: f32,
     /// Turn of the pattern in its own plane.
@@ -110,6 +113,7 @@ impl Default for Emboss {
             text: "Text".into(),
             font: None,
             size: 10.0,
+            stretch: 1.0,
             depth: 1.0,
             angle: 0.0,
             offset: Vec2::ZERO,
@@ -121,6 +125,14 @@ impl Default for Emboss {
             top_color: None,
             side_color: None,
         }
+    }
+}
+
+impl Emboss {
+    /// Factors that grow in proportion to the pattern's width, height and depth (its
+    /// `size` × `stretch`, `size` and `depth`): what the bar's percentages compare.
+    pub fn extents(&self) -> Vec3 {
+        Vec3::new(self.size * self.stretch, self.size, self.depth)
     }
 }
 
@@ -363,25 +375,16 @@ struct Layout {
 }
 
 fn layout(e: &Emboss) -> Result<Layout> {
-    let finite = [e.size, e.depth, e.angle, e.offset.x, e.offset.y]
+    let finite = [e.size, e.stretch, e.depth, e.angle, e.offset.x, e.offset.y]
         .iter()
         .all(|v| v.is_finite());
-    if !(finite && e.size > 0.0 && e.depth > 0.0) {
+    if !(finite && e.size > 0.0 && e.stretch > 0.0 && e.depth > 0.0) {
         bail!("Size and depth must be greater than zero");
     }
     let mut pieces = pattern_outlines(e)?;
     if pieces.is_empty() {
         bail!("Nothing to emboss: type some text or pick a pattern");
     }
-    let bounds = |pieces: &Vec<Vec<Vec<Vec2>>>| {
-        pieces
-            .iter()
-            .flatten()
-            .flatten()
-            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
-                (lo.min(*p), hi.max(*p))
-            })
-    };
     let (lo, hi) = bounds(&pieces);
     let half = (hi - lo) * 0.5;
     for p in pieces.iter_mut().flatten().flatten() {
@@ -395,6 +398,57 @@ fn layout(e: &Emboss) -> Result<Layout> {
         half,
         step: (e.size / 16.0).clamp(0.2, 2.0),
     })
+}
+
+/// The corners of the box round all of `pieces`' points.
+fn bounds(pieces: &[Vec<Vec<Vec2>>]) -> (Vec2, Vec2) {
+    pieces
+        .iter()
+        .flatten()
+        .flatten()
+        .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
+            (lo.min(*p), hi.max(*p))
+        })
+}
+
+/// The pattern's width and height in mm, before it is turned: what the bottom bar shows
+/// as X and Y (for text the height is the whole line, capitals and descenders).
+pub fn pattern_size(e: &Emboss) -> Result<Vec2> {
+    let pieces = pattern_outlines(e)?;
+    if pieces.is_empty() {
+        bail!("Nothing to emboss: type some text or pick a pattern");
+    }
+    let (lo, hi) = bounds(&pieces);
+    Ok(hi - lo)
+}
+
+/// Sizes of the pattern the bar and the handles may set, in mm (the width as a stretch).
+const SIZES: std::ops::RangeInclusive<f32> = 1.0..=200.0;
+const STRETCHES: std::ops::RangeInclusive<f32> = 0.05..=20.0;
+const DEPTHS: std::ops::RangeInclusive<f32> = 0.1..=50.0;
+
+/// Scales one of the pattern's extents by `ratio`: `axis` 0 is its width, 1 its height
+/// (with `size`), 2 its depth. With `lock`, width and height keep their proportion (the
+/// height changes and the width follows it); without, the other one stays as it is. The
+/// depth never follows the others: it is how far the pattern stands out, not how big it
+/// is. Each stays in its range (size 1–200 mm, depth 0.1–50 mm).
+pub fn rescale(e: &mut Emboss, axis: usize, ratio: f32, lock: bool) {
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return;
+    }
+    let clamp = |v: f32, r: &std::ops::RangeInclusive<f32>| v.clamp(*r.start(), *r.end());
+    match axis {
+        0 if !lock => e.stretch = clamp(e.stretch * ratio, &STRETCHES),
+        0 | 1 => {
+            let before = e.size;
+            e.size = clamp(e.size * ratio, &SIZES);
+            if !lock {
+                // Unlocked, the height alone changes: the width keeps its mm.
+                e.stretch = clamp(e.stretch * before / e.size, &STRETCHES);
+            }
+        }
+        _ => e.depth = clamp(e.depth * ratio, &DEPTHS),
+    }
 }
 
 /// A point of the flat pattern (centred on the origin) turned by the angle and moved to
@@ -1040,6 +1094,64 @@ mod tests {
             let b = t.aabb();
             assert!((b.max.y - b.min.y - 20.0).abs() < 0.01, "{s:?} {b:?}");
         }
+    }
+
+    #[test]
+    fn stretching_x_makes_it_wider_not_taller() {
+        let cube = Primitive::Cube.build();
+        let e = Emboss {
+            pattern: Pattern::Shape(Shape::Circle),
+            size: 20.0,
+            ..Emboss::default()
+        };
+        let mut wide = e.clone();
+        rescale(&mut wide, 0, 1.5, false);
+        assert!((wide.stretch - 1.5).abs() < 1e-6 && wide.size == 20.0);
+        let (a, b) = (pattern_size(&e).unwrap(), pattern_size(&wide).unwrap());
+        assert!(
+            (b.x - a.x * 1.5).abs() < 0.01 && (b.y - a.y).abs() < 0.01,
+            "{a} {b}"
+        );
+        let (narrow, broad) = (
+            text_solid(&cube, &e).unwrap().aabb().size(),
+            text_solid(&cube, &wide).unwrap().aabb().size(),
+        );
+        assert!((broad.x - narrow.x * 1.5).abs() < 0.05, "{narrow} {broad}");
+        assert!((broad.y - narrow.y).abs() < 0.01, "{narrow} {broad}");
+        // Unlocked, the height alone changes and the width stays.
+        let mut tall = wide.clone();
+        rescale(&mut tall, 1, 2.0, false);
+        let c = pattern_size(&tall).unwrap();
+        assert!(
+            (c.x - b.x).abs() < 0.01 && (c.y - b.y * 2.0).abs() < 0.01,
+            "{b} {c}"
+        );
+    }
+
+    #[test]
+    fn lock_keeps_the_ratio_and_not_the_depth() {
+        let mut e = Emboss {
+            stretch: 1.4,
+            ..Emboss::default()
+        };
+        let ratio = |e: &Emboss| {
+            let s = pattern_size(e).unwrap();
+            s.x / s.y
+        };
+        let before = ratio(&e);
+        rescale(&mut e, 0, 2.0, true);
+        assert!((e.size - 20.0).abs() < 1e-4 && (e.stretch - 1.4).abs() < 1e-6);
+        assert!((ratio(&e) - before).abs() < 1e-3);
+        rescale(&mut e, 1, 0.5, true);
+        assert!((e.size - 10.0).abs() < 1e-4 && (ratio(&e) - before).abs() < 1e-3);
+        assert_eq!(e.depth, 1.0);
+        rescale(&mut e, 2, 3.0, true);
+        assert!((e.depth - 3.0).abs() < 1e-6 && (e.size - 10.0).abs() < 1e-4);
+        // The ranges hold, and a locked clamp keeps the proportion.
+        rescale(&mut e, 1, 1000.0, true);
+        assert_eq!((e.size, e.stretch), (200.0, 1.4));
+        rescale(&mut e, 2, 1000.0, true);
+        assert_eq!(e.depth, 50.0);
     }
 
     #[test]

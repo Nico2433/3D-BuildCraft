@@ -229,14 +229,22 @@ pub fn build(
 /// The Split tool's move handle: a double arrow at `at` on the plane's edge, along its
 /// `normal`.
 pub fn plane_arrow(at: Vec3, normal: Vec3, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
+    handles(&[(Kind::Move(0), at, normal)], to_screen)
+}
+
+/// Loose handles, each a kind at a point working along a direction (one unit of drag per
+/// length of it), as the tools that are not objects use them (Split, Emboss).
+pub fn handles(list: &[(Kind, Vec3, Vec3)], to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
     let mut g = Gizmo::default();
-    if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + normal)) {
-        g.handles.push(Handle {
-            kind: Kind::Move(0),
-            at: a,
-            per: q - a,
-            pivot: None,
-        });
+    for &(kind, at, along) in list {
+        if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + along)) {
+            g.handles.push(Handle {
+                kind,
+                at: a,
+                per: q - a,
+                pivot: None,
+            });
+        }
     }
     g
 }

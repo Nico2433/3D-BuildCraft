@@ -277,14 +277,10 @@ impl App {
                 }
             }
             Action::StartEmboss => {
-                self.tool = Some(Tool::Emboss {
-                    params: Emboss {
-                        text: tr(lang, "Text").to_string(),
-                        ..Emboss::default()
-                    },
-                    preview: Err(String::new()),
-                    built: None,
-                })
+                self.tool = Some(Tool::emboss(Emboss {
+                    text: tr(lang, "Text").to_string(),
+                    ..Emboss::default()
+                }))
             }
             Action::ApplyEmboss => self.apply_emboss(),
             Action::StartPaint => {

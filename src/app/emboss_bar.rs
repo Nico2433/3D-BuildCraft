@@ -1,6 +1,7 @@
 //! Emboss's settings in the tool bar, in two rows as Custom's: what is embossed and how it
-//! is sent onto the object above; its size and finish below. Each row keeps a label next
-//! to its control, and groups are split by a separator.
+//! is sent onto the object above; its finish below (its size is in the bottom bar, as the
+//! original's). Each row keeps a label next to its control, and groups are split by a
+//! separator.
 
 use super::style;
 use super::*;
@@ -16,6 +17,7 @@ impl App {
             params,
             preview,
             built,
+            ..
         }) = &mut self.tool
         else {
             return;
@@ -43,12 +45,6 @@ impl App {
                 ));
             });
             row(ui, |ui| {
-                style::label(ui, tr(lang, "Size"));
-                style::unit_field(ui, "emboss_size", &mut params.size, "mm", 1.0..=200.0);
-                ui.add_space(GAP);
-                style::label(ui, tr(lang, "Depth"));
-                style::unit_field(ui, "emboss_depth", &mut params.depth, "mm", 0.1..=50.0);
-                style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
                 toggle(ui, &mut params.bevel, tr(lang, "Bevel"));
                 ui.add_space(GAP);
                 toggle(ui, &mut params.engrave, tr(lang, "Engrave"));

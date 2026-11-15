@@ -279,11 +279,13 @@ impl App {
             let target = target.ok_or("emboss needs exactly one selected object")?;
             crate::emboss::place_at(&target.world_mesh(), &mut params, p);
         }
-        self.tool = Some(Tool::Emboss {
-            params,
-            preview: Err(String::new()),
-            built: None,
-        });
+        if !a["width"].is_null() {
+            // The width stretches the pattern sideways; `size` still sets its height.
+            let width = positive(&a["width"], "width")?;
+            let natural = crate::emboss::pattern_size(&params).map_err(|e| format!("{e:#}"))?;
+            params.stretch = width / natural.x.max(1e-6);
+        }
+        self.tool = Some(Tool::emboss(params));
         self.apply(Action::ApplyEmboss, ctx);
         Ok(())
     }
