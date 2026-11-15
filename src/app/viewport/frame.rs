@@ -83,6 +83,7 @@ impl App {
                 .into_iter()
                 .chain(self.repair_bands())
                 .collect(),
+            lines: self.emboss_lines(ui.ctx().pixels_per_point()),
             // The Split preview shows only the part that will be kept.
             clip: match &self.tool {
                 Some(Tool::Cut { plane, keep }) if *keep != Keep::Both => {

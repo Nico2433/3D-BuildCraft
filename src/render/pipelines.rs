@@ -253,6 +253,21 @@ impl Renderer {
             false,
             Some(wgpu::CompareFunction::LessEqual),
         );
+        let line_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineSegment>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
+        };
+        let line = pipeline(
+            "line",
+            &floor_layout,
+            "vs_line",
+            "fs_line",
+            &[line_layout],
+            tri,
+            false,
+            Some(wgpu::CompareFunction::LessEqual),
+        );
 
         let object_capacity = 64;
         let (object_buf, object_bg) = Self::object_buffer(device, &object_layout, object_capacity);
@@ -268,6 +283,9 @@ impl Renderer {
             shadow,
             floor,
             slab,
+            line,
+            line_buf: Self::line_buffer(device, 4096),
+            line_count: 0,
             globals_buf,
             globals_bg,
             object_layout,

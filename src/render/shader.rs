@@ -166,6 +166,40 @@ struct SlabOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
     return vec4<f32>(o.color.rgb, o.color.a);
 }
 
+// A quad per line segment, `a.w` pixels wide on screen and stretched by half that at each
+// end so the segments of a polyline join without gaps.
+struct LOut { @builtin(position) pos: vec4<f32>, @location(0) c: vec4<f32> };
+
+@vertex fn vs_line(@builtin(vertex_index) i: u32, @location(0) a: vec4<f32>, @location(1) b: vec4<f32>, @location(2) c: vec4<f32>) -> LOut {
+    var out: LOut;
+    out.c = c;
+    var pa = g.view_proj * vec4<f32>(a.xyz, 1.0);
+    var pb = g.view_proj * vec4<f32>(b.xyz, 1.0);
+    // Cut away what lies behind the eye; nothing is left when both ends are.
+    let eps = 1e-4;
+    if (pa.w < eps && pb.w < eps) { out.pos = vec4<f32>(0.0, 0.0, -1.0, 1.0); return out; }
+    if (pa.w < eps) { pa = mix(pa, pb, (eps - pa.w) / (pb.w - pa.w)); }
+    if (pb.w < eps) { pb = mix(pb, pa, (eps - pb.w) / (pa.w - pb.w)); }
+    let half_view = g.viewport.xy * 0.5;
+    let sa = pa.xy / pa.w * half_view;
+    let sb = pb.xy / pb.w * half_view;
+    let len = length(sb - sa);
+    var dir = vec2<f32>(1.0, 0.0);
+    if (len > 1e-6) { dir = (sb - sa) / len; }
+    let ends = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
+    let sides = array<f32, 6>(-1.0, -1.0, 1.0, -1.0, 1.0, 1.0);
+    let end = ends[i];
+    var p = select(pa, pb, end > 0.5);
+    let off = (vec2<f32>(-dir.y, dir.x) * sides[i] + dir * (end * 2.0 - 1.0)) * a.w * 0.5;
+    p = vec4<f32>(p.xy + off / half_view * p.w, p.z - 0.00005 * p.w, p.w);
+    out.pos = p;
+    return out;
+}
+
+@fragment fn fs_line(in: LOut) -> @location(0) vec4<f32> {
+    return in.c;
+}
+
 struct FOut { @builtin(position) pos: vec4<f32>, @location(0) w: vec2<f32> };
 
 @vertex fn vs_floor(@builtin(vertex_index) i: u32) -> FOut {

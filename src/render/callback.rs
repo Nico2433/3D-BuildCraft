@@ -126,6 +126,7 @@ impl CallbackTrait for FrameCallback {
             queue.write_buffer(&r.object_buf, 0, &bytes);
         }
         r.object_bytes = bytes;
+        r.upload_lines(device, queue, &self.lines);
         r.meshes.retain(|k, _| live.contains(k));
         r.update_selection(self, device, screen, encoder);
         vec![]
@@ -237,6 +238,12 @@ impl CallbackTrait for FrameCallback {
             pass.set_pipeline(&r.outline);
             pass.set_bind_group(0, &selection.outline_bg, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if r.line_count > 0 {
+            pass.set_pipeline(&r.line);
+            pass.set_bind_group(0, &r.globals_bg, &[]);
+            pass.set_vertex_buffer(0, r.line_buf.slice(..));
+            pass.draw(0..6, 0..r.line_count);
         }
     }
 }

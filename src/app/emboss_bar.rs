@@ -108,6 +108,7 @@ impl App {
         };
         match preset {
             "spherical" => params.projection = Projection::Spherical,
+            "cylindrical" => params.projection = Projection::Cylindrical,
             "pattern" => *pattern_menu = true,
             "fonts" => ctx.data_mut(|d| d.insert_temp(font_list_open(), true)),
             name => {

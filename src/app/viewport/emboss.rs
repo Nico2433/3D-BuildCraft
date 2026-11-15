@@ -1,13 +1,13 @@
-//! The Emboss tool in the view, drawn over the scene as the original does: the pattern's
-//! outlines in white where they land, the card they are projected from in pale green
-//! (with the projection cylinder for Cylindrical, a wire sphere for Spherical), and the
-//! handles for the bottom bar's
-//! mode, the object handles themselves: two move arrows along the pattern's plane, a turn
-//! ring round it with its arrow, or arrows at its right and top edges and a dot at its
-//! corner to size.
+//! The Emboss tool in the view, as the original shows it: the pattern's outlines in white
+//! where they land, the card they are projected from in pale green (with the projection
+//! cylinder for Cylindrical, a wire sphere for Spherical), all in the scene so the object
+//! hides what is behind it; and on top, the handles for the bottom bar's mode, as an
+//! object's: two move arrows along the pattern's plane, a turn ring round it with its
+//! arrow, or arrows at its right and top edges and a dot at its corner to size.
 
 use super::*;
 use crate::emboss::{Anchor, Preview};
+use crate::render::Polyline;
 use gizmo::Kind;
 
 /// What a drag in the view does to the pattern while Emboss is open.
@@ -304,7 +304,32 @@ impl App {
         });
     }
 
-    /// The preview's lines and the current mode's handles, over the 3D view.
+    /// The preview's lines for the GPU, depth tested so the object hides what is behind
+    /// it: the guide, the card and its border, and the outlines on the surface. Widths are
+    /// in points, as egui's, turned into pixels with `pixels_per_point`.
+    pub(super) fn emboss_lines(&self, pixels_per_point: f32) -> Vec<Polyline> {
+        let Some(p) = self.emboss_preview() else {
+            return Vec::new();
+        };
+        let line = |points: &Vec<Vec3>, color: Color32, width: f32| Polyline {
+            points: points.clone(),
+            color: Color32::to_srgba_unmultiplied(&color).map(|c| c as f32 / 255.0),
+            width: width * pixels_per_point,
+        };
+        let group = |lines: &[Vec<Vec3>], color: Color32, width: f32| {
+            lines
+                .iter()
+                .map(move |l| line(l, color, width))
+                .collect::<Vec<_>>()
+        };
+        let mut out = group(&p.guide, style::EMBOSS_GUIDE, 1.0);
+        out.push(line(&p.border, style::EMBOSS_BORDER, 1.0));
+        out.extend(group(&p.card, style::EMBOSS_CARD, 1.0));
+        out.extend(group(&p.surface, Color32::WHITE, 2.0));
+        out
+    }
+
+    /// The current mode's handles over the 3D view, on top of everything as an object's.
     pub(super) fn paint_emboss(
         &self,
         painter: &egui::Painter,
@@ -312,24 +337,9 @@ impl App {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        let Some(p) = self.emboss_preview() else {
+        if self.emboss_preview().is_none() {
             return;
-        };
-        let to_screen = |q: Vec3| self.to_screen(q, rect, aspect);
-        let lines = |lines: &[Vec<Vec3>], stroke: Stroke| {
-            for line in lines {
-                polyline(painter, line, stroke, &to_screen);
-            }
-        };
-        lines(&p.guide, Stroke::new(1.0_f32, style::EMBOSS_GUIDE));
-        polyline(
-            painter,
-            &p.border,
-            Stroke::new(1.0_f32, style::EMBOSS_BORDER),
-            &to_screen,
-        );
-        lines(&p.card, Stroke::new(1.0_f32, style::EMBOSS_CARD));
-        lines(&p.surface, Stroke::new(2.0_f32, Color32::WHITE));
+        }
         // Green while dragged or under the pointer, as the object handles, and the pointer
         // a hand over them and over the pattern's object, closed while dragging.
         let dragged = self.emboss_drag.and_then(EmbossDrag::kind);
@@ -347,27 +357,6 @@ impl App {
         );
         if let Some(g) = self.emboss_gizmo(rect, aspect) {
             g.paint(painter, hot, self.field);
-        }
-    }
-}
-
-/// A world polyline on screen, broken where it goes behind the camera.
-fn polyline(
-    painter: &egui::Painter,
-    line: &[Vec3],
-    stroke: Stroke,
-    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
-) {
-    let mut run: Vec<Pos2> = Vec::new();
-    for p in line.iter().map(|&p| to_screen(p)).chain([None]) {
-        match p {
-            Some(p) => run.push(p),
-            None => {
-                if run.len() > 1 {
-                    painter.add(egui::Shape::line(std::mem::take(&mut run), stroke));
-                }
-                run.clear();
-            }
         }
     }
 }
