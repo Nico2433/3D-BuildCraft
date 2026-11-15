@@ -232,6 +232,7 @@ const ES: &[(&str, &str)] = &[
     ("Split", "Dividir"),
     ("Smooth", "Suave"),
     ("Smoothness", "Suavidad"),
+    ("Edge smoothing", "Suavizado del borde"),
     ("Apply", "Aplicar"),
     ("Type", "Tipo"),
     ("No material", "Ninguno"),

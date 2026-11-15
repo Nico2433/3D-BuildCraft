@@ -47,6 +47,9 @@ pub struct Options {
     pub height: f32,
     /// Merge the border with the model; off leaves the border alone.
     pub keep_model: bool,
+    /// Rounds the border's free edge, 0 (follows the shape) to 1: its inward corners
+    /// fill with arcs up to a quarter of the shape's narrower side across.
+    pub smooth: f32,
 }
 
 impl Options {
@@ -57,6 +60,7 @@ impl Options {
             width: DEFAULT_WIDTH,
             height,
             keep_model: true,
+            smooth: 0.0,
         }
     }
 }
@@ -96,9 +100,15 @@ pub fn outline(models: &[Mesh], o: &Options) -> Result<Outlined> {
     let merge = o.keep_model && models.len() == 1;
     let w = o.width as f64;
     let overlap = if merge { OVERLAP } else { 0.0 };
+    let b = shape.bounds();
+    let radius = o.smooth.clamp(0.0, 1.0) as f64 * 0.25 * (b.max - b.min).x.min((b.max - b.min).y);
     let ring = match o.side {
-        Side::Outside => offset(&shape, w).difference(&offset(&shape, -overlap)),
-        Side::Inside => shape.difference(&offset(&shape, -w)),
+        Side::Outside => {
+            round_inward(&offset(&shape, w), radius).difference(&offset(&shape, -overlap))
+        }
+        // The inner edge is the free one: its corners turn round as the shrunk shape's
+        // outward corners do.
+        Side::Inside => shape.difference(&offset(&offset(&shape, -w - radius), radius)),
     };
     if ring.is_empty() {
         bail!("The border is empty; try a larger width");
@@ -142,6 +152,15 @@ pub fn silhouette(m: &Mesh) -> CrossSection {
         })
         .collect();
     CrossSection::new(shadows)
+}
+
+/// Fills a shape's inward corners and narrow notches with arcs of `radius` (grow, then
+/// shrink back), leaving its outward edges where they are.
+fn round_inward(shape: &CrossSection, radius: f64) -> CrossSection {
+    if radius <= 0.0 {
+        return shape.clone();
+    }
+    offset(&offset(shape, radius), -radius)
 }
 
 /// Grows (or with a negative `delta` shrinks) a shape, with round corners within
@@ -210,6 +229,7 @@ mod tests {
             width,
             height,
             keep_model,
+            smooth: 0.0,
         }
     }
 
@@ -299,6 +319,31 @@ mod tests {
         // Without the models it replaces them.
         let o = outline(&both, &opts(Side::Outside, 1.0, 3.0, false)).unwrap();
         assert!(matches!(o, Outlined::Replace(_)));
+    }
+
+    #[test]
+    fn smoothing_rounds_the_inward_corners_of_the_border() {
+        // An L of two blocks: its inner corner is sharp at 0 and fills in as it smooths.
+        let up = block().transformed(&Mat4::from_translation(V3::new(0.0, 9.0, 0.0)));
+        let side = block().transformed(&Mat4::from_translation(V3::new(9.0, 0.0, 0.0)));
+        let l = [block(), up, side];
+        let volume = |smooth: f32| {
+            let o = Options {
+                smooth,
+                ..opts(Side::Outside, 1.0, 2.0, false)
+            };
+            solid(outline(&l, &o).unwrap()).stats().volume
+        };
+        let (sharp, half, full) = (volume(0.0), volume(0.5), volume(1.0));
+        assert!(sharp < half && half < full, "{sharp} {half} {full}");
+        // On a convex block there is nothing to fill.
+        let o = Options {
+            smooth: 1.0,
+            ..opts(Side::Outside, 2.0, 4.0, false)
+        };
+        let v = solid(outline(&[block()], &o).unwrap()).stats().volume;
+        let area = grown(10.0, 2.0) - 100.0;
+        assert!((v - area * 4.0).abs() / (area * 4.0) < 0.01, "{v}");
     }
 
     #[test]

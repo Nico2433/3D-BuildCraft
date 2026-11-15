@@ -252,10 +252,23 @@ impl App {
                     opts.side = Side::ALL[k];
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Width"));
-                style::unit_field(ui, &mut opts.width, "mm", 0.1..=50.0);
-                style::label(ui, tr(lang, "Height"));
-                style::unit_field(ui, &mut opts.height, "mm", 0.1..=1000.0);
+                // Width above height, their labels in one column.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (key, v, range) in [
+                        ("Width", &mut opts.width, 0.1..=50.0),
+                        ("Height", &mut opts.height, 0.1..=1000.0),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let label = style::label(ui, tr(lang, key));
+                            ui.add_space((64.0 - label.rect.width()).max(0.0));
+                            style::unit_field(ui, key, v, "mm", range);
+                        });
+                    }
+                });
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::label(ui, tr(lang, "Edge smoothing"));
+                style::slider(ui, &mut opts.smooth, 0.0..=1.0, 250.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, tr(lang, "Keep model"));
                 style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"));
@@ -324,11 +337,11 @@ impl App {
                             number_dropdown(ui, label, &SEGMENTS, v);
                         }
                         style::label(ui, tr(lang, "Width"));
-                        style::unit_field(ui, width, "mm", 1.0..=1000.0);
+                        style::unit_field(ui, "width", width, "mm", 1.0..=1000.0);
                     });
                     ui.horizontal(|ui| {
                         style::label(ui, tr(lang, "Height"));
-                        style::unit_field(ui, height, "mm", 1.0..=1000.0);
+                        style::unit_field(ui, "height", height, "mm", 1.0..=1000.0);
                         style::label(ui, tr(lang, "Roundness"));
                         let mut r = *roundness as usize;
                         number_dropdown(
