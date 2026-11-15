@@ -432,7 +432,7 @@ impl Mesh {
             }
         }
         for faces in edges.values() {
-            // Borders are left out: they mark broken meshes, which get a red box instead.
+            // Borders are left out: they mark broken meshes, which get a red outline on the floor instead.
             let sharp = match faces[..] {
                 [(f, _), (g, _)] => unit[f].dot(unit[g]) < cos,
                 _ => false,
@@ -457,7 +457,10 @@ impl Mesh {
         self.try_simplified(keep).unwrap_or_else(|_| self.clone())
     }
 
-    /// Rejects collapsed results so callers can retain the original and report the error.
+    /// The edge collapses can leave a few folded or doubled faces on a closed mesh, so a
+    /// closed input goes through repair afterwards and stays closed. An open input is
+    /// only welded: it keeps its marker and can be repaired later, as in the original.
+    /// Only a collapsed result (too few faces, no size) is rejected, keeping the original.
     pub fn try_simplified(&self, keep: f32) -> anyhow::Result<Mesh> {
         let indices: Vec<u32> = self.triangles.iter().flatten().copied().collect();
         let target = self.simplify_target(keep) * 3;
@@ -476,24 +479,22 @@ impl Mesh {
             meshopt::SimplifyOptions::None,
             None,
         );
-        let mesh = Mesh::new(
+        let reduced = Mesh::new(
             self.positions.clone(),
             out.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
-        )
-        .welded();
+        );
+        let mesh = if self.stats().is_closed_manifold() {
+            crate::repair::repair(&reduced).0
+        } else {
+            reduced.welded()
+        };
         let stats = mesh.stats();
         anyhow::ensure!(
             stats.triangles >= 4
-                && stats.degenerate_triangles == 0
-                && stats.is_closed_manifold()
                 && stats.area.is_finite()
+                && stats.area > 0.0
                 && stats.volume.is_finite()
-                && stats.volume.abs() > 1e-9
-                && mesh.aabb().is_valid()
-                && mesh.triangle_positions().all(|[a, b, c]| {
-                    let area = (b - a).cross(c - a).length_squared();
-                    area.is_finite() && area > 0.0
-                }),
+                && mesh.aabb().is_valid(),
             "Simplification produced an invalid solid"
         );
         Ok(mesh)
@@ -820,6 +821,23 @@ mod tests {
             max: Vec3::new(1.0, f32::INFINITY, 1.0),
         };
         assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn simplify_accepts_open_meshes() {
+        // A sphere with its top cap removed: open, so it is reduced but not closed.
+        let mut m = primitives::sphere(20.0, 64, 32);
+        let top = m.aabb().max.z - 2.0;
+        let keep: Vec<[u32; 3]> = m
+            .triangles
+            .iter()
+            .copied()
+            .filter(|t| t.iter().any(|&v| m.positions[v as usize].z < top))
+            .collect();
+        m.triangles = keep;
+        assert!(!m.stats().is_closed_manifold());
+        let s = m.try_simplified(0.5).expect("open meshes simplify");
+        assert!(s.triangles.len() < m.triangles.len());
     }
 
     #[test]

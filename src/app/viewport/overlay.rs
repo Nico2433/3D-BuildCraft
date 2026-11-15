@@ -99,10 +99,10 @@ impl App {
         }
         for id in &self.invalid {
             if let Some(o) = self.scene.get(*id) {
-                draw_box(
+                draw_footprint(
                     &painter,
                     &o.world_aabb(),
-                    Stroke::new(2.0_f32, Color32::from_rgb(0xE0, 0x30, 0x30)),
+                    Stroke::new(3.0_f32, Color32::from_rgb(0xE8, 0x11, 0x23)),
                     &to_screen,
                 );
             }
@@ -136,7 +136,9 @@ impl App {
     }
 }
 
-fn draw_box(
+/// The outline of the box's base, where it stands: the original marks an object that
+/// needs repair with a red rectangle on the floor, not a whole box.
+fn draw_footprint(
     painter: &egui::Painter,
     b: &Aabb,
     stroke: Stroke,
@@ -145,30 +147,15 @@ fn draw_box(
     if !b.is_valid() {
         return;
     }
-    let c = |i: u8| {
-        Vec3::new(
-            if i & 1 != 0 { b.max.x } else { b.min.x },
-            if i & 2 != 0 { b.max.y } else { b.min.y },
-            if i & 4 != 0 { b.max.z } else { b.min.z },
-        )
-    };
-    for (a, bb) in [
-        (0, 1),
-        (1, 3),
-        (3, 2),
-        (2, 0),
-        (4, 5),
-        (5, 7),
-        (7, 6),
-        (6, 4),
-        (0, 4),
-        (1, 5),
-        (2, 6),
-        (3, 7),
-    ] {
-        if let (Some(p), Some(q)) = (to_screen(c(a)), to_screen(c(bb))) {
-            painter.line_segment([p, q], stroke);
-        }
+    let corners = [
+        Vec3::new(b.min.x, b.min.y, b.min.z),
+        Vec3::new(b.max.x, b.min.y, b.min.z),
+        Vec3::new(b.max.x, b.max.y, b.min.z),
+        Vec3::new(b.min.x, b.max.y, b.min.z),
+    ];
+    let points: Option<Vec<Pos2>> = corners.into_iter().map(to_screen).collect();
+    if let Some(points) = points {
+        painter.add(egui::Shape::closed_line(points, stroke));
     }
 }
 

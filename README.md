@@ -33,7 +33,7 @@ macOS builds are planned but not published yet.
 - Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances.
 - Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down.
 - Emboss text (bundled or installed font), a shape or an image onto an object: planar, cylindrical or spherical, raised or engraved, with bevel and separate top and side colours.
-- Open or non-manifold meshes are flagged with a red box and can be repaired.
+- Open or non-manifold meshes are flagged with a red rectangle on the floor and can be repaired.
 
 **Painting**
 - Colour per object, or paint areas with a Coverage slider (kept in 3MF).

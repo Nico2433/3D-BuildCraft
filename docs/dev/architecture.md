@@ -43,7 +43,7 @@ Screenshots of a known state: `cargo run --release -- --screenshot out.png` with
 
 1. A file is read by `io::load` into `ModelObject`s (mesh in object space + transform + colour).
 2. Unitless formats (STL, OBJ, PLY) open the import dialog for units; 3MF and glTF convert on read.
-3. Objects enter the `Scene`; open or non-manifold meshes are flagged and drawn with a red box.
+3. Objects enter the `Scene`; open or non-manifold meshes are flagged and drawn with a red rectangle on the floor.
 4. Each frame the UI builds `DrawItem`s (per-vertex colour when a mesh has triangle colours); `FrameCallback::prepare` uploads new meshes and per-object uniforms; `paint` draws.
 5. Edits go through `App::edit`, which stores a snapshot for undo; the autosave writes a 3MF every 60 s while dirty and is removed on clean exit.
 6. Saving goes through `io::save`; 3MF keeps placement in the build transform and writes triangle colours as per-triangle `pid`/`p1` (read back on load); the other formats bake placement. The 3MF save is atomic (temp file, then rename), which also protects the autosave.
