@@ -2,7 +2,6 @@
 //! The pattern is laid out flat, then each point is sent along a ray towards the object
 //! (straight into the face it lies on, towards the vertical axis, or towards the centre)
 //! and the pattern grows out of the surface along that ray, so it follows the surface.
-//! Conformed, it grows along the surface normal instead (see [`surface`]).
 
 use crate::boolean::{self, Op};
 use crate::cut::fill;
@@ -17,7 +16,6 @@ use std::sync::OnceLock;
 
 mod outlines;
 mod preview;
-mod surface;
 use outlines::pattern_outlines;
 pub use preview::{preview, Anchor, Preview};
 
@@ -102,9 +100,6 @@ pub struct Emboss {
     /// Planar only: the outward direction of the face the pattern lies on; +Z is the top.
     /// [`place`] sets it from the surface under the pointer.
     pub facing: Vec3,
-    /// Raise (or cut) along the surface normal instead of along the projection ray, so
-    /// the pattern keeps an even height over curved surfaces.
-    pub conform: bool,
     /// Slopes the edges: they start at a third of the height and rise to full height.
     pub bevel: bool,
     /// Colour of the top layer and of the sides of raised patterns; `None` keeps the
@@ -127,7 +122,6 @@ impl Default for Emboss {
             engrave: false,
             projection: Projection::Planar,
             facing: Vec3::Z,
-            conform: false,
             bevel: false,
             top_color: None,
             side_color: None,
@@ -761,12 +755,6 @@ struct Surface<'a> {
     frame: Frame,
     cell: f32,
     bins: HashMap<(i32, i32), Vec<u32>>,
-    /// Conformed: the surface normals of the binned triangles.
-    normals: Option<surface::Normals>,
-    /// Conformed: how far round each point the surface's faces are averaged into the
-    /// direction it grows, so letters bend smoothly over a sharp edge instead of
-    /// splaying apart along the two faces' normals.
-    blend: f32,
 }
 
 impl<'a> Surface<'a> {
@@ -819,84 +807,33 @@ impl<'a> Surface<'a> {
                 }
             }
         }
-        let normals = e
-            .conform
-            .then(|| surface::Normals::new(mesh, bins.values().flatten().copied()));
         Self {
             mesh,
             frame,
             cell,
             bins,
-            normals,
-            blend: (2.0 * e.depth).max(2.0 * step),
         }
     }
 
     /// Where the ray for `q` first meets the surface, and the direction the pattern grows
-    /// into the object there: along the ray, or against the surface normal when conformed.
+    /// into the object there: along the ray, as the original raises and cuts it.
     fn hit(&self, q: Vec2) -> Option<(Vec3, Vec3)> {
         let (origin, dir) = self.frame.ray(q);
         let bin = (
             (q.x / self.cell).floor() as i32,
             (q.y / self.cell).floor() as i32,
         );
-        let (t, i) = self
+        let t = self
             .bins
             .get(&bin)?
             .iter()
             .filter_map(|&i| {
                 let [a, b, c] =
                     self.mesh.triangles[i as usize].map(|v| self.mesh.positions[v as usize]);
-                ray_triangle(origin, dir, a, b, c).map(|t| (t, i))
+                ray_triangle(origin, dir, a, b, c)
             })
-            .min_by(|x, y| x.0.total_cmp(&y.0))?;
-        let p = origin + dir * t;
-        let into = match &self.normals {
-            Some(normals) => {
-                let own = normals.inward(self.mesh, i, p, dir);
-                self.blended(p, dir).unwrap_or(own)
-            }
-            None => dir,
-        };
-        Some((p, into))
-    }
-
-    /// Conformed: the direction into the object at `p` as the faces within `blend` of it
-    /// see it, each weighted by its area and by how near it is; on a flat face far from
-    /// any edge this is that face's own normal. None when nothing usable is near.
-    fn blended(&self, p: Vec3, dir: Vec3) -> Option<Vec3> {
-        let q = self.frame.key(p);
-        let reach = (self.blend / self.cell).ceil() as i32;
-        let (bx, by) = (
-            (q.x / self.cell).floor() as i32,
-            (q.y / self.cell).floor() as i32,
-        );
-        let mut seen = std::collections::HashSet::new();
-        let mut sum = Vec3::ZERO;
-        for y in by - reach..=by + reach {
-            for x in bx - reach..=bx + reach {
-                for &f in self.bins.get(&(x, y)).into_iter().flatten() {
-                    if !seen.insert(f) {
-                        continue;
-                    }
-                    let [a, b, c] =
-                        self.mesh.triangles[f as usize].map(|v| self.mesh.positions[v as usize]);
-                    let d = p.distance(crate::mesh::closest_on_triangle(p, a, b, c));
-                    if d >= self.blend {
-                        continue;
-                    }
-                    let n = (b - a).cross(c - a);
-                    // Faces seen from behind (the far side of a thin part) do not count.
-                    if n.dot(-dir) <= 0.0 {
-                        continue;
-                    }
-                    let near = 1.0 - d / self.blend;
-                    sum += n * near * near;
-                }
-            }
-        }
-        let n = sum.try_normalize()?;
-        (n.dot(-dir) > 0.05).then_some(-n)
+            .min_by(f32::total_cmp)?;
+        Some((origin + dir * t, dir))
     }
 }
 

@@ -36,7 +36,6 @@ fn model_tools_are_listed_once_with_their_arguments() {
                 "font",
                 "projection",
                 "bevel",
-                "conform",
                 "top_color",
                 "side_color",
                 "at",

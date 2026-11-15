@@ -273,11 +273,6 @@ const ES: &[(&str, &str)] = &[
     ("Cylindrical", "Cilíndrica"),
     ("Spherical", "Esférica"),
     ("Bevel", "Bisel"),
-    ("Conform", "Amoldar"),
-    (
-        "Follow the surface: an even height over curved surfaces",
-        "Seguir la superficie: altura uniforme sobre superficies curvas",
-    ),
     ("Top", "Superior"),
     ("Sides", "Lateral"),
     (

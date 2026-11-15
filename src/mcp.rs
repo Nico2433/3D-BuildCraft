@@ -270,7 +270,6 @@ fn model_tools() -> Vec<Value> {
                 "depth": num("height above the surface (or depth when engraving), mm, default 1"),
                 "engrave": flag("cut into the surface instead of raising"),
                 "bevel": flag("slope the edges"),
-                "conform": flag("conform to the surface: raise (or cut) along the surface normal so the pattern keeps an even height on curved surfaces, instead of along the projection"),
                 "angle": num("turn in its own plane, degrees"),
                 "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
                 "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical)" },

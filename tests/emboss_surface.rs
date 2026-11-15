@@ -1,4 +1,4 @@
-//! Emboss on any face of an object, and conformed to curved surfaces.
+//! Emboss on any face of an object.
 use buildcraft3d::{
     emboss::{self, Emboss},
     mesh::Mesh,
@@ -96,75 +96,34 @@ fn text_embosses_onto_a_slanted_face() {
     assert_closed(&emboss::apply(&pyramid, &edit).unwrap().object);
 }
 
-/// Every vertex of a conformed pattern lies `depth` from the surface (the top of a raised
-/// pattern, the floor of an engraved one) or the overlap of 0.5 mm on the other side.
-fn assert_even(target: &Mesh, edit: &Emboss) {
-    let solid = emboss::text_solid(target, edit).unwrap();
-    assert_closed(&solid);
-    let mut far = 0;
-    for p in solid.positions.iter().step_by(3) {
-        let d = distance(target, *p);
-        let off = (d - edit.depth).abs().min((d - 0.5).abs());
-        assert!(off < 0.08, "{p}: {d}");
-        far += usize::from((d - edit.depth).abs() < 0.08);
-    }
-    assert!(far > 0);
-    for result in [false, true].map(|engrave| {
-        emboss::apply(
-            target,
-            &Emboss {
-                engrave,
-                ..edit.clone()
-            },
-        )
-    }) {
-        assert_closed(&result.unwrap().object);
-    }
-}
-
 #[test]
-fn conformed_text_keeps_an_even_height_on_a_sphere() {
+fn text_on_a_sphere_rises_along_the_projection() {
+    // As the original: every point rises straight along its ray (down onto the top),
+    // so where the sphere falls away the letter's top is nearer the surface than its
+    // depth, and the whole letter stays upright.
     let sphere = Primitive::Sphere.build();
-    for engrave in [false, true] {
-        let edit = Emboss {
-            conform: true,
-            depth: 2.0,
-            engrave,
-            ..text("O", 20.0)
-        };
-        assert_even(&sphere, &edit);
-    }
-    // Without conforming, the letter rises straight up, so its top leans in where the
-    // sphere falls away.
-    let straight = emboss::text_solid(
-        &sphere,
-        &Emboss {
-            depth: 2.0,
-            ..text("O", 20.0)
-        },
-    )
-    .unwrap();
-    let low = straight
+    let edit = Emboss {
+        depth: 2.0,
+        ..text("O", 20.0)
+    };
+    let solid = emboss::text_solid(&sphere, &edit).unwrap();
+    assert_closed(&solid);
+    let low = solid
         .positions
         .iter()
         .map(|p| distance(&sphere, *p))
         .filter(|d| *d > 1.0)
         .fold(f32::MAX, f32::min);
     assert!(low < 1.9, "{low}");
-}
-
-#[test]
-fn conformed_text_keeps_an_even_height_on_a_cylinder_side() {
-    let cylinder = Primitive::Cylinder.build();
     for engrave in [false, true] {
-        let mut edit = Emboss {
-            conform: true,
-            depth: 2.0,
-            engrave,
-            ..text("OI", 15.0)
-        };
-        emboss::place_at(&cylinder, &mut edit, Vec3::new(0.0, -20.0, 20.0));
-        assert!(edit.facing.y < -0.99);
-        assert_even(&cylinder, &edit);
+        let out = emboss::apply(
+            &sphere,
+            &Emboss {
+                engrave,
+                ..edit.clone()
+            },
+        )
+        .unwrap();
+        assert_closed(&out.object);
     }
 }

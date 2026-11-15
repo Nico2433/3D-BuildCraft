@@ -238,7 +238,6 @@ impl App {
         }
         params.engrave = flag(a, "engrave", false)?;
         params.bevel = flag(a, "bevel", false)?;
-        params.conform = flag(a, "conform", false)?;
         params.angle = number(a, "angle", 0.0, -360.0..=360.0)?;
         params.projection = choice(
             a,

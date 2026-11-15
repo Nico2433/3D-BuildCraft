@@ -1,6 +1,6 @@
 //! Emboss's settings in the tool bar, in two rows as the original's: the pattern, its
 //! projection, the Bevel button and the top and side colours above; the text and its font
-//! below, then our Conform and Engrave switches (its size is in the bottom bar, as the
+//! below, then our Engrave switch (its size is in the bottom bar, as the
 //! original's). Each row keeps a label next to its control.
 
 use super::icons::{self, Icon};
@@ -60,19 +60,10 @@ impl App {
                 }
             });
             row(ui, |ui| {
-                // The switches after the text and font: each a switch, its name and gaps.
-                let switches = [tr(lang, "Conform"), tr(lang, "Engrave")]
-                    .map(|n| 50.0 + label_width(ui, n) + 2.0 * 6.0 + GAP)
-                    .iter()
-                    .sum::<f32>()
-                    + 17.0;
-                text_and_font(ui, lang, params, font_list, switches);
+                // The switch after the text and font: the switch, its name and gaps.
+                let switch = 50.0 + label_width(ui, tr(lang, "Engrave")) + 2.0 * 6.0 + GAP + 17.0;
+                text_and_font(ui, lang, params, font_list, switch);
                 style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
-                toggle(ui, &mut params.conform, tr(lang, "Conform")).on_hover_text(tr(
-                    lang,
-                    "Follow the surface: an even height over curved surfaces",
-                ));
-                ui.add_space(GAP);
                 toggle(ui, &mut params.engrave, tr(lang, "Engrave"));
             });
         });
