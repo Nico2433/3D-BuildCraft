@@ -32,7 +32,7 @@ macOS builds are planned but not published yet.
 - Add dialog: recent files as thumbnails, local 3D libraries (your own folders, browsed and searched with thumbnails), Load image as a height relief or an outline, Camera (a webcam photo).
 - Select (click, Ctrl/Shift for more, box selection), move, rotate and scale with handles or exact values in the bottom bar. Objects snap to each other's edges and centres with alignment guides; hold Alt while dragging to turn snapping off.
 - Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances.
-- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains).
+- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains, with sharp corners and separate smoothing for its outer and inner edges).
 - Emboss text (bundled or installed font), a shape or an image onto an object: planar, cylindrical or spherical, raised or engraved, with bevel and separate top and side colours.
 - Open or non-manifold meshes are flagged with a red rectangle on the floor and can be repaired.
 

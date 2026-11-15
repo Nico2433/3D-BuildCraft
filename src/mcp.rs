@@ -325,7 +325,8 @@ fn model_tools() -> Vec<Value> {
                 "width": num("border width, mm, default 2"),
                 "height": num("border height from the object's bottom, mm; default the selection's height"),
                 "keep_model": flag("merge the border with the object (default true); false leaves only the border"),
-                "smooth": num("round the border's free edge, 0..1: inward corners fill with arcs; default 0"),
+                "smooth_outer": num("round the corners of the border's outer edge, 0 (sharp, default) to 1"),
+                "smooth_inner": num("round the corners of the border's inner edge, 0 (sharp, default) to 1"),
             } }),
         ),
         tool(

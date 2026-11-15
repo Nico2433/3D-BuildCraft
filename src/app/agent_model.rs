@@ -343,7 +343,8 @@ impl App {
             width: number(a, "width", crate::outline::DEFAULT_WIDTH, 0.01..=1000.0)?,
             height: number(a, "height", height, 0.01..=10_000.0)?,
             keep_model: flag(a, "keep_model", true)?,
-            smooth: number(a, "smooth", 0.0, 0.0..=1.0)?,
+            smooth_outer: number(a, "smooth_outer", 0.0, 0.0..=1.0)?,
+            smooth_inner: number(a, "smooth_inner", 0.0, 0.0..=1.0)?,
         };
         self.outline_now(opts)
     }

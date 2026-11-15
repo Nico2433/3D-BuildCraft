@@ -47,9 +47,11 @@ pub struct Options {
     pub height: f32,
     /// Merge the border with the model; off leaves the border alone.
     pub keep_model: bool,
-    /// Rounds the border's free edge, 0 (follows the shape) to 1: its inward corners
-    /// fill with arcs up to a quarter of the shape's narrower side across.
-    pub smooth: f32,
+    /// Rounds the corners of the border's outer edge, 0 (sharp) to 1: arcs up to twice
+    /// the width across.
+    pub smooth_outer: f32,
+    /// The same for its inner edge.
+    pub smooth_inner: f32,
 }
 
 impl Options {
@@ -60,7 +62,8 @@ impl Options {
             width: DEFAULT_WIDTH,
             height,
             keep_model: true,
-            smooth: 0.0,
+            smooth_outer: 0.0,
+            smooth_inner: 0.0,
         }
     }
 }
@@ -100,16 +103,20 @@ pub fn outline(models: &[Mesh], o: &Options) -> Result<Outlined> {
     let merge = o.keep_model && models.len() == 1;
     let w = o.width as f64;
     let overlap = if merge { OVERLAP } else { 0.0 };
-    let b = shape.bounds();
-    let radius = o.smooth.clamp(0.0, 1.0) as f64 * 0.25 * (b.max - b.min).x.min((b.max - b.min).y);
-    let ring = match o.side {
-        Side::Outside => {
-            round_inward(&offset(&shape, w), radius).difference(&offset(&shape, -overlap))
-        }
-        // The inner edge is the free one: its corners turn round as the shrunk shape's
-        // outward corners do.
-        Side::Inside => shape.difference(&offset(&offset(&shape, -w - radius), radius)),
+    let radius = |t: f32| t.clamp(0.0, 1.0) as f64 * 2.0 * w;
+    let (r_out, r_in) = (radius(o.smooth_outer), radius(o.smooth_inner));
+    // The border's two edges: the shape grown (or shrunk) by the width with sharp
+    // corners, and the shape itself. Each is smoothed on its own.
+    let (outer, inner) = match o.side {
+        Side::Outside => (
+            smooth(&grow_sharp(&shape, w), r_out),
+            offset(&smooth(&shape, r_in), -overlap),
+        ),
+        Side::Inside => (smooth(&shape, r_out), smooth(&grow_sharp(&shape, -w), r_in)),
     };
+    // Rounding cuts into points and fills notches; the inner edge then keeps clear of
+    // the outer one by half the width, so the border never breaks or thins to nothing.
+    let ring = outer.difference(&inner.intersection(&offset(&outer, -w / 2.0)));
     if ring.is_empty() {
         bail!("The border is empty; try a larger width");
     }
@@ -154,13 +161,23 @@ pub fn silhouette(m: &Mesh) -> CrossSection {
     CrossSection::new(shadows)
 }
 
-/// Fills a shape's inward corners and narrow notches with arcs of `radius` (grow, then
-/// shrink back), leaving its outward edges where they are.
-fn round_inward(shape: &CrossSection, radius: f64) -> CrossSection {
+/// How far a grown corner may stick out before it is cut flat, as a multiple of the
+/// width: enough to keep a star's points sharp.
+const MITER_LIMIT: f64 = 4.0;
+
+/// Grows (or shrinks) a shape keeping its corners sharp, as Tinkercad's outline does.
+fn grow_sharp(shape: &CrossSection, delta: f64) -> CrossSection {
+    shape.offset_with_params(delta, 2, MITER_LIMIT, 0)
+}
+
+/// Rounds every corner of a shape with arcs of `radius`: outward ones by shrinking and
+/// growing back, inward ones by growing and shrinking back.
+fn smooth(shape: &CrossSection, radius: f64) -> CrossSection {
     if radius <= 0.0 {
         return shape.clone();
     }
-    offset(&offset(shape, radius), -radius)
+    let opened = offset(&offset(shape, -radius), radius);
+    offset(&offset(&opened, radius), -radius)
 }
 
 /// Grows (or with a negative `delta` shrinks) a shape, with round corners within
@@ -229,13 +246,14 @@ mod tests {
             width,
             height,
             keep_model,
-            smooth: 0.0,
+            smooth_outer: 0.0,
+            smooth_inner: 0.0,
         }
     }
 
-    /// Area of a square of side `s` grown by `w` with round corners.
+    /// Area of a square of side `s` grown by `w` with sharp corners.
     fn grown(s: f64, w: f64) -> f64 {
-        s * s + 4.0 * s * w + std::f64::consts::PI * w * w
+        (s + 2.0 * w) * (s + 2.0 * w)
     }
 
     #[test]
@@ -282,10 +300,9 @@ mod tests {
         let m = solid(outline(&[ring()], &opts(Side::Outside, 1.0, 4.0, false)).unwrap());
         let area = grown(20.0, 1.0) - 400.0 + (100.0 - 64.0);
         assert!((m.stats().volume - area * 4.0).abs() < 1.0);
-        // Inside: a band along the outer edge and one round the hole, whose corners
-        // grow round.
+        // Inside: a band along the outer edge and one round the hole, sharp-cornered.
         let m = solid(outline(&[ring()], &opts(Side::Inside, 1.0, 4.0, false)).unwrap());
-        let area = (400.0 - 324.0) + 40.0 + std::f64::consts::PI;
+        let area = (400.0 - 324.0) + 44.0;
         assert!(
             (m.stats().volume - area * 4.0).abs() < 1.0,
             "{}",
@@ -322,28 +339,26 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_rounds_the_inward_corners_of_the_border() {
-        // An L of two blocks: its inner corner is sharp at 0 and fills in as it smooths.
-        let up = block().transformed(&Mat4::from_translation(V3::new(0.0, 9.0, 0.0)));
-        let side = block().transformed(&Mat4::from_translation(V3::new(9.0, 0.0, 0.0)));
-        let l = [block(), up, side];
-        let volume = |smooth: f32| {
+    fn each_edge_smooths_on_its_own() {
+        let volume = |side, outer: f32, inner: f32| {
             let o = Options {
-                smooth,
-                ..opts(Side::Outside, 1.0, 2.0, false)
+                smooth_outer: outer,
+                smooth_inner: inner,
+                ..opts(side, 2.0, 1.0, false)
             };
-            solid(outline(&l, &o).unwrap()).stats().volume
+            solid(outline(&[block()], &o).unwrap()).stats().volume
         };
-        let (sharp, half, full) = (volume(0.0), volume(0.5), volume(1.0));
-        assert!(sharp < half && half < full, "{sharp} {half} {full}");
-        // On a convex block there is nothing to fill.
-        let o = Options {
-            smooth: 1.0,
-            ..opts(Side::Outside, 2.0, 4.0, false)
-        };
-        let v = solid(outline(&[block()], &o).unwrap()).stats().volume;
-        let area = grown(10.0, 2.0) - 100.0;
-        assert!((v - area * 4.0).abs() / (area * 4.0) < 0.01, "{v}");
+        for side in [Side::Outside, Side::Inside] {
+            let sharp = volume(side, 0.0, 0.0);
+            // Rounding the outer corners takes material off; rounding the inner ones
+            // (the hole's) puts some back.
+            assert!(volume(side, 0.5, 0.0) < sharp - 0.1, "{side:?}");
+            assert!(volume(side, 1.0, 0.0) < volume(side, 0.5, 0.0), "{side:?}");
+            assert!(volume(side, 0.0, 0.5) > sharp + 0.1, "{side:?}");
+        }
+        // At 0 the outside border of a square is square: corners sharp.
+        let m = solid(outline(&[block()], &opts(Side::Outside, 2.0, 1.0, false)).unwrap());
+        assert!((m.stats().volume - (196.0 - 100.0)).abs() < 1e-2);
     }
 
     #[test]

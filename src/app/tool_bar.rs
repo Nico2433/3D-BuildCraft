@@ -267,8 +267,20 @@ impl App {
                     }
                 });
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Edge smoothing"));
-                style::slider(ui, &mut opts.smooth, 0.0..=1.0, 250.0, 0);
+                // Outer and inner edge smoothing, stacked as the sizes are.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (key, v) in [
+                        ("Outer smoothing", &mut opts.smooth_outer),
+                        ("Inner smoothing", &mut opts.smooth_inner),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let label = style::label(ui, tr(lang, key));
+                            ui.add_space((150.0 - label.rect.width()).max(0.0));
+                            style::slider(ui, v, 0.0..=1.0, 200.0, 0);
+                        });
+                    }
+                });
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, tr(lang, "Keep model"));
                 style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"));

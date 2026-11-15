@@ -51,7 +51,14 @@ fn model_tools_are_listed_once_with_their_arguments() {
         ("load_image", &["path", "method", "levels", "invert"]),
         (
             "extrude_outline",
-            &["side", "width", "height", "keep_model", "smooth"],
+            &[
+                "side",
+                "width",
+                "height",
+                "keep_model",
+                "smooth_outer",
+                "smooth_inner",
+            ],
         ),
     ] {
         let props = &tool(name)["inputSchema"]["properties"];
