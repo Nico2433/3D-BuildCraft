@@ -247,6 +247,12 @@ const ES: &[(&str, &str)] = &[
     ("Smooth edges", "Suavizar bordes"),
     ("Emboss", "Relieve"),
     ("Extrude down", "Extrudir hacia abajo"),
+    ("Extrude outline", "Extrudir contorno"),
+    ("Extruding outline...", "Extrudiendo contorno..."),
+    ("Side", "Lado"),
+    ("Outside", "Exterior"),
+    ("Inside", "Interior"),
+    ("Keep model", "Conservar modelo"),
     ("Merge", "Combinar"),
     ("Intersect", "Intersecar"),
     ("Subtract", "Restar"),
@@ -548,6 +554,7 @@ mod tests {
         dynamic.extend(crate::emboss::Projection::ALL.iter().map(|p| p.label()));
         dynamic.extend(crate::settings::Units::ALL.iter().map(|u| u.name()));
         dynamic.extend(crate::image3d::Mode::ALL.iter().map(|m| m.label()));
+        dynamic.extend(crate::outline::Side::ALL.iter().map(|s| s.label()));
         dynamic.extend(["Coming soon", "New scene", "ft", "warning", "warnings"]);
         // Names that read the same in both languages.
         let neutral = ["STL", "OBJ", "PLY", "glTF", "GLB"];

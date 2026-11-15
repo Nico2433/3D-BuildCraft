@@ -191,6 +191,7 @@ impl App {
             Some("cut") if !cut_now => Some(Action::StartCut),
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
+            Some("extrude-outline") => Some(Action::StartOutline),
             Some("emboss") => Some(Action::StartEmboss),
             Some("measure") if launch.measure.is_none() => Some(Action::Measure),
             Some("settle") => Some(Action::Settle),

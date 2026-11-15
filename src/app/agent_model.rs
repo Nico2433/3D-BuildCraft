@@ -307,7 +307,7 @@ impl App {
         // These formats carry their units and load in millimetres already.
         if matches!(
             Format::from_path(&path),
-            Some(Format::ThreeMf | Format::Gltf | Format::Glb)
+            Some(Format::ThreeMf | Format::Gltf | Format::Glb | Format::Svg)
         ) {
             units = Units::Millimeter;
         }
@@ -327,6 +327,24 @@ impl App {
             self.finish_import(true);
         }
         Ok(())
+    }
+
+    /// `extrude_outline`: Extrude outline's border round each selected object, at once.
+    pub(super) fn agent_extrude_outline(&mut self, a: &Value) -> Result<(), String> {
+        use crate::outline::{Options, Side};
+        let height = self.scene.selection_aabb().size().z.max(0.1);
+        let opts = Options {
+            side: choice(
+                a,
+                "side",
+                Some(Side::Outside),
+                &[("outside", Side::Outside), ("inside", Side::Inside)],
+            )?,
+            width: number(a, "width", crate::outline::DEFAULT_WIDTH, 0.01..=1000.0)?,
+            height: number(a, "height", height, 0.01..=10_000.0)?,
+            keep_model: flag(a, "keep_model", true)?,
+        };
+        self.outline_now(opts)
     }
 
     /// `load_image`: Load image's solid from a picture, added on the floor.

@@ -685,6 +685,7 @@ impl App {
                         | Tool::Cut { .. }
                         | Tool::Simplify { .. }
                         | Tool::Smooth { .. }
+                        | Tool::Outline { .. }
                         | Tool::Hollow { .. }
                         | Tool::Emboss { .. }
                         | Tool::Custom { .. }

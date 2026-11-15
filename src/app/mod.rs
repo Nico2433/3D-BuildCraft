@@ -37,7 +37,9 @@ mod gizmo;
 mod icons;
 mod jobs;
 mod launch;
+mod live;
 mod material;
+mod outline;
 mod paint_menu;
 mod paper;
 mod picking;
@@ -128,6 +130,13 @@ enum Tool {
         /// The scene, undo depth and unsaved flag before smoothing, for Cancel.
         before: Box<Checkpoint>,
         run: smooth::Run,
+    },
+    /// Edit → Extrude outline: a border round each selected object, previewed in the scene.
+    Outline {
+        opts: crate::outline::Options,
+        /// The scene, undo depth and unsaved flag before the tool, for Cancel.
+        before: Box<Checkpoint>,
+        run: outline::Run,
     },
     /// Fraction of faces to remove, 0..1.
     Simplify {
@@ -280,6 +289,7 @@ const CLIP_TEXT: &str = "3D BuildCraft objects";
 const REPAIRING: &str = "Repairing...";
 const LOADING: &str = "Loading...";
 const SMOOTHING: &str = "Smoothing...";
+const OUTLINING: &str = "Extruding outline...";
 const SIMPLIFYING: &str = "Simplifying...";
 
 struct Toast {
@@ -522,6 +532,7 @@ impl App {
                 self.toast(tr(lang, "Simplification produced an invalid solid"), true)
             }
             jobs::Done::Smoothed { gen, result } => self.smooth_done(gen, result),
+            jobs::Done::Outlined { gen, result } => self.outline_done(gen, result),
             jobs::Done::Loaded {
                 path,
                 replace_scene,
@@ -922,8 +933,14 @@ impl App {
 impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
-        let smoothing = matches!(&self.tool, Some(Tool::Smooth { amount, edges, run, .. })
-            if !run.is_shown(*amount, *edges));
+        // A live preview that is still waiting to start.
+        let previewing = match &self.tool {
+            Some(Tool::Smooth {
+                amount, edges, run, ..
+            }) => !run.is_shown((*amount, *edges)),
+            Some(Tool::Outline { opts, run, .. }) => !run.is_shown(*opts),
+            _ => false,
+        };
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };
@@ -954,7 +971,7 @@ impl App {
             && self.jobs.is_empty()
             && self.profiles_job.is_none()
             && status_read
-            && !smoothing
+            && !previewing
         {
             *frames -= 1;
             if *frames == 0 {
@@ -1027,6 +1044,7 @@ impl eframe::App for App {
         let jobs_before = self.jobs.len();
         self.collect_jobs();
         self.smooth_step(ctx);
+        self.outline_step(ctx);
         self.material_step();
         self.reclaim_after_work(ctx, picking_ready || self.jobs.len() != jobs_before);
         if !self.jobs.is_empty() {

@@ -52,6 +52,8 @@ pub enum Icon {
     Smooth,
     Emboss,
     ExtrudeDown,
+    /// A shape inside a rounded border: Extrude outline.
+    ExtrudeOutline,
     Merge,
     Intersect,
     Subtract,
@@ -153,6 +155,21 @@ impl Pen<'_> {
         let pts: Vec<Pos2> = pts.iter().map(|&(x, y)| self.p(x, y)).collect();
         self.painter
             .add(Shape::convex_polygon(pts, self.color, Stroke::NONE));
+    }
+    /// Fills a concave outline through an explicitly triangulated mesh.
+    fn fill_concave(&self, pts: &[(f32, f32)]) {
+        let mut mesh = eframe::egui::Mesh::default();
+        for &(x, y) in pts {
+            mesh.colored_vertex(self.p(x, y), self.color);
+        }
+        let coords: Vec<f64> = pts
+            .iter()
+            .flat_map(|&(x, y)| [x as f64, y as f64])
+            .collect();
+        if let Ok(indices) = earcutr::earcut(&coords, &[], 2) {
+            mesh.indices = indices.into_iter().map(|i| i as u32).collect();
+        }
+        self.painter.add(Shape::mesh(mesh));
     }
     fn rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
         self.closed(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]);
@@ -262,19 +279,7 @@ impl Pen<'_> {
                         (17., 21.),
                     ]
                 };
-                // A concave outline is filled with an explicitly triangulated mesh.
-                let mut mesh = eframe::egui::Mesh::default();
-                for &(x, y) in points {
-                    mesh.colored_vertex(self.p(x, y), self.color);
-                }
-                let coords: Vec<f64> = points
-                    .iter()
-                    .flat_map(|&(x, y)| [x as f64, y as f64])
-                    .collect();
-                if let Ok(indices) = earcutr::earcut(&coords, &[], 2) {
-                    mesh.indices = indices.into_iter().map(|i| i as u32).collect();
-                }
-                self.painter.add(Shape::mesh(mesh));
+                self.fill_concave(points);
                 self.painter.add(Shape::closed_line(
                     points.iter().map(|&(x, y)| self.p(x, y)).collect(),
                     Stroke::new(1.2_f32, Color32::from_gray(35)),
@@ -470,6 +475,27 @@ impl Pen<'_> {
             ExtrudeDown => {
                 self.rect(4.0, 4.0, 20.0, 20.0);
                 self.fill(&[(4.0, 4.0), (20.0, 4.0), (20.0, 11.0), (4.0, 11.0)]);
+            }
+            ExtrudeOutline => {
+                // A filled star with a border all round it, as a keychain tag.
+                self.closed(&[
+                    (3.0, 7.0),
+                    (7.0, 3.0),
+                    (17.0, 3.0),
+                    (21.0, 7.0),
+                    (21.0, 17.0),
+                    (17.0, 21.0),
+                    (7.0, 21.0),
+                    (3.0, 17.0),
+                ]);
+                let star: Vec<(f32, f32)> = (0..10)
+                    .map(|k| {
+                        let a = k as f32 * PI / 5.0 - PI / 2.0;
+                        let r = if k % 2 == 0 { 6.5 } else { 2.8 };
+                        (12.0 + r * a.cos(), 12.6 + r * a.sin())
+                    })
+                    .collect();
+                self.fill_concave(&star);
             }
             Merge => {
                 self.rect(3.0, 3.0, 14.0, 14.0);

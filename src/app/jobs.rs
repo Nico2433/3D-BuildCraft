@@ -20,6 +20,11 @@ pub(super) enum Done {
         gen: u64,
         result: Result<Vec<(u64, Mesh)>, String>,
     },
+    /// Extrude outline's preview, as `Smoothed`.
+    Outlined {
+        gen: u64,
+        result: Result<crate::outline::Outlined, String>,
+    },
     Loaded {
         path: PathBuf,
         replace_scene: bool,
