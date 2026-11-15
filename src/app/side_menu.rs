@@ -281,18 +281,20 @@ impl App {
         ui.spacing_mut().item_spacing.y = 0.0;
         let width = ui.available_width();
         for (name, value) in self.about_draft.fields_mut() {
-            ui.label(
-                egui::RichText::new(tr(lang, about_label(name)))
-                    .size(style::MENU_FONT)
-                    .color(style::TEXT),
-            );
-            ui.add_space(4.0);
-            if name == "Description" {
-                let edit = egui::TextEdit::multiline(value).desired_rows(5);
-                ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)));
-            } else {
-                style::text_field(ui, value, width, "");
-            }
+            let label = egui::RichText::new(tr(lang, about_label(name)))
+                .size(style::MENU_FONT)
+                .color(style::TEXT);
+            style::labeled_rich(ui, label, |ui| {
+                ui.add_space(4.0);
+                if name == "Description" {
+                    let edit = egui::TextEdit::multiline(value).desired_rows(5);
+                    style::lead_target(ui, |ui| {
+                        ui.add(edit.desired_width(width).margin(Vec2::new(8.0, 6.0)))
+                    });
+                } else {
+                    style::text_field(ui, value, width, "");
+                }
+            });
             ui.add_space(14.0);
         }
         ui.add_space(6.0);

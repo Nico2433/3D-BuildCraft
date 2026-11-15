@@ -26,11 +26,19 @@ enum Choice {
 /// The Pattern label and button, and its flyout while `open`. Changes `params.pattern` to
 /// what is chosen (Load asks for the picture first).
 pub(super) fn pattern_control(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss, open: &mut bool) {
-    style::label(ui, tr(lang, "Pattern"));
+    style::labeled(ui, tr(lang, "Pattern"), |ui| {
+        pattern_button(ui, lang, params, open)
+    });
+}
+
+/// The button after the Pattern label (which acts as part of it), and its flyout.
+fn pattern_button(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss, open: &mut bool) {
+    let lead = style::take_lead(ui);
     let size = Vec2::new(PAD + ICON + PAD + CHEVRON + PAD, style::FIELD_H);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let opening = resp.clicked() || lead.clicked;
     let p = ui.painter();
-    if resp.hovered() || *open {
+    if resp.hovered() || lead.hovered || *open {
         p.rect_filled(rect, egui::CornerRadius::ZERO, style::BLUE_HOVER);
     }
     let icon = egui::Rect::from_min_size(
@@ -43,8 +51,8 @@ pub(super) fn pattern_control(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss
         Vec2::splat(CHEVRON),
     );
     icons::paint(p, chevron, Icon::ChevronDown, style::TEXT);
-    let resp = resp.on_hover_text(tr(lang, pattern_label(&params.pattern)));
-    if resp.clicked() {
+    resp.on_hover_text(tr(lang, pattern_label(&params.pattern)));
+    if opening {
         *open = !*open;
     }
     if !*open {
@@ -52,7 +60,7 @@ pub(super) fn pattern_control(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss
     }
     let top = ui.ctx().screen_rect().top() + 32.0;
     let at = egui::pos2(rect.right() + 4.0, top);
-    let shown = Flyout::new("emboss_pattern", at, MENU_W).show(ui.ctx(), resp.clicked(), |m| {
+    let shown = Flyout::new("emboss_pattern", at, MENU_W).show(ui.ctx(), opening, |m| {
         let selected = match params.pattern {
             Pattern::Shape(s) => Shape::ALL.iter().position(|&o| o == s),
             _ => None,

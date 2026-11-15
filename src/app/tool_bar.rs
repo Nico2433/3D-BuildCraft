@@ -238,16 +238,18 @@ impl App {
                 style::label(ui, tr(lang, "Smoothness"));
                 style::slider(ui, amount, 0.0..=1.0, 250.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Smooth edges"));
-                style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"));
+                style::labeled(ui, tr(lang, "Smooth edges"), |ui| {
+                    style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"))
+                });
             }
             Some(Tool::Outline { opts, .. }) => {
                 use crate::outline::Side;
                 ui.add_space(12.0);
-                style::label(ui, tr(lang, "Side"));
                 let names = Side::ALL.map(|s| tr(lang, s.label()));
                 let mut k = Side::ALL.iter().position(|s| *s == opts.side).unwrap_or(0);
-                if style::dropdown(ui, "outline_side", 120.0, &names, &mut k) {
+                if style::labeled(ui, tr(lang, "Side"), |ui| {
+                    style::dropdown(ui, "outline_side", 120.0, &names, &mut k)
+                }) {
                     opts.side = Side::ALL[k];
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
@@ -259,9 +261,9 @@ impl App {
                         ("Height", &mut opts.height, 0.1..=1000.0),
                     ] {
                         ui.horizontal(|ui| {
-                            let label = style::label(ui, tr(lang, key));
-                            ui.add_space((64.0 - label.rect.width()).max(0.0));
-                            style::unit_field(ui, key, v, "mm", range);
+                            style::labeled_wide(ui, tr(lang, key), 64.0, |ui| {
+                                style::unit_field(ui, key, v, "mm", range)
+                            });
                         });
                     }
                 });
@@ -281,8 +283,9 @@ impl App {
                     }
                 });
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Keep model"));
-                style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"));
+                style::labeled(ui, tr(lang, "Keep model"), |ui| {
+                    style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"))
+                });
             }
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);
@@ -307,9 +310,11 @@ impl App {
                     ),
                 );
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Snap"));
-                if style::switch(ui, &mut self.settings.snap, tr(lang, "On"), tr(lang, "Off"))
-                    .changed()
+                let snap = &mut self.settings.snap;
+                if style::labeled(ui, tr(lang, "Snap"), |ui| {
+                    style::switch(ui, snap, tr(lang, "On"), tr(lang, "Off"))
+                })
+                .changed()
                 {
                     let _ = self.settings.save();
                 }
@@ -330,36 +335,42 @@ impl App {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 7.0;
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Wireframe"));
-                        style::switch(ui, wire, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Wireframe"), |ui| {
+                            style::switch(ui, wire, tr(lang, "On"), tr(lang, "Off"))
+                        });
                         style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
-                        style::label(ui, tr(lang, "Shape"));
                         let names = CUSTOM_SHAPES.map(|p| tr(lang, p.label()));
                         let mut k = CUSTOM_SHAPES.iter().position(|p| p == shape).unwrap_or(0);
-                        if style::dropdown(ui, "custom_shape", 82.0, &names, &mut k) {
+                        if style::labeled(ui, tr(lang, "Shape"), |ui| {
+                            style::dropdown(ui, "custom_shape", 82.0, &names, &mut k)
+                        }) {
                             *shape = CUSTOM_SHAPES[k];
                         }
                         for (label, v) in [
                             (tr(lang, "Latitude"), &mut *lat),
                             (tr(lang, "Longitude"), &mut *lon),
                         ] {
-                            style::label(ui, label);
-                            number_dropdown(ui, label, &SEGMENTS, v);
+                            style::labeled(ui, label, |ui| {
+                                number_dropdown(ui, label, &SEGMENTS, v)
+                            });
                         }
-                        style::label(ui, tr(lang, "Width"));
-                        style::unit_field(ui, "width", width, "mm", 1.0..=1000.0);
+                        style::labeled(ui, tr(lang, "Width"), |ui| {
+                            style::unit_field(ui, "width", width, "mm", 1.0..=1000.0)
+                        });
                     });
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Height"));
-                        style::unit_field(ui, "height", height, "mm", 1.0..=1000.0);
-                        style::label(ui, tr(lang, "Roundness"));
+                        style::labeled(ui, tr(lang, "Height"), |ui| {
+                            style::unit_field(ui, "height", height, "mm", 1.0..=1000.0)
+                        });
                         let mut r = *roundness as usize;
-                        number_dropdown(
-                            ui,
-                            "roundness",
-                            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                            &mut r,
-                        );
+                        style::labeled(ui, tr(lang, "Roundness"), |ui| {
+                            number_dropdown(
+                                ui,
+                                "roundness",
+                                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                                &mut r,
+                            )
+                        });
                         *roundness = r as u8;
                     });
                 });
@@ -381,10 +392,11 @@ impl App {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 7.0;
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Method"));
                         let names = Mode::ALL.map(|m| tr(lang, m.label()));
                         let mut k = Mode::ALL.iter().position(|m| *m == opts.mode).unwrap_or(0);
-                        if style::dropdown(ui, "image_method", 180.0, &names, &mut k) {
+                        if style::labeled(ui, tr(lang, "Method"), |ui| {
+                            style::dropdown(ui, "image_method", 180.0, &names, &mut k)
+                        }) {
                             opts.mode = Mode::ALL[k];
                         }
                         ui.add_space(24.0);
@@ -397,11 +409,13 @@ impl App {
                         style::slider(ui, &mut opts.smooth, 0.0..=1.0, 250.0, 9);
                     });
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Textures"));
-                        style::switch(ui, &mut opts.textures, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Textures"), |ui| {
+                            style::switch(ui, &mut opts.textures, tr(lang, "On"), tr(lang, "Off"))
+                        });
                         ui.add_space(24.0);
-                        style::label(ui, tr(lang, "Invert"));
-                        style::switch(ui, &mut opts.invert, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Invert"), |ui| {
+                            style::switch(ui, &mut opts.invert, tr(lang, "On"), tr(lang, "Off"))
+                        });
                     });
                 });
                 // Rebuilding decodes the image again: wait until a drag ends.
@@ -438,8 +452,9 @@ impl App {
                 ..
             }) => {
                 ui.add_space(12.0);
-                style::label(ui, tr(lang, "Type"));
-                super::material::type_dropdown(ui, lang, kind, *color, type_open);
+                style::labeled(ui, tr(lang, "Type"), |ui| {
+                    super::material::type_dropdown(ui, lang, kind, *color, type_open)
+                });
                 ui.add_space(12.0);
                 super::paint_menu::selected_color(ui, lang, color, menu, &[], true);
                 if style::option(ui, Icon::Eyedropper, tr(lang, "Select material"), *dropper)

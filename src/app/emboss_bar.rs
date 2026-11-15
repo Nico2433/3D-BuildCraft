@@ -37,13 +37,15 @@ impl App {
             row(ui, |ui| {
                 emboss_pattern::pattern_control(ui, lang, params, pattern_menu);
                 ui.add_space(GROUP);
-                style::label(ui, tr(lang, "Projection"));
                 let names = Projection::ALL.map(|p| tr(lang, p.label()));
                 let mut k = Projection::ALL
                     .iter()
                     .position(|&p| p == params.projection)
                     .unwrap_or(0);
-                if style::dropdown(ui, "emboss_projection", fit(ui, &names), &names, &mut k) {
+                let width = fit(ui, &names);
+                if style::labeled(ui, tr(lang, "Projection"), |ui| {
+                    style::dropdown(ui, "emboss_projection", width, &names, &mut k)
+                }) {
                     params.projection = Projection::ALL[k];
                 }
                 ui.add_space(GROUP);
@@ -147,11 +149,11 @@ fn text_and_font(
             // what follows the font) still fits.
             let rest = label_width(ui, text) + label_width(ui, font) + width + GAP + 5.0 * 6.0;
             let field = (ui.available_width() - rest - after).clamp(70.0, 120.0);
-            style::label(ui, text);
-            style::text_field(ui, &mut params.text, field, "");
+            style::labeled(ui, text, |ui| {
+                style::text_field(ui, &mut params.text, field, "")
+            });
             ui.add_space(GAP);
-            style::label(ui, font);
-            if font_dropdown(ui, &names, &mut k, previews) {
+            if style::labeled(ui, font, |ui| font_dropdown(ui, &names, &mut k, previews)) {
                 params.font = k.checked_sub(1).map(|k| fonts[k].clone());
             }
         }

@@ -303,13 +303,15 @@ impl App {
         .cloned()
         .collect();
 
-        let text = |ui: &mut egui::Ui, t: &str| {
-            ui.label(
-                egui::RichText::new(t)
-                    .size(style::MENU_FONT)
-                    .color(style::TEXT),
-            );
+        let text_style = |t: &str| {
+            egui::RichText::new(t)
+                .size(style::MENU_FONT)
+                .color(style::TEXT)
         };
+        let text = |ui: &mut egui::Ui, t: &str| {
+            ui.label(text_style(t));
+        };
+
         let dim = |ui: &mut egui::Ui, t: &str| {
             ui.label(egui::RichText::new(t).color(style::TEXT_DIM));
         };
@@ -354,7 +356,6 @@ impl App {
                 {
                     {
                         egui::Grid::new("ai_api").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                            text(ui, tr(lang, "Preset"));
                             // The preset is known by its URL, and gives the protocol.
                             let preset = assistant::PRESETS.iter().find(|p| p.base_url == ai.base_url.trim());
                             if let Some(p) = preset {
@@ -369,8 +370,11 @@ impl App {
                                     names.len() - 1
                                 }
                             };
-                            let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
-                            if style::dropdown(ui, "ai_preset", width, &names, &mut k) {
+                            let picked = style::labeled_rich(ui, text_style(tr(lang, "Preset")), |ui| {
+                                let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                                style::dropdown(ui, "ai_preset", width, &names, &mut k)
+                            });
+                            if picked {
                                 if let Some(p) = assistant::PRESETS.get(k) {
                                     ai.protocol = p.protocol;
                                     ai.base_url = p.base_url.into();
@@ -378,15 +382,15 @@ impl App {
                                 }
                             }
                             ui.end_row();
-                            text(ui, tr(lang, "Base URL"));
-                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
+                            style::labeled_rich(ui, text_style(tr(lang, "Base URL")), |ui| {
+                                style::lead_target(ui, |ui| ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0))))
+                            });
                             ui.end_row();
-                            text(ui, tr(lang, "Model"));
                             // A detected server offers its models; any other endpoint takes a typed name.
                             let detected = self.chat.detected.as_ref().and_then(|d| {
                                 d.servers.iter().find(|s| s.base_url == ai.base_url.trim().trim_end_matches('/'))
                             });
-                            match detected {
+                            style::labeled_rich(ui, text_style(tr(lang, "Model")), |ui| match detected {
                                 Some(server) => {
                                     // A model the server does not list stays shown as it is.
                                     let mut names: Vec<&str> = server.models.iter().map(String::as_str).collect();
@@ -402,23 +406,23 @@ impl App {
                                     }
                                 }
                                 None => {
-                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
+                                    style::lead_target(ui, |ui| ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0))));
                                 }
-                            }
+                            });
                             ui.end_row();
-                            text(ui, tr(lang, "Request timeout"));
                             let mut secs = ai.timeout as f32;
-                            style::number_field(ui, "timeout", &mut secs, "s", 10.0..=3600.0, 100.0, false);
+                            style::labeled_rich(ui, text_style(tr(lang, "Request timeout")), |ui| {
+                                style::number_field(ui, "timeout", &mut secs, "s", 10.0..=3600.0, 100.0, false)
+                            });
                             ai.timeout = secs.round() as u32;
                             ui.end_row();
-                            text(ui, tr(lang, "API key"));
-                            ui.horizontal(|ui| {
-                                ui.add(
+                            style::labeled_rich(ui, text_style(tr(lang, "API key")), |ui| ui.horizontal(|ui| {
+                                style::lead_target(ui, |ui| ui.add(
                                     egui::TextEdit::singleline(&mut self.chat.key)
                                         .password(true)
                                         .desired_width((ui.available_width() - 90.0).clamp(60.0, 160.0))
                                         .hint_text(tr(lang, "optional")),
-                                );
+                                ));
                                 if button(ui, tr(lang, "Save key")).clicked() {
                                     let saved = assistant::set_api_key(&ai.base_url, self.chat.key.trim());
                                     self.chat.key.clear();
@@ -428,7 +432,7 @@ impl App {
                                             .map_err(|e| format!("{e:#}")),
                                     );
                                 }
-                            });
+                            }));
                             ui.end_row();
                         });
                         dim(ui, tr(lang, "The key is stored in the system keychain, never in the app's settings. Leave it empty for a local server; saving an empty key removes it."));

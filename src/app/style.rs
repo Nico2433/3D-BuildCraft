@@ -272,7 +272,115 @@ pub fn separator(ui: &mut Ui, height: f32, color: Color32) {
 
 /// A label in the bar's text colour.
 pub fn label(ui: &mut Ui, text: &str) -> Response {
-    ui.label(egui::RichText::new(text).size(LABEL_FONT + 1.3).color(TEXT))
+    ui.label(label_text(text))
+}
+
+/// `text` as [`label`] writes it.
+fn label_text(text: &str) -> egui::RichText {
+    egui::RichText::new(text).size(LABEL_FONT + 1.3).color(TEXT)
+}
+
+/// A label that belongs to the control `add` draws after it, as the original's bars have
+/// them ("Text" before its field, "Font" before its list): the pointer over the label
+/// shows the control hovered, and a click on it acts on the control: a field takes the
+/// focus, a drop-down opens, a switch turns. The controls of this module do it; another
+/// egui widget can through [`lead_target`]. Returns what `add` returns.
+pub fn labeled<R>(ui: &mut Ui, text: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    labeled_core(ui, label_text(text), 0.0, add)
+}
+
+/// [`labeled`] taking at least `min_width`, for labels lined up in a column: the gap after
+/// a short one counts as the label.
+pub fn labeled_wide<R>(
+    ui: &mut Ui,
+    text: &str,
+    min_width: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    labeled_core(ui, label_text(text), min_width, add)
+}
+
+/// [`labeled`] with the label in its own text style, as in panels and pages.
+pub fn labeled_rich<R>(ui: &mut Ui, text: egui::RichText, add: impl FnOnce(&mut Ui) -> R) -> R {
+    labeled_core(ui, text, 0.0, add)
+}
+
+fn labeled_core<R>(
+    ui: &mut Ui,
+    text: egui::RichText,
+    min_width: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let mut label = ui.add(
+        egui::Label::new(text)
+            .selectable(false)
+            .sense(Sense::click()),
+    );
+    let pad = min_width - label.rect.width();
+    if pad > 0.0 {
+        // The space up to the column's width answers as the label does.
+        let wide = label.rect.with_max_x(label.rect.left() + min_width);
+        label = label.union(ui.interact(wide, label.id.with("pad"), Sense::click()));
+        ui.add_space(pad);
+    }
+    let lead = Lead {
+        hovered: label.hovered(),
+        clicked: label.clicked(),
+    };
+    ui.data_mut(|d| d.insert_temp(lead_id(), lead));
+    let out = add(ui);
+    // Nothing in `add` took it.
+    ui.data_mut(|d| d.remove::<Lead>(lead_id()));
+    out
+}
+
+/// What the pointer does on the label of the control being drawn ([`labeled`]).
+#[derive(Clone, Copy, Default)]
+pub struct Lead {
+    pub hovered: bool,
+    pub clicked: bool,
+}
+
+fn lead_id() -> egui::Id {
+    egui::Id::new("style_label_lead")
+}
+
+/// The label's pointer state for the control drawn now, taken so that only the first
+/// control after the label gets it; nothing outside a [`labeled`] or in a disabled ui. A
+/// control of a module's own calls it before drawing, to look hovered and act on a click.
+pub fn take_lead(ui: &Ui) -> Lead {
+    ui.data_mut(|d| {
+        let lead = d.get_temp::<Lead>(lead_id());
+        d.remove::<Lead>(lead_id());
+        lead
+    })
+    .filter(|_| ui.is_enabled())
+    .unwrap_or_default()
+}
+
+/// Gives a plain egui widget (such as a `TextEdit`) the label's part in a [`labeled`]:
+/// drawn as hovered while the label is, and focused when the label is clicked.
+pub fn lead_target(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> Response) -> Response {
+    let lead = take_lead(ui);
+    let resp = hovered_look(ui, lead.hovered, add);
+    if lead.clicked {
+        resp.request_focus();
+        ui.ctx().request_repaint();
+    }
+    resp
+}
+
+/// Runs `add` with idle egui widgets drawn as under the pointer when `on`.
+fn hovered_look<R>(ui: &mut Ui, on: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if !on {
+        return add(ui);
+    }
+    let before = ui.visuals().widgets.inactive;
+    let w = &mut ui.visuals_mut().widgets;
+    w.inactive = w.hovered;
+    let out = add(ui);
+    ui.visuals_mut().widgets.inactive = before;
+    out
 }
 
 /// A radio row with theme-independent contrast on the dark flyout.
@@ -299,12 +407,23 @@ pub fn radio(ui: &mut Ui, on: bool, text: &str) -> Response {
     resp
 }
 
-/// A Windows-style on/off switch followed by its state text.
+/// A Windows-style on/off switch followed by its state text; a click on either turns it,
+/// as does one on its [`labeled`] label.
 pub fn switch(ui: &mut Ui, on: &mut bool, on_text: &str, off_text: &str) -> Response {
-    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(50.0, 26.0), Sense::click());
-    if resp.clicked() {
+    let lead = take_lead(ui);
+    let (rect, knob) = ui.allocate_exact_size(Vec2::new(50.0, 26.0), Sense::click());
+    // Drawn after its text is laid out, so the text shown is the state before a click
+    // this frame; a click asks for the next frame to show the new one.
+    let state = ui.add(
+        egui::Label::new(label_text(if *on { on_text } else { off_text }))
+            .selectable(false)
+            .sense(Sense::click()),
+    );
+    let mut resp = knob.union(state);
+    if resp.clicked() || lead.clicked {
         *on = !*on;
         resp.mark_changed();
+        ui.ctx().request_repaint();
     }
     let p = ui.painter();
     let r = CornerRadius::same(13);
@@ -324,7 +443,6 @@ pub fn switch(ui: &mut Ui, on: &mut bool, on_text: &str, off_text: &str) -> Resp
             TEXT_DIM,
         );
     }
-    label(ui, if *on { on_text } else { off_text });
     resp
 }
 
@@ -435,8 +553,10 @@ pub fn dropdown_painted(
     row: Vec2,
     paint: impl Fn(&egui::Painter, Rect, usize),
 ) -> bool {
+    let lead = take_lead(ui);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
-    field_box(ui, rect, resp.hovered() || *open);
+    let opening = resp.clicked() || lead.clicked;
+    field_box(ui, rect, resp.hovered() || lead.hovered || *open);
     let text = rect.with_max_x(rect.right() - 30.0);
     current(&ui.painter().with_clip_rect(text), rect);
     let chevron = Rect::from_center_size(
@@ -444,7 +564,7 @@ pub fn dropdown_painted(
         Vec2::splat(14.0),
     );
     icons::paint(ui.painter(), chevron, Icon::ChevronDown, TEXT);
-    if resp.clicked() {
+    if opening {
         *open = !*open;
     }
     if !*open {
@@ -468,7 +588,7 @@ pub fn dropdown_painted(
         count,
         Some(*selected),
         open,
-        resp.clicked(),
+        opening,
         paint,
     );
     picked.is_some_and(|k| std::mem::replace(selected, k) != k)
@@ -589,6 +709,10 @@ pub fn list_rows(
 /// an accent border and, while it has text, a × at its right that empties it.
 pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Response {
     let id = ui.next_auto_id();
+    let lead = take_lead(ui);
+    if lead.clicked {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
     let shown_id = id.with("clear");
     // Kept while the × is pressed, as the press takes the focus away from the box.
     let was_shown = ui.data(|d| d.get_temp::<bool>(shown_id)).unwrap_or(false);
@@ -618,7 +742,7 @@ pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Res
         *ui.visuals_mut() = before;
         resp
     } else {
-        ui.add(edit)
+        hovered_look(ui, lead.hovered, |ui| ui.add(edit))
     };
     let pressing = ui.input(|i| i.pointer.any_down() || i.pointer.any_released());
     let shown = !text.is_empty() && (resp.has_focus() || (was_shown && pressing));
@@ -676,9 +800,13 @@ pub fn number_field(
     width: f32,
     live: bool,
 ) -> Response {
+    let lead = take_lead(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::hover());
-    field_box(ui, rect, ui.rect_contains_pointer(rect));
+    field_box(ui, rect, ui.rect_contains_pointer(rect) || lead.hovered);
     let id = ui.id().with(("number_field", id));
+    if lead.clicked {
+        ui.memory_mut(|m| m.request_focus(id.with("edit")));
+    }
     let shown = |n: f32| format!("{}", (n * 1000.0).round() / 1000.0);
     // The text being typed lives in memory while the field has focus.
     let mut text = ui
@@ -775,6 +903,96 @@ pub fn slider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One frame of a panel built by `add`, after `events`.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, add: impl FnMut(&mut Ui)) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut add = add;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| ui.horizontal(|ui| add(ui)));
+        });
+    }
+
+    /// A click at `at`: the pointer moves there, then presses and lets go over two frames.
+    fn click(ctx: &egui::Context, at: egui::Pos2, mut add: impl FnMut(&mut Ui)) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(ctx, vec![egui::Event::PointerMoved(at)], &mut add);
+        frame(ctx, vec![button(true)], &mut add);
+        frame(ctx, vec![button(false)], &mut add);
+        frame(ctx, vec![], &mut add);
+    }
+
+    /// Where the label "Name" of a [`labeled`] control drawn by `add` is.
+    fn label_spot(ctx: &egui::Context, mut add: impl FnMut(&mut Ui)) -> egui::Pos2 {
+        let mut at = egui::Pos2::ZERO;
+        frame(ctx, vec![], |ui| {
+            at = ui.next_widget_position() + Vec2::new(8.0, 0.0);
+            add(ui);
+        });
+        at
+    }
+
+    #[test]
+    fn a_click_on_a_label_acts_on_its_control() {
+        // A text field takes the focus.
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut field = None;
+        let mut add = |ui: &mut Ui| {
+            let r = labeled(ui, "Name", |ui| text_field(ui, &mut text, 100.0, ""));
+            field = Some(r.id);
+        };
+        let at = label_spot(&ctx, &mut add);
+        click(&ctx, at, &mut add);
+        let id = field.unwrap();
+        assert!(ctx.memory(|m| m.has_focus(id)));
+
+        // A drop-down opens.
+        let ctx = egui::Context::default();
+        let mut k = 0;
+        let mut open_id = None;
+        let mut add = |ui: &mut Ui| {
+            open_id = Some(ui.id().with(("pick", "open")));
+            labeled(ui, "Name", |ui| {
+                dropdown(ui, "pick", 100.0, &["a", "b"], &mut k)
+            });
+        };
+        let at = label_spot(&ctx, &mut add);
+        click(&ctx, at, &mut add);
+        let id = open_id.unwrap();
+        assert_eq!(ctx.data(|d| d.get_temp::<bool>(id)), Some(true));
+
+        // A switch turns, from its label and from its own text.
+        let ctx = egui::Context::default();
+        let mut on = false;
+        let mut add = |ui: &mut Ui| {
+            labeled(ui, "Name", |ui| switch(ui, &mut on, "On", "Off"));
+        };
+        let at = label_spot(&ctx, &mut add);
+        click(&ctx, at, &mut add);
+        assert!(on);
+        let mut text_at = egui::Pos2::ZERO;
+        frame(&ctx, vec![], |ui| {
+            let r = switch(ui, &mut on, "On", "Off");
+            text_at = r.rect.right_center() - Vec2::new(4.0, 0.0);
+        });
+        click(&ctx, text_at, |ui| {
+            switch(ui, &mut on, "On", "Off");
+        });
+        assert!(!on);
+    }
 
     #[test]
     fn a_wide_list_stays_on_screen() {
