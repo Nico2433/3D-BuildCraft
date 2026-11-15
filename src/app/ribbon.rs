@@ -295,20 +295,6 @@ impl App {
                                 self.grid_menu = Some(at);
                             }
                         }
-                        Tab::Help => {
-                            if style::ribbon(ui, Icon::Help, tr(lang, "Introduction"), true, false)
-                                .clicked()
-                            {
-                                self.about_open = true;
-                            }
-                            row(
-                                ui,
-                                &[
-                                    (Icon::Info, tr(lang, "Supported printers"), None, true),
-                                    (Icon::Guide, tr(lang, "User guide"), None, true),
-                                ],
-                            );
-                        }
                     }
                     drop(row);
                     self.actions.extend(clicked);

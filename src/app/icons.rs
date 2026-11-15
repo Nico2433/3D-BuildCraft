@@ -72,10 +72,7 @@ pub enum Icon {
     Wireframe,
     Grid,
     XRay,
-    // Help
-    Help,
     Info,
-    Guide,
     // Selection
     Group,
     Ungroup,
@@ -597,26 +594,10 @@ impl Pen<'_> {
                 self.line(&[(4.0, 7.5), (20.0, 16.5)]);
                 self.line(&[(4.0, 16.5), (20.0, 7.5)]);
             }
-            Help => {
-                self.arc(12.0, 8.0, 5.0, PI, TAU + 0.6);
-                self.line(&[(16.0, 11.0), (12.0, 14.0), (12.0, 16.0)]);
-                self.dot(12.0, 20.0, 1.2);
-            }
             Info => {
                 self.circle(12.0, 12.0, 9.0);
                 self.line(&[(12.0, 10.0), (12.0, 17.0)]);
                 self.dot(12.0, 7.0, 1.1);
-            }
-            Guide => {
-                self.closed(&[(2.0, 9.0), (12.0, 4.0), (22.0, 9.0), (12.0, 14.0)]);
-                self.line(&[
-                    (6.0, 11.0),
-                    (6.0, 17.0),
-                    (12.0, 20.0),
-                    (18.0, 17.0),
-                    (18.0, 11.0),
-                ]);
-                self.line(&[(22.0, 9.0), (22.0, 15.0)]);
             }
             Group => {
                 self.dashed_rect(3.0, 3.0, 21.0, 21.0);

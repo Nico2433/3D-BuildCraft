@@ -565,17 +565,10 @@ impl App {
         let mut scale = size.x / base.x.max(1e-6) * 100.0;
         ui.add_space(10.0);
         text(ui, tr(lang, "Scale factor"));
-        let r = ui.add_sized(
-            [160.0, 30.0],
-            egui::DragValue::new(&mut scale)
-                .speed(0.5)
-                .range(1.0..=10_000.0)
-                .clamp_existing_to_range(false)
-                .update_while_editing(false)
-                .suffix("%"),
-        );
-        touched |= r.has_focus() || r.dragged();
-        if r.changed() {
+        let was = scale;
+        let r = style::number_field(ui, "scale", &mut scale, "%", 1.0..=10_000.0, 160.0, false);
+        touched |= r.has_focus();
+        if scale != was {
             target = Some(scale / 100.0);
         }
         for (label, i) in [
@@ -586,18 +579,23 @@ impl App {
             ui.add_space(10.0);
             text(ui, label);
             let mut v = size[i] / k;
-            let r = ui.add_enabled(
-                // A flat side cannot set the others.
-                base[i] > 1e-6,
-                egui::DragValue::new(&mut v)
-                    .speed(0.2)
-                    .range(0.001..=1.0e6)
-                    .clamp_existing_to_range(false)
-                    .update_while_editing(false)
-                    .suffix(format!(" {}", tr(lang, units.label()))),
-            );
-            touched |= r.has_focus() || r.dragged();
-            if r.changed() {
+            let was = v;
+            // A flat side cannot set the others.
+            let r = ui
+                .add_enabled_ui(base[i] > 1e-6, |ui| {
+                    style::number_field(
+                        ui,
+                        label,
+                        &mut v,
+                        tr(lang, units.label()),
+                        0.001..=1.0e6,
+                        160.0,
+                        false,
+                    )
+                })
+                .inner;
+            touched |= r.has_focus();
+            if v != was {
                 // Uniform, like the original: one size sets all three.
                 target = Some(v * k / base[i]);
             }

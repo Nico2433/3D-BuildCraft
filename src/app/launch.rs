@@ -132,7 +132,6 @@ impl App {
             "edit" => Tab::Edit,
             "paint" => Tab::Paint,
             "view" => Tab::View,
-            "help" => Tab::Help,
             _ => Tab::Insert,
         };
         if launch.select_all {

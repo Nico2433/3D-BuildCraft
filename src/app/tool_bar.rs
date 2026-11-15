@@ -210,14 +210,13 @@ impl App {
             Some(Tool::Simplify { level }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Reduction level"));
-                ui.spacing_mut().slider_width = 360.0;
                 let max_level = self
                     .scene
                     .selected()
                     .map(|o| 1.0 - 4.0 / o.mesh.triangles.len().max(4) as f32)
                     .fold(0.99_f32, f32::min);
                 *level = level.clamp(0.0, max_level);
-                ui.add(egui::Slider::new(level, 0.0..=max_level).show_value(false));
+                style::slider(ui, level, 0.0..=max_level, 360.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let faces: usize = self.scene.selected().map(|o| o.mesh.triangles.len()).sum();
                 let kept: usize = self
@@ -288,8 +287,7 @@ impl App {
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Minimum wall thickness"));
-                ui.spacing_mut().slider_width = 360.0;
-                ui.add(egui::Slider::new(wall, 0.5..=10.0).show_value(false));
+                style::slider(ui, wall, 0.5..=10.0, 360.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }

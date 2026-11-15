@@ -609,10 +609,8 @@ pub fn text_field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> Res
     resp
 }
 
-/// A number field with its unit dimmed at the right inside the box, as "40  mm". It is
-/// typed into: the value follows every number typed within `range`, and leaving the field
-/// puts it back in range (or back to the value when the text is not a number). `id`
-/// tells apart fields in one bar.
+/// A number field with its unit dimmed at the right inside the box, as "40  mm", for tool
+/// bars: the value follows every number typed within `range` ([`number_field`]).
 pub fn unit_field(
     ui: &mut Ui,
     id: &str,
@@ -620,46 +618,77 @@ pub fn unit_field(
     unit: &str,
     range: std::ops::RangeInclusive<f32>,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(72.0, FIELD_H), Sense::hover());
+    number_field(ui, id, v, unit, range, 72.0, true)
+}
+
+/// The app's one number field: typed into, never dragged, with its unit dimmed at the
+/// right inside the box. With `live` the value follows every number typed within `range`;
+/// without, it changes only on Enter or when the field loses focus (for edits that act on
+/// the scene as a whole, where "1" on the way to "150" must not apply). Leaving the field
+/// puts the value back in range, or back to what it was when the text is not a number.
+/// `id` tells apart fields in one panel. Compare `v` to tell whether it changed: the
+/// response's own `changed` follows the text.
+pub fn number_field(
+    ui: &mut Ui,
+    id: &str,
+    v: &mut f32,
+    unit: &str,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+    live: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::hover());
     field_box(ui, rect, ui.rect_contains_pointer(rect));
-    let id = ui.id().with(("unit_field", id));
-    let shown = |n: f32| format!("{}", (n * 100.0).round() / 100.0);
+    let id = ui.id().with(("number_field", id));
+    let shown = |n: f32| format!("{}", (n * 1000.0).round() / 1000.0);
     // The text being typed lives in memory while the field has focus.
     let mut text = ui
         .data(|d| d.get_temp::<String>(id))
         .unwrap_or_else(|| shown(*v));
+    let unit_w = if unit.is_empty() {
+        0.0
+    } else {
+        ui.fonts(|f| {
+            f.layout_no_wrap(unit.to_owned(), FontId::proportional(LABEL_FONT), TEXT)
+                .size()
+                .x
+        }) + 12.0
+    };
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(6.0, 4.0))));
     let resp = child.add_sized(
-        Vec2::new(rect.width() - 40.0, FIELD_H - 8.0),
+        Vec2::new(rect.width() - 12.0 - unit_w, FIELD_H - 8.0),
         egui::TextEdit::singleline(&mut text)
             .id(id.with("edit"))
             .frame(false)
             .font(FontId::proportional(LABEL_FONT)),
     );
     let typed = text.trim().replace(',', ".").parse::<f32>().ok();
-    if resp.changed() {
+    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if live && resp.changed() {
         if let Some(n) = typed.filter(|n| range.contains(n)) {
             *v = n;
         }
     }
-    if resp.has_focus() {
+    if resp.lost_focus() || enter {
+        if let Some(n) = typed.filter(|n| n.is_finite()) {
+            *v = n.clamp(*range.start(), *range.end());
+        }
+    }
+    if resp.has_focus() && !enter {
         ui.data_mut(|d| d.insert_temp(id, text));
     } else {
-        if resp.lost_focus() {
-            if let Some(n) = typed.filter(|n| n.is_finite()) {
-                *v = n.clamp(*range.start(), *range.end());
-            }
-        }
         ui.data_mut(|d| d.remove::<String>(id));
     }
-    ui.painter().text(
-        rect.right_center() - Vec2::new(8.0, 0.0),
-        egui::Align2::RIGHT_CENTER,
-        unit,
-        FontId::proportional(LABEL_FONT),
-        TEXT_DIM,
-    );
+    if !unit.is_empty() {
+        ui.painter().text(
+            rect.right_center() - Vec2::new(8.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            unit,
+            FontId::proportional(LABEL_FONT),
+            TEXT_DIM,
+        );
+    }
     resp
 }
 

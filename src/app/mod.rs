@@ -76,18 +76,10 @@ enum Tab {
     Edit,
     Paint,
     View,
-    Help,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
-        Tab::Insert,
-        Tab::Object,
-        Tab::Edit,
-        Tab::Paint,
-        Tab::View,
-        Tab::Help,
-    ];
+    const ALL: [Tab; 5] = [Tab::Insert, Tab::Object, Tab::Edit, Tab::Paint, Tab::View];
     fn label(self) -> &'static str {
         match self {
             Tab::Insert => "Insert",
@@ -95,7 +87,6 @@ impl Tab {
             Tab::Edit => "Edit",
             Tab::Paint => "Paint",
             Tab::View => "View",
-            Tab::Help => "Help",
         }
     }
 }

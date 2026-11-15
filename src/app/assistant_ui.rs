@@ -407,7 +407,9 @@ impl App {
                             }
                             ui.end_row();
                             text(ui, tr(lang, "Request timeout"));
-                            ui.add(egui::DragValue::new(&mut ai.timeout).range(10..=3600).suffix(" s"));
+                            let mut secs = ai.timeout as f32;
+                            style::number_field(ui, "timeout", &mut secs, "s", 10.0..=3600.0, 100.0, false);
+                            ai.timeout = secs.round() as u32;
                             ui.end_row();
                             text(ui, tr(lang, "API key"));
                             ui.horizontal(|ui| {

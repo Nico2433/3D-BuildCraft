@@ -102,7 +102,7 @@ cargo run --release -- model.3mf --select-all --lang en --size 1920x1080 --zoom 
 
 Options that open a given state:
 
-- `--tab insert|object|edit|paint|view|help`, `--mode move|rotate|scale`, `--menu`, `--select-all`
+- `--tab insert|object|edit|paint|view`, `--mode move|rotate|scale`, `--menu`, `--select-all`
 - `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
 - `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`
 - `--image <file>` opens Load image, `--library <folder>` a 3D library
