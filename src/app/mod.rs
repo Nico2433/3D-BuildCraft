@@ -33,6 +33,7 @@ mod agent_model;
 mod agent_print;
 mod assistant_ui;
 mod dialogs;
+mod emboss_bar;
 mod gizmo;
 mod icons;
 mod jobs;

@@ -448,95 +448,7 @@ impl App {
                     *dropper = !*dropper;
                 }
             }
-            Some(Tool::Emboss {
-                params,
-                preview,
-                built,
-            }) => {
-                style::label(ui, tr(lang, "Pattern"));
-                // Text, the shapes, then Image, which asks for the picture.
-                let mut patterns: Vec<&str> = vec![tr(lang, "Text")];
-                patterns.extend(Shape::ALL.map(|s| tr(lang, s.label())));
-                patterns.push(tr(lang, "Image"));
-                let mut k = match &params.pattern {
-                    Pattern::Text => 0,
-                    Pattern::Shape(s) => 1 + Shape::ALL.iter().position(|o| o == s).unwrap_or(0),
-                    Pattern::Image(_) => patterns.len() - 1,
-                };
-                if style::dropdown(ui, "emboss_pattern", 150.0, &patterns, &mut k) {
-                    if k == 0 {
-                        params.pattern = Pattern::Text;
-                    } else if let Some(&s) = Shape::ALL.get(k - 1) {
-                        params.pattern = Pattern::Shape(s);
-                    } else if let Some(p) = rfd::FileDialog::new()
-                        .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
-                        .pick_file()
-                    {
-                        params.pattern = Pattern::Image(p);
-                    }
-                }
-                style::label(ui, tr(lang, "Projection"));
-                let names = Projection::ALL.map(|p| tr(lang, p.label()));
-                let mut k = Projection::ALL
-                    .iter()
-                    .position(|&p| p == params.projection)
-                    .unwrap_or(0);
-                if style::dropdown(ui, "emboss_projection", 150.0, &names, &mut k) {
-                    params.projection = Projection::ALL[k];
-                }
-                if style::option(ui, Icon::Pyramid, tr(lang, "Bevel"), params.bevel).clicked() {
-                    params.bevel = !params.bevel;
-                }
-                if style::option(ui, Icon::Hollow, tr(lang, "Engrave"), params.engrave).clicked() {
-                    params.engrave = !params.engrave;
-                }
-                ui.end_row();
-                if params.pattern == Pattern::Text {
-                    style::label(ui, tr(lang, "Text"));
-                    ui.add(egui::TextEdit::singleline(&mut params.text).desired_width(200.0));
-                    style::label(ui, tr(lang, "Font"));
-                    let fonts = self
-                        .font_list
-                        .get_or_insert_with(crate::emboss::font_families);
-                    let mut names = vec![tr(lang, "Built-in")];
-                    names.extend(fonts.iter().map(String::as_str));
-                    let mut k = params
-                        .font
-                        .as_ref()
-                        .and_then(|f| fonts.iter().position(|o| o == f))
-                        .map_or(0, |k| k + 1);
-                    if style::dropdown(ui, "emboss_font", 200.0, &names, &mut k) {
-                        params.font = k.checked_sub(1).map(|k| fonts[k].clone());
-                    }
-                }
-                if !params.engrave {
-                    style::label(ui, tr(lang, "Color"));
-                    for (salt, label, color) in [
-                        ("emboss_top", tr(lang, "Top"), &mut params.top_color),
-                        ("emboss_sides", tr(lang, "Sides"), &mut params.side_color),
-                    ] {
-                        style::label(ui, label);
-                        color_combo(ui, salt, lang, color);
-                    }
-                }
-                let target = match self.scene.selection.len() {
-                    1 => self.scene.selected().next(),
-                    _ => None,
-                };
-                let key = (
-                    params.clone(),
-                    target.map(|o| (o.id, std::sync::Arc::as_ptr(&o.mesh) as usize, o.matrix())),
-                );
-                if built.as_ref() != Some(&key) {
-                    *preview = match target {
-                        Some(o) => crate::emboss::text_solid(&o.world_mesh(), params)
-                            .map(std::sync::Arc::new)
-                            .map_err(|e| format!("{e:#}")),
-                        None => Err(tr(lang, "Select one object").to_string()),
-                    };
-                    *built = Some(key);
-                }
-            }
+            Some(Tool::Emboss { .. }) => self.emboss_settings(ui),
             Some(Tool::Texture(_)) => self.texture_settings(ui),
             Some(Tool::Camera { .. } | Tool::Settle { .. }) | None => {}
         }
@@ -568,18 +480,6 @@ fn unit_choice(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response 
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, style::TEXT);
     resp
-}
-
-/// A colour picker for an emboss part: the object's colour or one from the palette.
-fn color_combo(ui: &mut egui::Ui, salt: &str, lang: Lang, color: &mut Option<Rgba>) {
-    let mut names = vec![tr(lang, "Object color")];
-    names.extend(PALETTE.iter().map(|(n, _)| tr(lang, n)));
-    let mut k = color
-        .and_then(|c| PALETTE.iter().position(|(_, rgba)| *rgba == c))
-        .map_or(0, |k| k + 1);
-    if style::dropdown(ui, salt, 130.0, &names, &mut k) {
-        *color = k.checked_sub(1).map(|k| PALETTE[k].1);
-    }
 }
 
 /// Custom's shape for its settings: (shape, latitude, longitude, width, height, roundness).
