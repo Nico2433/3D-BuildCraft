@@ -25,24 +25,18 @@ pub enum Projection {
     /// Straight into the face it lies on (see [`Emboss::facing`]); the top by default.
     #[default]
     Planar,
-    /// Wrapped around the vertical axis through the object's centre, on its front (−Y).
+    /// Wrapped around the vertical axis through the object's centre, on its front (−Y),
+    /// as a label round a mug.
     Cylindrical,
-    /// Wrapped around the object's centre, on its front (−Y).
-    Spherical,
 }
 
 impl Projection {
-    pub const ALL: [Projection; 3] = [
-        Projection::Planar,
-        Projection::Cylindrical,
-        Projection::Spherical,
-    ];
+    pub const ALL: [Projection; 2] = [Projection::Planar, Projection::Cylindrical];
 
     pub fn label(self) -> &'static str {
         match self {
             Projection::Planar => "Planar",
             Projection::Cylindrical => "Cylindrical",
-            Projection::Spherical => "Spherical",
         }
     }
 }
@@ -89,7 +83,7 @@ pub struct Emboss {
     /// Turn of the pattern in its own plane.
     pub angle: f32,
     /// Pattern centre in its own plane: from the object's centre across the face it lies
-    /// on for planar, along the surface from the front for cylindrical and spherical.
+    /// on for planar, along the surface from the front for cylindrical.
     pub offset: Vec2,
     pub engrave: bool,
     pub projection: Projection,
@@ -533,10 +527,6 @@ impl Frame {
         match self.kind {
             Projection::Planar => self.axes[2],
             Projection::Cylindrical => Vec3::new(az.cos(), az.sin(), 0.0),
-            Projection::Spherical => {
-                let el = (q.y / self.radius).clamp(-FRAC_PI_2, FRAC_PI_2);
-                Vec3::new(el.cos() * az.cos(), el.cos() * az.sin(), el.sin())
-            }
         }
     }
 
@@ -551,7 +541,6 @@ impl Frame {
             Projection::Cylindrical => {
                 self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + 1.0)
             }
-            Projection::Spherical => self.center + n * (self.radius + 1.0),
         };
         (origin, -n)
     }
@@ -573,10 +562,6 @@ impl Frame {
         match self.kind {
             Projection::Planar => Vec2::new(d.dot(self.axes[0]), d.dot(self.axes[1])),
             Projection::Cylindrical => Vec2::new(az() * self.radius, d.z),
-            Projection::Spherical => {
-                let el = (d.z / d.length().max(1e-9)).clamp(-1.0, 1.0).asin();
-                Vec2::new(az() * self.radius, el * self.radius)
-            }
         }
     }
 }
@@ -899,25 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn spherical_text_sits_on_the_front_of_a_sphere() {
-        let e = Emboss {
-            projection: Projection::Spherical,
-            ..Emboss::default()
-        };
-        let t = text_solid(&Primitive::Sphere.build(), &e).unwrap();
-        closed(&t);
-        // Every top vertex is 1 mm outside the sphere (radius 20 about z = 20).
-        let c = Vec3::new(0.0, 0.0, 20.0);
-        let far = t
-            .positions
-            .iter()
-            .map(|p| p.distance(c))
-            .fold(0.0, f32::max);
-        assert!((far - 21.0).abs() < 0.1, "{far}");
-    }
-
-    #[test]
-    fn patterns_reach_the_back_and_the_poles() {
+    fn patterns_reach_the_back_and_the_top() {
         // Half a turn along a radius-20 cylinder is the back (+Y).
         let back = Emboss {
             projection: Projection::Cylindrical,
@@ -931,11 +898,11 @@ mod tests {
             "{:?}",
             t.aabb()
         );
-        // Close to the top of a sphere, where triangles meet at the pole.
+        // High on a sphere, where triangles crowd towards the pole.
         let top = Emboss {
-            projection: Projection::Spherical,
-            offset: Vec2::new(0.0, 25.0),
-            size: 5.0,
+            projection: Projection::Cylindrical,
+            offset: Vec2::new(0.0, 14.0),
+            size: 4.0,
             ..Emboss::default()
         };
         closed(&text_solid(&Primitive::Sphere.build(), &top).unwrap());

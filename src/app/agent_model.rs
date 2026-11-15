@@ -247,7 +247,6 @@ impl App {
             &[
                 ("planar", Projection::Planar),
                 ("cylindrical", Projection::Cylindrical),
-                ("spherical", Projection::Spherical),
             ],
         )?;
         if let Some(f) = a["font"].as_str() {

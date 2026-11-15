@@ -33,7 +33,7 @@ macOS builds are planned but not published yet.
 - Select (click, Ctrl/Shift for more, box selection), move, rotate and scale with handles or exact values in the bottom bar. Objects snap to each other's edges and centres with alignment guides; hold Alt while dragging to turn snapping off.
 - Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances.
 - Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains, with sharp corners and separate smoothing for its outer and inner edges).
-- Emboss text (bundled or installed font), a shape or an image onto an object: planar onto any face (top, sides, bottom or slanted; drag it there), cylindrical or spherical, raised or engraved, with bevel and separate top and side colours. Conform raises (or cuts) it along the surface normal so it keeps an even height on curved surfaces, as OrcaSlicer's "Use surface".
+- Emboss text (bundled or installed font), a shape or an image onto an object: planar onto any face (top, sides, bottom or slanted; drag it there) or cylindrical (wrapped round the object like a label), raised or engraved, with bevel and separate top and side colours. Conform raises (or cuts) it along the surface normal so it keeps an even height on curved surfaces, as OrcaSlicer's "Use surface".
 - Open or non-manifold meshes are flagged with a red rectangle on the floor and can be repaired.
 
 **Painting**

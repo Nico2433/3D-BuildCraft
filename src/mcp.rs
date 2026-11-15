@@ -259,7 +259,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, a star, heart or circle, or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical and spherical wrap it around the object's vertical axis or centre on its front (-Y). A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, a star, heart or circle, or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
             json!({ "type": "object", "properties": {
                 "pattern": one_of(&["text", "star", "heart", "circle", "image"], "default text"),
                 "text": text("the text, for pattern text"),
@@ -271,8 +271,8 @@ fn model_tools() -> Vec<Value> {
                 "bevel": flag("slope the edges"),
                 "conform": flag("conform to the surface: raise (or cut) along the surface normal so the pattern keeps an even height on curved surfaces, instead of along the projection"),
                 "angle": num("turn in its own plane, degrees"),
-                "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
-                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical)" },
+                "projection": one_of(&["planar", "cylindrical"], "default planar"),
+                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical)" },
                 "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face there, facing out"),
                 "top_color": color("colour of the top layer"),
                 "side_color": color("colour of the sides of a raised pattern"),
