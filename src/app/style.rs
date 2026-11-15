@@ -370,6 +370,19 @@ pub fn dropdown(ui: &mut Ui, id: &str, width: f32, options: &[&str], selected: &
     let open_id = ui.id().with((id, "open"));
     let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     let current = options.get(*selected).copied().unwrap_or_default();
+    // The list is as wide as its longest choice (with room for the scroll bar), so long
+    // names are not cut off by a narrow field.
+    let longest = ui.fonts(|f| {
+        options
+            .iter()
+            .map(|o| {
+                f.layout_no_wrap((*o).to_owned(), FontId::proportional(MENU_FONT), TEXT)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max)
+    });
+    let list_w = width.max(longest + 2.0 * 10.0 + 16.0);
     let changed = dropdown_rows(
         ui,
         open_id,
@@ -378,7 +391,7 @@ pub fn dropdown(ui: &mut Ui, id: &str, width: f32, options: &[&str], selected: &
         options.len(),
         selected,
         &mut open,
-        Vec2::new(width, FIELD_H),
+        Vec2::new(list_w, FIELD_H),
         |p, row, k| row_text(p, row, options[k], 10.0),
     );
     ui.data_mut(|d| d.insert_temp(open_id, open));

@@ -591,6 +591,10 @@ struct Surface<'a> {
     bins: HashMap<(i32, i32), Vec<u32>>,
     /// Conformed: the surface normals of the binned triangles.
     normals: Option<surface::Normals>,
+    /// Conformed: how far round each point the surface's faces are averaged into the
+    /// direction it grows, so letters bend smoothly over a sharp edge instead of
+    /// splaying apart along the two faces' normals.
+    blend: f32,
 }
 
 impl<'a> Surface<'a> {
@@ -652,6 +656,7 @@ impl<'a> Surface<'a> {
             cell,
             bins,
             normals,
+            blend: (2.0 * e.depth).max(2.0 * step),
         }
     }
 
@@ -675,10 +680,51 @@ impl<'a> Surface<'a> {
             .min_by(|x, y| x.0.total_cmp(&y.0))?;
         let p = origin + dir * t;
         let into = match &self.normals {
-            Some(normals) => normals.inward(self.mesh, i, p, dir),
+            Some(normals) => {
+                let own = normals.inward(self.mesh, i, p, dir);
+                self.blended(p, dir).unwrap_or(own)
+            }
             None => dir,
         };
         Some((p, into))
+    }
+
+    /// Conformed: the direction into the object at `p` as the faces within `blend` of it
+    /// see it, each weighted by its area and by how near it is; on a flat face far from
+    /// any edge this is that face's own normal. None when nothing usable is near.
+    fn blended(&self, p: Vec3, dir: Vec3) -> Option<Vec3> {
+        let q = self.frame.key(p);
+        let reach = (self.blend / self.cell).ceil() as i32;
+        let (bx, by) = (
+            (q.x / self.cell).floor() as i32,
+            (q.y / self.cell).floor() as i32,
+        );
+        let mut seen = std::collections::HashSet::new();
+        let mut sum = Vec3::ZERO;
+        for y in by - reach..=by + reach {
+            for x in bx - reach..=bx + reach {
+                for &f in self.bins.get(&(x, y)).into_iter().flatten() {
+                    if !seen.insert(f) {
+                        continue;
+                    }
+                    let [a, b, c] =
+                        self.mesh.triangles[f as usize].map(|v| self.mesh.positions[v as usize]);
+                    let d = p.distance(crate::mesh::closest_on_triangle(p, a, b, c));
+                    if d >= self.blend {
+                        continue;
+                    }
+                    let n = (b - a).cross(c - a);
+                    // Faces seen from behind (the far side of a thin part) do not count.
+                    if n.dot(-dir) <= 0.0 {
+                        continue;
+                    }
+                    let near = 1.0 - d / self.blend;
+                    sum += n * near * near;
+                }
+            }
+        }
+        let n = sum.try_normalize()?;
+        (n.dot(-dir) > 0.05).then_some(-n)
     }
 }
 
