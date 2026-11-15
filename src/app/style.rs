@@ -514,7 +514,10 @@ pub fn list_rows(
     let screen = ctx.screen_rect();
     let height = (row.y * shown.len().min(LIST_ROWS) as f32).min(screen.height());
     let top = at.y.min(screen.bottom() - height).max(screen.top());
-    let list = Rect::from_min_size(egui::pos2(at.x, top), Vec2::new(row.x, height));
+    // A list wider than the room to the right of the field moves left to stay on screen.
+    let row = Vec2::new(row.x.min(screen.width()), row.y);
+    let left = at.x.min(screen.right() - row.x).max(screen.left());
+    let list = Rect::from_min_size(egui::pos2(left, top), Vec2::new(row.x, height));
     let mut picked = None;
     let area = egui::Area::new(id.with("list"))
         .fixed_pos(list.min)
@@ -539,7 +542,7 @@ pub fn list_rows(
                                 Color32::from_rgb(0x3A, 0x3E, 0x44),
                             );
                         }
-                        paint(ui.painter(), r, k);
+                        paint(&ui.painter().with_clip_rect(r), r, k);
                         if resp.clicked() {
                             picked = Some(k);
                             *open = false;
@@ -744,4 +747,38 @@ pub fn slider(
     );
     p.rect_filled(knob, CornerRadius::same(3), TEXT);
     *v != before
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wide_list_stays_on_screen() {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let id = egui::Id::new("wide");
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                let mut open = true;
+                list_rows(
+                    ctx,
+                    id,
+                    egui::pos2(300.0, 40.0),
+                    Vec2::new(250.0, FIELD_H),
+                    3,
+                    None,
+                    &mut open,
+                    true,
+                    |_, _, _| {},
+                );
+            });
+        }
+        let rect = ctx.memory(|m| m.area_rect(id.with("list"))).unwrap();
+        assert!(rect.left() >= 0.0 && rect.right() <= 400.5, "{rect:?}");
+    }
 }
