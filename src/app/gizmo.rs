@@ -77,6 +77,8 @@ pub struct Gizmo {
     guide: Option<[Pos2; 2]>,
     /// While turning: the ring's centre and the arc swept since the drag began.
     sweep: Vec<Pos2>,
+    /// Raises [`FLOOR`] for this gizmo's handles (0 keeps it).
+    floor: f32,
 }
 
 /// The handles for `mode` around the box `b`, seen from `eye`. `radius` is the rings'
@@ -232,10 +234,19 @@ pub fn plane_arrow(at: Vec3, normal: Vec3, to_screen: &dyn Fn(Vec3) -> Option<Po
     handles(&[(Kind::Move(0), at, normal)], to_screen)
 }
 
+/// The smallest a foreshortened handle is drawn, as a fraction of the longest: on
+/// objects, and on [`handles`].
+const FLOOR: f32 = 0.35;
+const LOOSE_FLOOR: f32 = 0.8;
+
 /// Loose handles, each a kind at a point working along a direction (one unit of drag per
 /// length of it), as the tools that are not objects use them (Split, Emboss).
 pub fn handles(list: &[(Kind, Vec3, Vec3)], to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
-    let mut g = Gizmo::default();
+    // Loose handles lie on one face, often seen at a steep angle; they stay readable.
+    let mut g = Gizmo {
+        floor: LOOSE_FLOOR,
+        ..Gizmo::default()
+    };
     for &(kind, at, along) in list {
         if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + along)) {
             g.handles.push(Handle {
@@ -309,14 +320,14 @@ impl Gizmo {
         for h in &self.handles {
             match h.kind {
                 Kind::Move(_) => {
-                    let len = 16.0 * (h.per.length() / longest).max(0.35);
+                    let len = 16.0 * (h.per.length() / longest).max(FLOOR.max(self.floor));
                     arrow(painter, h.at, h.per.normalized() * len, color(h.kind));
                 }
                 Kind::Turn(_) => {
                     arrow(painter, h.at, h.per.normalized() * 14.0, color(h.kind));
                 }
                 Kind::Size(_, side) => {
-                    let len = (h.per.length() / longest).max(0.35);
+                    let len = (h.per.length() / longest).max(FLOOR.max(self.floor));
                     chevrons(
                         painter,
                         h.at,
