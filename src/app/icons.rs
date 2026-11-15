@@ -112,6 +112,11 @@ pub enum Icon {
     Brush,
     /// A hand with a pointing finger: edit the sticker.
     Hand,
+    /// A block seen from above with its edges sloped: Emboss's bevel.
+    Bevel,
+    /// Stars, filled and in outline: Emboss's top and side colours.
+    StarFilled,
+    StarOutline,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -832,6 +837,16 @@ impl Pen<'_> {
                     self.dot(x, 12.0, 1.4);
                 }
             }
+            Bevel => {
+                self.rect(4.0, 4.0, 20.0, 20.0);
+                self.rect(9.0, 9.0, 15.0, 15.0);
+                for (a, b) in [(4.0, 9.0), (20.0, 15.0)] {
+                    self.line(&[(a, a), (b, b)]);
+                    self.line(&[(a, 24.0 - a), (b, 24.0 - b)]);
+                }
+            }
+            StarFilled => self.fill_concave(&star()),
+            StarOutline => self.closed(&star()),
             KeepTop => {
                 self.fill(&[(12.0, 3.0), (15.0, 12.0), (9.0, 12.0)]);
                 self.line(&[(7.0, 15.0), (17.0, 15.0)]);
@@ -839,6 +854,17 @@ impl Pen<'_> {
             }
         }
     }
+}
+
+/// A five-pointed star's outline on the 24-unit grid, point up.
+fn star() -> Vec<(f32, f32)> {
+    (0..10)
+        .map(|k| {
+            let r = if k % 2 == 0 { 10.0 } else { 4.2 };
+            let a = -PI / 2.0 + k as f32 * PI / 5.0;
+            (12.0 + r * a.cos(), 13.0 + r * a.sin())
+        })
+        .collect()
 }
 
 /// The pointer over something that can be dragged, as over the objects: a closed hand

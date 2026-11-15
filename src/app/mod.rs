@@ -11,7 +11,7 @@ use crate::io::{self, Format, ModelObject, Rgba};
 use crate::mesh::{ray_aabb, ray_triangle, Aabb, Mesh};
 use crate::primitives::Primitive;
 use crate::render::{DrawItem, FrameCallback, Renderer, ViewFlags};
-use crate::scene::{Axis, Material, Object, Scene, PALETTE};
+use crate::scene::{Axis, Material, Object, Scene};
 use crate::settings::{Autosave, ColorMode, Settings, Units};
 use eframe::egui::{
     self, Align2, Color32, Key, KeyboardShortcut, Modifiers, PointerButton, Pos2, Sense, Stroke,
@@ -201,6 +201,8 @@ enum Tool {
         lock: bool,
         /// [`Emboss::extents`] when the tool opened: 100 % in the bottom bar.
         opened: Vec3,
+        /// Which colour button's menu is open (0 top, 1 sides) and that menu.
+        menu: (usize, paint_menu::PaintMenu),
     },
 }
 
@@ -213,6 +215,7 @@ impl Tool {
             preview: Err(String::new()),
             built: None,
             lock: true,
+            menu: (0, paint_menu::PaintMenu::Closed),
         }
     }
 

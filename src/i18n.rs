@@ -454,6 +454,7 @@ const ES: &[(&str, &str)] = &[
     ),
     ("Eyedropper", "Gotero"),
     ("More colors...", "Más colores..."),
+    ("Use background color", "Usar color de fondo"),
     ("Recent colors", "Colores recientes"),
     ("Standard colors", "Colores estándares"),
     ("Add to custom colors", "Agregar a colores personalizados"),

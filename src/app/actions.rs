@@ -51,7 +51,8 @@ pub(super) enum Action {
     StartPaint,
     StartMaterial,
     ApplyMaterial,
-    /// Opens Paint's colour list, or with `true` its "more colours" panel (screenshots).
+    /// Opens Paint's colour list, or with `true` its "more colours" panel; with Emboss
+    /// open, its top colour's list (screenshots).
     PaintMenu(bool),
     ApplyPaint,
     StartTexture,
@@ -328,6 +329,9 @@ impl App {
                     } else {
                         paint_menu::PaintMenu::Swatches
                     };
+                } else if let Some(Tool::Emboss { menu, .. }) = &mut self.tool {
+                    // The top colour's swatches, for screenshots.
+                    *menu = (0, paint_menu::PaintMenu::Swatches);
                 }
             }
             Action::StartTexture => {
