@@ -1,21 +1,29 @@
 //! The Emboss tool in the view, drawn over the scene as the original does: the pattern's
 //! outlines in white where they land, the card they are projected from in pale green
 //! (with the projection cylinder for Cylindrical), and the handles for the bottom bar's
-//! mode, styled as the object handles: two move arrows along the pattern's plane, a circle
-//! to turn, or arrows at its right and top edges and a dot at its corner to size.
+//! mode, the object handles themselves: two move arrows along the pattern's plane, a turn
+//! ring round it with its arrow, or arrows at its right and top edges and a dot at its
+//! corner to size.
 
 use super::*;
 use crate::emboss::{Anchor, Preview};
 use gizmo::Kind;
 
 /// What a drag in the view does to the pattern while Emboss is open.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::app) enum EmbossDrag {
     /// Over the object: moves the pattern under the pointer (Shift turns it).
     Place,
-    /// On the circle: turns the pattern with the pointer. The pointer's last angle round
-    /// the pattern's centre, in degrees.
-    Turn(f32),
+    /// On the turn ring's arrow: turns the pattern as an object's ring turns it, the
+    /// pointer going round the ring's centre. The grabbed handle, the angle when the drag
+    /// began, the degrees turned since, and where the pointer was pressed and last seen.
+    Turn {
+        handle: gizmo::Handle,
+        start: f32,
+        turned: f32,
+        from: Pos2,
+        last: Pos2,
+    },
     /// On a move arrow: slides the pattern along its plane's right (0, the offset's X) or
     /// up (1, its Y) only.
     Slide(usize),
@@ -30,7 +38,7 @@ impl EmbossDrag {
     fn kind(self) -> Option<Kind> {
         match self {
             EmbossDrag::Place => None,
-            EmbossDrag::Turn(_) => Some(Kind::Turn(0)),
+            EmbossDrag::Turn { .. } => Some(Kind::Turn(0)),
             EmbossDrag::Slide(axis) => Some(Kind::Move(axis)),
             EmbossDrag::Size(Some(axis), _) => Some(Kind::Size(axis, 1.0)),
             EmbossDrag::Size(None, _) => Some(Kind::Uniform),
@@ -38,8 +46,6 @@ impl EmbossDrag {
     }
 }
 
-/// Segments of the turn circle.
-const CIRCLE: usize = 72;
 /// Space, in points, between the pattern and its move and size handles.
 const HANDLE_GAP: f32 = 18.0;
 
@@ -51,9 +57,36 @@ impl App {
         }
     }
 
-    /// The turn circle's radius: round the whole pattern, with a margin.
-    fn turn_radius(a: &Anchor) -> f32 {
-        a.half.length() * 1.15
+    fn emboss_params(&self) -> Option<&crate::emboss::Emboss> {
+        match &self.tool {
+            Some(Tool::Emboss { params, .. }) => Some(params),
+            _ => None,
+        }
+    }
+
+    /// The turn ring round the pattern in its plane, as an object's: its arrow rests on
+    /// the pattern's left, turned with it, and while a turn drag is under way the ring
+    /// shows where it began and the wedge swept since.
+    fn emboss_ring(&self, rect: egui::Rect, aspect: f32) -> Option<gizmo::Gizmo> {
+        let a = self.emboss_preview()?.anchor;
+        let (angle, turned) = match self.emboss_drag {
+            Some(EmbossDrag::Turn { start, turned, .. }) => {
+                (start, self.rotation_drag_angle(turned))
+            }
+            _ => (self.emboss_params()?.angle, 0.0),
+        };
+        let ring = gizmo::Ring {
+            axis: 0,
+            centre: a.center,
+            // A turn goes from right towards up, so from the left towards down.
+            rest: -a.right,
+            tangent: -a.up,
+            radius: a.half.length() * 1.15,
+            angle,
+            turned,
+        };
+        let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
+        Some(gizmo::ring(&ring, &to_screen))
     }
 
     /// Millimetres per screen point at `p`, across the view.
@@ -69,8 +102,7 @@ impl App {
         }
     }
 
-    /// The move or size handles of the current mode, in screen points; `None` in Rotate,
-    /// whose circle is drawn and grabbed on its own. Move has an arrow past the pattern
+    /// The handles of the current mode, in screen points: the turn ring in Rotate. Move has an arrow past the pattern
     /// along its plane's right and up (not turned with it, as the offset is not); Size an
     /// arrow past its right and top edges and a dot past its corner (turned with it).
     fn emboss_gizmo(&self, rect: egui::Rect, aspect: f32) -> Option<gizmo::Gizmo> {
@@ -112,7 +144,7 @@ impl App {
                     ),
                 ]
             }
-            TransformMode::Rotate => return None,
+            TransformMode::Rotate => return self.emboss_ring(rect, aspect),
         };
         let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
         Some(gizmo::handles(&list, &to_screen))
@@ -160,27 +192,14 @@ impl App {
             }
             return Some(drag);
         }
-        let (o, d) = self.camera.ray(to_ndc(rect, pos), aspect);
-        self.pick(o, d)
-            .is_some_and(|(id, _)| self.scene.selection.contains(&id))
+        self.selection_under(pos, rect, aspect)
             .then_some(EmbossDrag::Place)
     }
 
     /// The drag the current mode's handle under `pos` starts, if there is one there.
     fn emboss_handle_at(&self, pos: Pos2, rect: egui::Rect, aspect: f32) -> Option<EmbossDrag> {
-        let to_screen = |p: Vec3| self.to_screen(p, rect, aspect);
         let a = self.emboss_preview()?.anchor;
         let local = self.emboss_plane_point(&a, pos, rect, aspect);
-        if self.mode == TransformMode::Rotate {
-            let near = circle(&a)
-                .windows(2)
-                .filter_map(|w| Some((to_screen(w[0])?, to_screen(w[1])?)))
-                .any(|(p, q)| segment_distance(pos, p, q) < gizmo::GRAB * 0.5);
-            return near
-                .then_some(local)
-                .flatten()
-                .map(|l| EmbossDrag::Turn(l.y.atan2(l.x).to_degrees()));
-        }
         let handle = self.emboss_gizmo(rect, aspect)?.grab(pos)?;
         match handle.kind {
             Kind::Move(axis) => Some(EmbossDrag::Slide(axis)),
@@ -192,7 +211,13 @@ impl App {
                 ))
             }
             Kind::Uniform => Some(EmbossDrag::Size(None, local?.length())),
-            Kind::Turn(_) => None,
+            Kind::Turn(_) => Some(EmbossDrag::Turn {
+                handle,
+                start: self.emboss_params()?.angle,
+                turned: 0.0,
+                from: pos,
+                last: pos,
+            }),
         }
     }
 
@@ -207,7 +232,7 @@ impl App {
         let (Some(drag), Some(pos)) = (self.emboss_drag, resp.interact_pointer_pos()) else {
             return;
         };
-        if drag == EmbossDrag::Place {
+        if matches!(drag, EmbossDrag::Place) {
             return self.emboss_place(ui, resp, rect, aspect);
         }
         let Some(a) = self.emboss_preview().map(|p| p.anchor) else {
@@ -221,6 +246,23 @@ impl App {
                 .map_or(0.0, |h| h.amount(resp.drag_delta())),
             _ => 0.0,
         };
+        // A turn adds up frame by frame, as an object's, so a drag can go round; it snaps
+        // as theirs does.
+        let turn = match drag {
+            EmbossDrag::Turn {
+                handle,
+                turned,
+                from,
+                last,
+                ..
+            } => {
+                let turned = handle
+                    .turned(last, pos)
+                    .map_or_else(|| handle.amount(pos - from), |d| turned + d);
+                (turned, self.rotation_drag_angle(turned))
+            }
+            _ => (0.0, 0.0),
+        };
         let Some(l) = self.emboss_plane_point(&a, pos, rect, aspect) else {
             return;
         };
@@ -228,10 +270,21 @@ impl App {
             return;
         };
         self.emboss_drag = Some(match drag {
-            EmbossDrag::Turn(last) => {
-                let now = l.y.atan2(l.x).to_degrees();
-                params.angle = (params.angle + now - last + 180.0).rem_euclid(360.0) - 180.0;
-                EmbossDrag::Turn(now)
+            EmbossDrag::Turn {
+                handle,
+                start,
+                from,
+                ..
+            } => {
+                let (turned, snapped) = turn;
+                params.angle = (start + snapped + 180.0).rem_euclid(360.0) - 180.0;
+                EmbossDrag::Turn {
+                    handle,
+                    start,
+                    turned,
+                    from,
+                    last: pos,
+                }
             }
             EmbossDrag::Slide(axis) => {
                 params.offset[axis] += slid;
@@ -277,7 +330,7 @@ impl App {
         lines(&p.card, Stroke::new(1.0_f32, style::EMBOSS_CARD));
         lines(&p.surface, Stroke::new(2.0_f32, Color32::WHITE));
         // Green while dragged or under the pointer, as the object handles, and the pointer
-        // a hand over them.
+        // a hand over them and over the pattern's object, closed while dragging.
         let dragged = self.emboss_drag.and_then(EmbossDrag::kind);
         let hovered = || {
             hover
@@ -285,36 +338,16 @@ impl App {
                 .and_then(EmbossDrag::kind)
         };
         let hot = dragged.or_else(hovered);
-        if hot.is_some() {
-            icons::hand_cursor(painter.ctx(), dragged.is_some());
-        }
-        if self.mode == TransformMode::Rotate {
-            let color = if hot.is_some() {
-                gizmo::GREEN
-            } else {
-                style::EMBOSS_CARD
-            };
-            polyline(
-                painter,
-                &circle(&p.anchor),
-                Stroke::new(1.0_f32, color),
-                &to_screen,
-            );
-        } else if let Some(g) = self.emboss_gizmo(rect, aspect) {
+        let over = || hover.is_some_and(|h| self.selection_under(h, rect, aspect));
+        icons::grab_cursor(
+            painter.ctx(),
+            self.emboss_drag.is_some(),
+            hot.is_some() || over(),
+        );
+        if let Some(g) = self.emboss_gizmo(rect, aspect) {
             g.paint(painter, hot, self.field);
         }
     }
-}
-
-/// The turn circle round the pattern, in its plane.
-fn circle(a: &Anchor) -> Vec<Vec3> {
-    let r = App::turn_radius(a);
-    (0..=CIRCLE)
-        .map(|k| {
-            let t = std::f32::consts::TAU * k as f32 / CIRCLE as f32;
-            a.at(glam::Vec2::new(t.cos(), t.sin()) * r)
-        })
-        .collect()
 }
 
 /// A world polyline on screen, broken where it goes behind the camera.
@@ -336,11 +369,4 @@ fn polyline(
             }
         }
     }
-}
-
-/// How far `p` is from the segment `a`–`b`, on screen.
-fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
-    let ab = b - a;
-    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
-    p.distance(a + ab * t)
 }

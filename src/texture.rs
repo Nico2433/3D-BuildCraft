@@ -309,7 +309,7 @@ fn with_tex(mesh: &Mesh) -> Mesh {
 /// replaces an earlier one on the triangles they share.
 pub fn apply_decal(mesh: &Mesh, model: &Mat4, decal: &Decal, layer: u16) -> Mesh {
     let mut out = with_tex(mesh);
-    for i in 0..mesh.triangles.len() {
+    for (i, tex) in out.tex.iter_mut().enumerate() {
         let (p, n) = world_triangle(mesh, i, model);
         if n.dot(decal.normal) < 0.25 {
             continue;
@@ -327,7 +327,7 @@ pub fn apply_decal(mesh: &Mesh, model: &Mat4, decal: &Decal, layer: u16) -> Mesh
             }
         }
         if lo[0] <= 1.0 && lo[1] <= 1.0 && hi[0] >= 0.0 && hi[1] >= 0.0 {
-            out.tex[i] = FaceTex {
+            *tex = FaceTex {
                 layer,
                 decal: true,
                 uv,

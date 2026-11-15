@@ -841,6 +841,17 @@ impl Pen<'_> {
     }
 }
 
+/// The pointer over something that can be dragged, as over the objects: a closed hand
+/// while `dragging`, an open one when `over` it (closing while the button is held, before
+/// the drag starts), the usual pointer otherwise.
+pub fn grab_cursor(ctx: &eframe::egui::Context, dragging: bool, over: bool) {
+    if dragging {
+        hand_cursor(ctx, true);
+    } else if over {
+        hand_cursor(ctx, ctx.input(|i| i.pointer.primary_down()));
+    }
+}
+
 /// Keep native hands where supported; Windows substitutes a move cross for them.
 pub fn hand_cursor(ctx: &eframe::egui::Context, closed: bool) {
     #[cfg(not(windows))]

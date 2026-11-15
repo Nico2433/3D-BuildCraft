@@ -142,58 +142,29 @@ pub fn build(
             }
         }
         TransformMode::Rotate => {
-            let r = radius * 1.05;
             // Ring about each axis, its handle's point and which way positive turns go.
             let rings = [
                 (0, -Vec3::Y, -Vec3::Z),
                 (1, Vec3::Z, Vec3::X),
                 (2, Vec3::X, Vec3::Y),
             ];
-            for (axis, at, tangent) in rings {
-                let (u, v) = (at, tangent);
-                let pts: Vec<Pos2> = (0..=72)
-                    .filter_map(|i| {
-                        let t = i as f32 / 72.0 * std::f32::consts::TAU;
-                        to_screen(c + (u * t.cos() + v * t.sin()) * r)
-                    })
-                    .collect();
-                g.rings.push((pts, axis));
+            for (axis, rest, tangent) in rings {
                 let turned = match drag {
                     Some((Kind::Turn(a), d)) if a == axis => d,
                     _ => 0.0,
                 };
-                // The wedge from where the object was when the drag began to now; after a
-                // full turn it starts again from empty.
-                let wedge = turned % 360.0;
-                if wedge != 0.0 {
-                    let turned = wedge;
-                    let steps = (turned.abs() / 3.0).ceil() as usize;
-                    g.sweep = to_screen(c)
-                        .into_iter()
-                        .chain((0..=steps).filter_map(|i| {
-                            let t = (angles[axis] + turned * i as f32 / steps as f32).to_radians();
-                            to_screen(c + (u * t.cos() + v * t.sin()) * r)
-                        }))
-                        .collect();
-                }
-                let q =
-                    glam::Quat::from_axis_angle(axes[axis], (angles[axis] + turned).to_radians());
-                let radial = q * at;
-                add(
-                    Kind::Turn(axis),
-                    c + radial * r,
-                    axes[axis].cross(radial) * r * 1f32.to_radians(),
-                    1.0,
+                g.add_ring(
+                    &Ring {
+                        axis,
+                        centre: c,
+                        rest,
+                        tangent,
+                        radius: radius * 1.05,
+                        angle: angles[axis],
+                        turned,
+                    },
+                    to_screen,
                 );
-            }
-            // Turn round the ring's centre unless the ring is nearly a line on screen.
-            if let Some(centre) = to_screen(c) {
-                for h in &mut g.handles {
-                    let (radius, tangent) = (h.at - centre, h.per.normalized());
-                    if cross(radius.normalized(), tangent).abs() > 0.3 {
-                        h.pivot = Some(centre);
-                    }
-                }
             }
         }
     }
@@ -225,6 +196,35 @@ pub fn build(
             g.frame = Some(frame);
         }
     }
+    g
+}
+
+/// A turn ring: a circle of `radius` round `centre` in the plane of `rest` and `tangent`
+/// (unit, perpendicular), with the arrow handle that turns about `axis` (its
+/// [`Kind::Turn`]). The handle rests `angle` degrees from `rest` towards `tangent`, and a
+/// drag under way has `turned` it this many more.
+pub struct Ring {
+    pub axis: usize,
+    pub centre: Vec3,
+    pub rest: Vec3,
+    pub tangent: Vec3,
+    pub radius: f32,
+    pub angle: f32,
+    pub turned: f32,
+}
+
+impl Ring {
+    /// The ring's point `degrees` round from `rest`.
+    fn point(&self, degrees: f32) -> Vec3 {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        self.centre + (self.rest * cos + self.tangent * sin) * self.radius
+    }
+}
+
+/// A single turn ring with its handle, as the tools that are not objects use it (Emboss).
+pub fn ring(ring: &Ring, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
+    let mut g = Gizmo::default();
+    g.add_ring(ring, to_screen);
     g
 }
 
@@ -261,6 +261,44 @@ pub fn handles(list: &[(Kind, Vec3, Vec3)], to_screen: &dyn Fn(Vec3) -> Option<P
 }
 
 impl Gizmo {
+    /// Adds `r`: its circle, its handle where the drag has turned it to and, while
+    /// turning, the wedge swept since the drag began (empty again after a full turn).
+    fn add_ring(&mut self, r: &Ring, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) {
+        let pts: Vec<Pos2> = (0..=72)
+            .filter_map(|i| to_screen(r.point(i as f32 * 5.0)))
+            .collect();
+        self.rings.push((pts, r.axis));
+        let wedge = r.turned % 360.0;
+        if wedge != 0.0 {
+            let steps = (wedge.abs() / 3.0).ceil() as usize;
+            self.sweep =
+                to_screen(r.centre)
+                    .into_iter()
+                    .chain((0..=steps).filter_map(|i| {
+                        to_screen(r.point(r.angle + wedge * i as f32 / steps as f32))
+                    }))
+                    .collect();
+        }
+        let now = r.angle + r.turned;
+        let at = r.point(now);
+        // One degree further round, along the ring's tangent there.
+        let (sin, cos) = now.to_radians().sin_cos();
+        let along = (r.tangent * cos - r.rest * sin) * r.radius * 1f32.to_radians();
+        let (Some(a), Some(q)) = (to_screen(at), to_screen(at + along)) else {
+            return;
+        };
+        let per = q - a;
+        // Turn round the ring's centre unless the ring is nearly a line on screen.
+        let pivot = to_screen(r.centre)
+            .filter(|c| cross((a - *c).normalized(), per.normalized()).abs() > 0.3);
+        self.handles.push(Handle {
+            kind: Kind::Turn(r.axis),
+            at: a,
+            per,
+            pivot,
+        });
+    }
+
     /// The handle under `p`, nearest first.
     pub fn grab(&self, p: Pos2) -> Option<Handle> {
         self.handles
@@ -510,6 +548,32 @@ mod tests {
         assert!((corner.amount(corner.per) - 1.0).abs() < 1e-4);
         assert!(g.grab(corner.at + Vec2::new(3.0, 0.0)).is_some());
         assert!(g.grab(Pos2::new(500.0, 500.0)).is_none());
+    }
+
+    #[test]
+    fn a_loose_ring_turns_its_arrow_and_sweeps_the_turn() {
+        let r = Ring {
+            axis: 0,
+            centre: Vec3::new(0.0, -10.0, 10.0),
+            rest: -Vec3::X,
+            tangent: -Vec3::Z,
+            radius: 5.0,
+            angle: 0.0,
+            turned: 0.0,
+        };
+        let g = ring(&r, &screen);
+        let h = g.grab(screen(r.centre - Vec3::X * 5.0).unwrap()).unwrap();
+        assert_eq!(h.kind, Kind::Turn(0));
+        assert!(h.pivot.is_some() && g.sweep.is_empty());
+        // A quarter turn moves the arrow from the left to the bottom and sweeps between.
+        let g = ring(&Ring { turned: 90.0, ..r }, &screen);
+        let bottom = screen(r.centre - Vec3::Z * 5.0).unwrap();
+        assert!(g.handles[0].at.distance(bottom) < 1e-3);
+        assert!(g.sweep.len() > 3 && g.sweep[0] == screen(r.centre).unwrap());
+        // The pointer going round the centre turns the pattern the arrow's way.
+        let c = screen(r.centre).unwrap();
+        let turned = h.turned(h.at, c + (h.at - c).rot90()).unwrap();
+        assert!((turned.abs() - 90.0).abs() < 1e-3);
     }
 
     #[test]

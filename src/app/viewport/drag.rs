@@ -133,6 +133,14 @@ impl App {
         (!pts.is_empty()).then(|| egui::Rect::from_points(&pts))
     }
 
+    /// True when the object under `pos` in the view is selected: a press there drags it
+    /// (or, with Emboss open, the pattern).
+    pub(super) fn selection_under(&self, pos: Pos2, rect: egui::Rect, aspect: f32) -> bool {
+        let (o, d) = self.camera.ray(to_ndc(rect, pos), aspect);
+        self.pick(o, d)
+            .is_some_and(|(id, _)| self.scene.selection.contains(&id))
+    }
+
     /// Picks a handle: the bottom bar's field for its axis becomes the current one, and
     /// with it the handle stays green.
     pub(super) fn pick_handle(&mut self, kind: gizmo::Kind) {

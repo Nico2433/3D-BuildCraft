@@ -427,6 +427,17 @@ const SIZES: std::ops::RangeInclusive<f32> = 1.0..=200.0;
 const STRETCHES: std::ops::RangeInclusive<f32> = 0.05..=20.0;
 const DEPTHS: std::ops::RangeInclusive<f32> = 0.1..=50.0;
 
+/// The stretch that makes `e` `width` mm wide, kept in the range the handles and the
+/// bar allow (0.05–20 times its natural width), so no width gives a degenerate pattern.
+pub fn stretch_for_width(e: &Emboss, width: f32) -> Result<f32> {
+    let natural = pattern_size(&Emboss {
+        stretch: 1.0,
+        ..e.clone()
+    })?
+    .x;
+    Ok((width / natural.max(1e-6)).clamp(*STRETCHES.start(), *STRETCHES.end()))
+}
+
 /// Scales one of the pattern's extents by `ratio`: `axis` 0 is its width, 1 its height
 /// (with `size`), 2 its depth. With `lock`, width and height keep their proportion (the
 /// height changes and the width follows it); without, the other one stays as it is. The
@@ -1126,6 +1137,27 @@ mod tests {
             (c.x - b.x).abs() < 0.01 && (c.y - b.y * 2.0).abs() < 0.01,
             "{b} {c}"
         );
+    }
+
+    #[test]
+    fn a_width_gives_a_stretch_in_range() {
+        let e = Emboss {
+            pattern: Pattern::Shape(Shape::Circle),
+            size: 20.0,
+            stretch: 3.0,
+            ..Emboss::default()
+        };
+        let natural = pattern_size(&Emboss {
+            stretch: 1.0,
+            ..e.clone()
+        })
+        .unwrap()
+        .x;
+        // Measured from the natural width, whatever the stretch was.
+        let twice = stretch_for_width(&e, natural * 2.0).unwrap();
+        assert!((twice - 2.0).abs() < 1e-4, "{twice}");
+        assert_eq!(stretch_for_width(&e, natural * 1000.0).unwrap(), 20.0);
+        assert_eq!(stretch_for_width(&e, 1e-6).unwrap(), 0.05);
     }
 
     #[test]

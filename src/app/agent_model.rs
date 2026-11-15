@@ -282,8 +282,8 @@ impl App {
         if !a["width"].is_null() {
             // The width stretches the pattern sideways; `size` still sets its height.
             let width = positive(&a["width"], "width")?;
-            let natural = crate::emboss::pattern_size(&params).map_err(|e| format!("{e:#}"))?;
-            params.stretch = width / natural.x.max(1e-6);
+            params.stretch =
+                crate::emboss::stretch_for_width(&params, width).map_err(|e| format!("{e:#}"))?;
         }
         self.tool = Some(Tool::emboss(params));
         self.apply(Action::ApplyEmboss, ctx);

@@ -82,19 +82,14 @@ impl App {
                 .or_else(|| resp.hover_pos().and_then(|p| g.grab(p)).map(|h| h.kind));
             // An open hand over a handle or the selection, a closed one dragging.
             let over_selection = || {
-                resp.hover_pos().is_some_and(|p| {
-                    let (o, d) = self.camera.ray(to_ndc(rect, p), aspect);
-                    self.pick(o, d)
-                        .is_some_and(|(id, _)| self.scene.selection.contains(&id))
-                })
+                resp.hover_pos()
+                    .is_some_and(|p| self.selection_under(p, rect, aspect))
             };
-            let pressed = ui.input(|i| i.pointer.primary_down());
-            if self.handle.is_some() {
-                icons::hand_cursor(ui.ctx(), true);
-            } else if hot.is_some() || over_selection() {
-                // Held down on them, the hand closes before the drag starts.
-                icons::hand_cursor(ui.ctx(), pressed);
-            }
+            icons::grab_cursor(
+                ui.ctx(),
+                self.handle.is_some(),
+                hot.is_some() || over_selection(),
+            );
             g.paint(&painter, hot, self.field);
         }
         self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
