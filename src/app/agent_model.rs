@@ -238,6 +238,7 @@ impl App {
         }
         params.engrave = flag(a, "engrave", false)?;
         params.bevel = flag(a, "bevel", false)?;
+        params.conform = flag(a, "conform", false)?;
         params.angle = number(a, "angle", 0.0, -360.0..=360.0)?;
         params.projection = choice(
             a,
@@ -277,7 +278,7 @@ impl App {
                 _ => None,
             };
             let target = target.ok_or("emboss needs exactly one selected object")?;
-            params.offset = crate::emboss::offset_at(&target.world_mesh(), params.projection, p);
+            crate::emboss::place_at(&target.world_mesh(), &mut params, p);
         }
         self.tool = Some(Tool::Emboss {
             params,

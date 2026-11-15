@@ -1,26 +1,28 @@
 //! Emboss ("Relieve"): text, a shape or an image raised from or engraved into an object.
 //! The pattern is laid out flat, then each point is sent along a ray towards the object
-//! (straight down, towards the vertical axis, or towards the centre) and the pattern grows
-//! out of the surface along that ray, so it follows the surface.
+//! (straight into the face it lies on, towards the vertical axis, or towards the centre)
+//! and the pattern grows out of the surface along that ray, so it follows the surface.
+//! Conformed, it grows along the surface normal instead (see [`surface`]).
 
 use crate::boolean::{self, Op};
 use crate::cut::fill;
 use crate::io::Rgba;
 use crate::mesh::{ray_triangle, Mesh};
 use anyhow::{anyhow, bail, Result};
-use glam::{Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 mod outlines;
+mod surface;
 use outlines::pattern_outlines;
 
 /// How the pattern is sent onto the object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Projection {
-    /// Straight down onto the top.
+    /// Straight into the face it lies on (see [`Emboss::facing`]); the top by default.
     #[default]
     Planar,
     /// Wrapped around the vertical axis through the object's centre, on its front (−Y).
@@ -86,11 +88,17 @@ pub struct Emboss {
     pub depth: f32,
     /// Turn of the pattern in its own plane.
     pub angle: f32,
-    /// Pattern centre in its own plane: from the centre of the top for planar, along the
-    /// surface from the front for cylindrical and spherical.
+    /// Pattern centre in its own plane: from the object's centre across the face it lies
+    /// on for planar, along the surface from the front for cylindrical and spherical.
     pub offset: Vec2,
     pub engrave: bool,
     pub projection: Projection,
+    /// Planar only: the outward direction of the face the pattern lies on; +Z is the top.
+    /// [`place`] sets it from the surface under the pointer.
+    pub facing: Vec3,
+    /// Raise (or cut) along the surface normal instead of along the projection ray, so
+    /// the pattern keeps an even height over curved surfaces.
+    pub conform: bool,
     /// Slopes the edges: they start at a third of the height and rise to full height.
     pub bevel: bool,
     /// Colour of the top layer and of the sides of raised patterns; `None` keeps the
@@ -111,6 +119,8 @@ impl Default for Emboss {
             offset: Vec2::ZERO,
             engrave: false,
             projection: Projection::Planar,
+            facing: Vec3::Z,
+            conform: false,
             bevel: false,
             top_color: None,
             side_color: None,
@@ -186,33 +196,57 @@ pub fn text_solid(target: &Mesh, e: &Emboss) -> Result<Mesh> {
     Ok(out)
 }
 
-/// The `offset` that centres the pattern on `p`, a point on `target`'s surface.
-pub fn offset_at(target: &Mesh, projection: Projection, p: Vec3) -> Vec2 {
-    Frame::new(target, projection).key(p)
+/// Centres the pattern on `p`, a point on `target`'s surface whose outward normal is
+/// `normal`. A planar pattern also turns to lie on that face.
+pub fn place(target: &Mesh, e: &mut Emboss, p: Vec3, normal: Vec3) {
+    set_facing(e, normal);
+    e.offset = Frame::new(target, e.projection, e.facing).key(p);
 }
 
-/// Reuse the projection frame while dragging an immutable placed target. This avoids
-/// cloning and transforming all its vertices for every pointer movement.
-pub fn offset_at_placed(
+/// [`place`] with the normal of the surface nearest to `p`.
+pub fn place_at(target: &Mesh, e: &mut Emboss, p: Vec3) {
+    let normal = target
+        .closest_triangle(&Mat4::IDENTITY, p)
+        .map_or(e.facing, |(i, _)| {
+            let [a, b, c] = target.triangles[i].map(|v| target.positions[v as usize]);
+            Mesh::face_normal(a, b, c)
+        });
+    place(target, e, p, normal);
+}
+
+/// [`place`] on an immutable placed target, reusing the projection frame while dragging.
+/// This avoids cloning and transforming all its vertices for every pointer movement.
+pub fn place_on_placed(
     target: &std::sync::Arc<Mesh>,
-    matrix: glam::Mat4,
-    projection: Projection,
+    matrix: Mat4,
+    e: &mut Emboss,
     p: Vec3,
-) -> Vec2 {
-    type Cached = (std::sync::Weak<Mesh>, glam::Mat4, Projection, Frame);
+    normal: Vec3,
+) {
+    type Cached = (std::sync::Weak<Mesh>, Mat4, Projection, Vec3, Frame);
     thread_local! { static LAST: std::cell::RefCell<Option<Cached>> = const { std::cell::RefCell::new(None) }; }
-    LAST.with(|last| {
+    set_facing(e, normal);
+    let (projection, facing) = (e.projection, e.facing);
+    e.offset = LAST.with(|last| {
         let mut last = last.borrow_mut();
         let key = std::sync::Arc::downgrade(target);
-        if !last
-            .as_ref()
-            .is_some_and(|(m, t, kind, _)| m.ptr_eq(&key) && *t == matrix && *kind == projection)
-        {
-            let frame = Frame::new(&target.transformed(&matrix), projection);
-            *last = Some((key, matrix, projection, frame));
+        if !last.as_ref().is_some_and(|(m, t, kind, f, _)| {
+            m.ptr_eq(&key) && *t == matrix && *kind == projection && *f == facing
+        }) {
+            let frame = Frame::new(&target.transformed(&matrix), projection, facing);
+            *last = Some((key, matrix, projection, facing, frame));
         }
-        last.as_ref().unwrap().3.key(p)
-    })
+        last.as_ref().unwrap().4.key(p)
+    });
+}
+
+/// A planar pattern lies on the face whose outward normal is `normal`.
+fn set_facing(e: &mut Emboss, normal: Vec3) {
+    if e.projection == Projection::Planar {
+        if let Some(n) = normal.try_normalize() {
+            e.facing = n;
+        }
+    }
 }
 
 /// Families of the fonts installed on this computer, sorted. Loaded once.
@@ -267,7 +301,7 @@ enum Layer {
 /// One glyph (or the whole shape or image), filled, refined and sent onto the surface.
 struct Piece {
     top: Vec<[u32; 3]>,
-    /// Where each vertex meets the surface and the ray direction there.
+    /// Where each vertex meets the surface and the direction it grows into the object.
     hits: Vec<(Vec3, Vec3)>,
     /// Height fraction from the bevel, 1 without one.
     rise: Vec<f32>,
@@ -345,7 +379,7 @@ fn pieces(target: &Mesh, e: &Emboss) -> Result<Vec<Piece>> {
         .flatten()
         .map(|&p| place(p))
         .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
-    let surface = Surface::new(target, e.projection, step, lo, hi);
+    let surface = Surface::new(target, e, step, lo, hi);
     outlines
         .iter()
         .map(|contours| {
@@ -441,18 +475,36 @@ fn bevel(positions: &[Vec3], top: &[[u32; 3]], width: f32) -> Vec<f32> {
         .collect()
 }
 
+/// Right, up and out for a pattern lying on a face that faces `facing`: upright on steep
+/// faces, and with up towards +Y (as seen from outside) on flat ones such as the top.
+/// Right × up is out, so the pattern reads the right way round from outside.
+fn plane_axes(facing: Vec3) -> [Vec3; 3] {
+    let n = facing.try_normalize().unwrap_or(Vec3::Z);
+    let up = if n.z.abs() < FRAC_1_SQRT_2 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let v = (up - n * n.dot(up)).normalize();
+    [v.cross(n), v, n]
+}
+
 /// Where rays start and which way they go, for a projection around `target`.
 struct Frame {
     kind: Projection,
     center: Vec3,
     radius: f32,
+    /// Planar: the pattern's right, up and out ([`plane_axes`]).
+    axes: [Vec3; 3],
+    /// Planar: how far the object reaches out from its centre.
     top: f32,
 }
 
 impl Frame {
-    fn new(target: &Mesh, kind: Projection) -> Self {
+    fn new(target: &Mesh, kind: Projection, facing: Vec3) -> Self {
         let b = target.aabb();
         let center = (b.min + b.max) * 0.5;
+        let axes = plane_axes(facing);
         let radius = target
             .positions
             .iter()
@@ -461,11 +513,17 @@ impl Frame {
                 _ => p.distance(center),
             })
             .fold(1e-3, f32::max);
+        let top = target
+            .positions
+            .iter()
+            .map(|p| (*p - center).dot(axes[2]))
+            .fold(0.0, f32::max);
         Self {
             kind,
             center,
             radius,
-            top: b.max.z,
+            axes,
+            top,
         }
     }
 
@@ -473,7 +531,7 @@ impl Frame {
     fn normal(&self, q: Vec2) -> Vec3 {
         let az = -FRAC_PI_2 + q.x / self.radius;
         match self.kind {
-            Projection::Planar => Vec3::Z,
+            Projection::Planar => self.axes[2],
             Projection::Cylindrical => Vec3::new(az.cos(), az.sin(), 0.0),
             Projection::Spherical => {
                 let el = (q.y / self.radius).clamp(-FRAC_PI_2, FRAC_PI_2);
@@ -486,7 +544,10 @@ impl Frame {
     fn ray(&self, q: Vec2) -> (Vec3, Vec3) {
         let n = self.normal(q);
         let origin = match self.kind {
-            Projection::Planar => (self.center.truncate() + q).extend(self.top + 1.0),
+            Projection::Planar => {
+                let [u, v, n] = self.axes;
+                self.center + u * q.x + v * q.y + n * (self.top + 1.0)
+            }
             Projection::Cylindrical => {
                 self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + 1.0)
             }
@@ -510,7 +571,7 @@ impl Frame {
             }
         };
         match self.kind {
-            Projection::Planar => d.truncate(),
+            Projection::Planar => Vec2::new(d.dot(self.axes[0]), d.dot(self.axes[1])),
             Projection::Cylindrical => Vec2::new(az() * self.radius, d.z),
             Projection::Spherical => {
                 let el = (d.z / d.length().max(1e-9)).clamp(-1.0, 1.0).asin();
@@ -528,13 +589,16 @@ struct Surface<'a> {
     frame: Frame,
     cell: f32,
     bins: HashMap<(i32, i32), Vec<u32>>,
+    /// Conformed: the surface normals of the binned triangles.
+    normals: Option<surface::Normals>,
 }
 
 impl<'a> Surface<'a> {
-    fn new(mesh: &'a Mesh, kind: Projection, step: f32, lo: Vec2, hi: Vec2) -> Self {
+    fn new(mesh: &'a Mesh, e: &Emboss, step: f32, lo: Vec2, hi: Vec2) -> Self {
+        let kind = e.projection;
         let (area_lo, area_hi) = (lo, hi);
         let mid = (lo.x + hi.x) * 0.5;
-        let frame = Frame::new(mesh, kind);
+        let frame = Frame::new(mesh, kind, e.facing);
         let cell = step.max(0.5);
         let mut bins: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, t) in mesh.triangles.iter().enumerate() {
@@ -579,31 +643,42 @@ impl<'a> Surface<'a> {
                 }
             }
         }
+        let normals = e
+            .conform
+            .then(|| surface::Normals::new(mesh, bins.values().flatten().copied()));
         Self {
             mesh,
             frame,
             cell,
             bins,
+            normals,
         }
     }
 
+    /// Where the ray for `q` first meets the surface, and the direction the pattern grows
+    /// into the object there: along the ray, or against the surface normal when conformed.
     fn hit(&self, q: Vec2) -> Option<(Vec3, Vec3)> {
         let (origin, dir) = self.frame.ray(q);
         let bin = (
             (q.x / self.cell).floor() as i32,
             (q.y / self.cell).floor() as i32,
         );
-        let t = self
+        let (t, i) = self
             .bins
             .get(&bin)?
             .iter()
             .filter_map(|&i| {
                 let [a, b, c] =
                     self.mesh.triangles[i as usize].map(|v| self.mesh.positions[v as usize]);
-                ray_triangle(origin, dir, a, b, c)
+                ray_triangle(origin, dir, a, b, c).map(|t| (t, i))
             })
-            .fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.min(t))))?;
-        Some((origin + dir * t, dir))
+            .min_by(|x, y| x.0.total_cmp(&y.0))?;
+        let p = origin + dir * t;
+        let into = match &self.normals {
+            Some(normals) => normals.inward(self.mesh, i, p, dir),
+            None => dir,
+        };
+        Some((p, into))
     }
 }
 
@@ -660,20 +735,23 @@ mod tests {
     use glam::Vec3;
 
     #[test]
-    fn placed_offset_cache_matches_world_mesh_projection() {
+    fn placed_frame_cache_matches_world_mesh_projection() {
         let target = std::sync::Arc::new(Primitive::Cube.build());
-        for projection in [
-            Projection::Planar,
-            Projection::Cylindrical,
-            Projection::Spherical,
-        ] {
+        for projection in Projection::ALL {
             for translation in [Vec3::ZERO, Vec3::new(10.0, -20.0, 30.0)] {
                 let matrix = glam::Mat4::from_translation(translation);
                 let world = target.transformed(&matrix);
-                for p in [Vec3::X, Vec3::Y, Vec3::Z] {
-                    let p = p + translation;
-                    assert!(offset_at_placed(&target, matrix, projection, p)
-                        .abs_diff_eq(offset_at(&world, projection, p), 1e-5));
+                for n in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let p = n * 20.0 + translation;
+                    let mut cached = Emboss {
+                        projection,
+                        ..Emboss::default()
+                    };
+                    let mut plain = cached.clone();
+                    place_on_placed(&target, matrix, &mut cached, p, n);
+                    place(&world, &mut plain, p, n);
+                    assert!(cached.offset.abs_diff_eq(plain.offset, 1e-5));
+                    assert_eq!(cached.facing, plain.facing);
                 }
             }
         }

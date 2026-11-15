@@ -30,13 +30,11 @@ fn centroid(mesh: &Mesh) -> Vec3 {
 }
 
 #[test]
-fn offset_at_round_trips_a_planar_point() {
+fn place_at_round_trips_a_planar_point() {
     let cube = Primitive::Cube.build();
     let point = Vec3::new(8.0, -5.0, 40.0);
-    let edit = Emboss {
-        offset: emboss::offset_at(&cube, Projection::Planar, point),
-        ..small_text()
-    };
+    let mut edit = small_text();
+    emboss::place_at(&cube, &mut edit, point);
     let centre = emboss::text_solid(&cube, &edit).unwrap().aabb().center();
 
     assert_close(centre.x, point.x, 0.05);
@@ -44,15 +42,15 @@ fn offset_at_round_trips_a_planar_point() {
 }
 
 #[test]
-fn offset_at_round_trips_a_cylindrical_point() {
+fn place_at_round_trips_a_cylindrical_point() {
     let cylinder = Primitive::Cylinder.build();
     let azimuth = -60.0_f32.to_radians();
     let point = Vec3::new(20.0 * azimuth.cos(), 20.0 * azimuth.sin(), 20.0);
-    let edit = Emboss {
+    let mut edit = Emboss {
         projection: Projection::Cylindrical,
-        offset: emboss::offset_at(&cylinder, Projection::Cylindrical, point),
         ..small_text()
     };
+    emboss::place_at(&cylinder, &mut edit, point);
     let centre = centroid(&emboss::text_solid(&cylinder, &edit).unwrap());
 
     assert_close(centre.y.atan2(centre.x), azimuth, 3.0_f32.to_radians());
@@ -60,7 +58,7 @@ fn offset_at_round_trips_a_cylindrical_point() {
 }
 
 #[test]
-fn offset_at_round_trips_a_spherical_point() {
+fn place_at_round_trips_a_spherical_point() {
     let sphere = Primitive::Sphere.build();
     let sphere_centre = Vec3::new(0.0, 0.0, 20.0);
     let azimuth = -60.0_f32.to_radians();
@@ -71,11 +69,11 @@ fn offset_at_round_trips_a_spherical_point() {
         elevation.sin(),
     );
     let point = sphere_centre + direction * 20.0;
-    let edit = Emboss {
+    let mut edit = Emboss {
         projection: Projection::Spherical,
-        offset: emboss::offset_at(&sphere, Projection::Spherical, point),
         ..small_text()
     };
+    emboss::place_at(&sphere, &mut edit, point);
     let preview_direction =
         (centroid(&emboss::text_solid(&sphere, &edit).unwrap()) - sphere_centre).normalize();
 
