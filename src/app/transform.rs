@@ -119,25 +119,8 @@ impl App {
                     let before = s;
                     let set = xyz_fields(ui, ["X", "Y", "Z"], &mut s, &mut fields);
                     s = s.max(Vec3::splat(0.01));
-                    let unit = if self.scale_percent {
-                        "%"
-                    } else {
-                        tr(lang, units.label())
-                    };
-                    if unit_button(ui, unit).clicked() {
-                        self.scale_percent = !self.scale_percent;
-                    }
-                    let lock = if self.lock_scale {
-                        Icon::Lock
-                    } else {
-                        Icon::Unlock
-                    };
-                    if mode_button(ui, lock, self.lock_scale)
-                        .on_hover_text(tr(lang, "Uniform scale"))
-                        .clicked()
-                    {
-                        self.lock_scale = !self.lock_scale;
-                    }
+                    percent_toggle(ui, &mut self.scale_percent, tr(lang, units.label()));
+                    lock_toggle(ui, &mut self.lock_scale, tr(lang, "Uniform scale"));
                     let new = if self.lock_scale {
                         // Uniform: apply the ratio of whichever field changed.
                         let ratio = (s / before.max(Vec3::splat(1e-9))).to_array();
@@ -215,11 +198,19 @@ impl App {
 
 impl App {
     /// The pattern's place, turn and size for Emboss, under the same three mode buttons
-    /// as objects have: move sets the offset, rotate the angle, size the height and depth.
+    /// as objects have: move sets the offset, rotate the angle, size its width, height and
+    /// depth as X, Y and Z, in mm or percent and with a lock, as the objects' sizes.
     fn emboss_bar(&mut self, ctx: &egui::Context) {
         let lang = self.settings.lang();
         let mode = &mut self.mode;
-        let Some(Tool::Emboss { params, .. }) = &mut self.tool else {
+        let percent = &mut self.scale_percent;
+        let Some(Tool::Emboss {
+            params,
+            lock,
+            opened,
+            ..
+        }) = &mut self.tool
+        else {
             return;
         };
         let mut f = Fields {
@@ -252,11 +243,28 @@ impl App {
                     unit_label(ui, "°");
                 }
                 TransformMode::Scale => {
-                    field(ui, &mut f, 0, tr(lang, "Size"), &mut params.size);
-                    field(ui, &mut f, 1, tr(lang, "Depth"), &mut params.depth);
-                    params.size = params.size.clamp(1.0, 200.0);
-                    params.depth = params.depth.clamp(0.1, 50.0);
-                    unit_label(ui, "mm");
+                    // X is the pattern's width, Y its size (capital height for text), Z
+                    // its depth; in percent, of what they were when the tool opened.
+                    let now = params.extents();
+                    let shown = if *percent {
+                        now / opened.max(Vec3::splat(1e-6)) * 100.0
+                    } else {
+                        let width = crate::emboss::pattern_size(params).map_or(now.x, |s| s.x);
+                        Vec3::new(width, params.size, params.depth)
+                    };
+                    let mut v = shown;
+                    let set = xyz_fields(ui, ["X", "Y", "Z"], &mut v, &mut f);
+                    percent_toggle(ui, percent, "mm");
+                    lock_toggle(
+                        ui,
+                        lock,
+                        tr(lang, "Keep the width and height in proportion"),
+                    );
+                    // The field that changed scales its extent by the same ratio.
+                    if let Some(axis) = (0..3).find(|&k| set && v[k] != shown[k]) {
+                        let ratio = v[axis].max(1e-3) / shown[axis].max(1e-6);
+                        crate::emboss::rescale(params, axis, ratio, *lock);
+                    }
                 }
             }
         });
@@ -308,6 +316,22 @@ fn unit_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
         style::TEXT,
     );
     resp
+}
+
+/// The unit of the size fields, `length` or "%", underlined: a click switches them.
+fn percent_toggle(ui: &mut egui::Ui, percent: &mut bool, length: &str) {
+    let unit = if *percent { "%" } else { length };
+    if unit_button(ui, unit).clicked() {
+        *percent = !*percent;
+    }
+}
+
+/// The size lock: closed while sizes keep their proportion; `tip` says which.
+fn lock_toggle(ui: &mut egui::Ui, lock: &mut bool, tip: &str) {
+    let icon = if *lock { Icon::Lock } else { Icon::Unlock };
+    if mode_button(ui, icon, *lock).on_hover_text(tip).clicked() {
+        *lock = !*lock;
+    }
 }
 
 /// The unit, underlined, that switches the size fields between length and percent.

@@ -30,13 +30,11 @@ fn centroid(mesh: &Mesh) -> Vec3 {
 }
 
 #[test]
-fn offset_at_round_trips_a_planar_point() {
+fn place_at_round_trips_a_planar_point() {
     let cube = Primitive::Cube.build();
     let point = Vec3::new(8.0, -5.0, 40.0);
-    let edit = Emboss {
-        offset: emboss::offset_at(&cube, Projection::Planar, point),
-        ..small_text()
-    };
+    let mut edit = small_text();
+    emboss::place_at(&cube, &mut edit, point);
     let centre = emboss::text_solid(&cube, &edit).unwrap().aabb().center();
 
     assert_close(centre.x, point.x, 0.05);
@@ -44,15 +42,15 @@ fn offset_at_round_trips_a_planar_point() {
 }
 
 #[test]
-fn offset_at_round_trips_a_cylindrical_point() {
+fn place_at_round_trips_a_cylindrical_point() {
     let cylinder = Primitive::Cylinder.build();
     let azimuth = -60.0_f32.to_radians();
     let point = Vec3::new(20.0 * azimuth.cos(), 20.0 * azimuth.sin(), 20.0);
-    let edit = Emboss {
+    let mut edit = Emboss {
         projection: Projection::Cylindrical,
-        offset: emboss::offset_at(&cylinder, Projection::Cylindrical, point),
         ..small_text()
     };
+    emboss::place_at(&cylinder, &mut edit, point);
     let centre = centroid(&emboss::text_solid(&cylinder, &edit).unwrap());
 
     assert_close(centre.y.atan2(centre.x), azimuth, 3.0_f32.to_radians());
@@ -60,7 +58,7 @@ fn offset_at_round_trips_a_cylindrical_point() {
 }
 
 #[test]
-fn offset_at_round_trips_a_spherical_point() {
+fn place_at_round_trips_a_spherical_point() {
     let sphere = Primitive::Sphere.build();
     let sphere_centre = Vec3::new(0.0, 0.0, 20.0);
     let azimuth = -60.0_f32.to_radians();
@@ -71,11 +69,11 @@ fn offset_at_round_trips_a_spherical_point() {
         elevation.sin(),
     );
     let point = sphere_centre + direction * 20.0;
-    let edit = Emboss {
+    let mut edit = Emboss {
         projection: Projection::Spherical,
-        offset: emboss::offset_at(&sphere, Projection::Spherical, point),
         ..small_text()
     };
+    emboss::place_at(&sphere, &mut edit, point);
     let preview_direction =
         (centroid(&emboss::text_solid(&sphere, &edit).unwrap()) - sphere_centre).normalize();
 
@@ -101,24 +99,26 @@ fn cylindrical_text_embosses_a_z_rotated_cylinder() {
 }
 
 #[test]
-fn positive_spherical_vertical_offset_moves_text_up() {
+fn positive_vertical_offset_moves_wrapped_text_up() {
     let sphere = Primitive::Sphere.build();
-    let at = |y| {
-        centroid(
-            &emboss::text_solid(
-                &sphere,
-                &Emboss {
-                    projection: Projection::Spherical,
-                    offset: Vec2::new(0.0, y),
-                    ..small_text()
-                },
+    for projection in [Projection::Cylindrical, Projection::Spherical] {
+        let at = |y| {
+            centroid(
+                &emboss::text_solid(
+                    &sphere,
+                    &Emboss {
+                        projection,
+                        offset: Vec2::new(0.0, y),
+                        ..small_text()
+                    },
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .z
-    };
+            .z
+        };
 
-    assert!(at(8.0) > at(0.0));
+        assert!(at(8.0) > at(0.0), "{projection:?}");
+    }
 }
 
 #[test]
@@ -231,17 +231,69 @@ fn side_colour_separates_sides_and_leaves_only_the_cap_on_the_object() {
 }
 
 #[test]
-fn spherical_star_engraving_removes_volume() {
+fn wrapped_star_engraving_on_a_sphere_removes_volume() {
     let sphere = Primitive::Sphere.build();
-    let edit = Emboss {
-        pattern: Pattern::Shape(Shape::Star),
-        size: 10.0,
-        engrave: true,
-        projection: Projection::Spherical,
-        ..Emboss::default()
-    };
-    let output = emboss::apply(&sphere, &edit).unwrap().object;
+    for projection in [Projection::Cylindrical, Projection::Spherical] {
+        let edit = Emboss {
+            pattern: Pattern::Shape(Shape::Star),
+            size: 10.0,
+            engrave: true,
+            projection,
+            ..Emboss::default()
+        };
+        let output = emboss::apply(&sphere, &edit).unwrap().object;
 
-    assert_closed(&output);
-    assert!(output.stats().volume < sphere.stats().volume);
+        assert_closed(&output);
+        assert!(
+            output.stats().volume < sphere.stats().volume,
+            "{projection:?}"
+        );
+    }
+}
+
+#[test]
+fn every_shape_embosses_a_closed_solid_onto_a_cube() {
+    let cube = Primitive::Cube.build();
+    let volume = cube.stats().volume;
+    for shape in Shape::ALL {
+        let edit = Emboss {
+            pattern: Pattern::Shape(shape),
+            size: 20.0,
+            ..Emboss::default()
+        };
+        let solid = emboss::text_solid(&cube, &edit).unwrap();
+        let stats = solid.stats();
+        assert!(stats.is_closed_manifold(), "{shape:?} {stats:?}");
+        assert!(stats.volume > 0.0, "{shape:?}");
+        let out = emboss::apply(&cube, &edit).unwrap().object;
+        assert_closed(&out);
+        assert!(out.stats().volume > volume + 1.0, "{shape:?}");
+    }
+}
+
+#[test]
+fn ring_no_sign_and_smiley_keep_their_holes() {
+    let cube = Primitive::Cube.build();
+    let volume = |shape| {
+        emboss::text_solid(
+            &cube,
+            &Emboss {
+                pattern: Pattern::Shape(shape),
+                size: 20.0,
+                ..Emboss::default()
+            },
+        )
+        .unwrap()
+        .stats()
+        .volume
+    };
+    let disc = volume(Shape::Circle);
+    for (shape, at_most) in [
+        (Shape::Ring, 0.65),
+        (Shape::NoSign, 0.75),
+        (Shape::Smiley, 0.95),
+    ] {
+        let v = volume(shape);
+        assert!(v < disc * at_most, "{shape:?}: {v} vs disc {disc}");
+    }
 }

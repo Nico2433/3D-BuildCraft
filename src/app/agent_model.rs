@@ -222,11 +222,10 @@ impl App {
         };
         params.pattern = match a["pattern"].as_str().unwrap_or("text") {
             "text" => Pattern::Text,
-            "star" => Pattern::Shape(Shape::Star),
-            "heart" => Pattern::Shape(Shape::Heart),
-            "circle" => Pattern::Shape(Shape::Circle),
             "image" => Pattern::Image(file(a, "image")?),
-            p => return Err(format!("unknown pattern: {p}")),
+            p => {
+                Pattern::Shape(Shape::from_name(p).ok_or_else(|| format!("unknown pattern: {p}"))?)
+            }
         };
         if params.pattern == Pattern::Text && params.text.trim().is_empty() {
             return Err("text is empty".into());
@@ -277,13 +276,15 @@ impl App {
                 _ => None,
             };
             let target = target.ok_or("emboss needs exactly one selected object")?;
-            params.offset = crate::emboss::offset_at(&target.world_mesh(), params.projection, p);
+            crate::emboss::place_at(&target.world_mesh(), &mut params, p);
         }
-        self.tool = Some(Tool::Emboss {
-            params,
-            preview: Err(String::new()),
-            built: None,
-        });
+        if !a["width"].is_null() {
+            // The width stretches the pattern sideways; `size` still sets its height.
+            let width = positive(&a["width"], "width")?;
+            params.stretch =
+                crate::emboss::stretch_for_width(&params, width).map_err(|e| format!("{e:#}"))?;
+        }
+        self.tool = Some(Tool::emboss(params));
         self.apply(Action::ApplyEmboss, ctx);
         Ok(())
     }
@@ -307,7 +308,7 @@ impl App {
         // These formats carry their units and load in millimetres already.
         if matches!(
             Format::from_path(&path),
-            Some(Format::ThreeMf | Format::Gltf | Format::Glb)
+            Some(Format::ThreeMf | Format::Gltf | Format::Glb | Format::Svg)
         ) {
             units = Units::Millimeter;
         }
@@ -315,9 +316,13 @@ impl App {
         self.apply(Action::AddPath(path), ctx);
         self.wait_jobs();
         // A file that fails to load leaves a notice, which `serve_agent` returns.
-        let added = self
+        // Files dropped onto the window meanwhile stay queued for the user.
+        let (added, dropped): (Vec<_>, Vec<_>) = self
             .pending_import
-            .split_off(queued.min(self.pending_import.len()));
+            .split_off(queued.min(self.pending_import.len()))
+            .into_iter()
+            .partition(|p| p.batch.is_none());
+        self.pending_import.extend(dropped);
         let count = added.len();
         for (i, mut p) in added.into_iter().enumerate() {
             p.units = units;
@@ -327,6 +332,26 @@ impl App {
             self.finish_import(true);
         }
         Ok(())
+    }
+
+    /// `extrude_outline`: Extrude outline's border round each selected object, at once.
+    pub(super) fn agent_extrude_outline(&mut self, a: &Value) -> Result<(), String> {
+        use crate::outline::{Options, Side};
+        let height = self.scene.selection_aabb().size().z.max(0.1);
+        let opts = Options {
+            side: choice(
+                a,
+                "side",
+                Some(Side::Outside),
+                &[("outside", Side::Outside), ("inside", Side::Inside)],
+            )?,
+            width: number(a, "width", crate::outline::DEFAULT_WIDTH, 0.01..=1000.0)?,
+            height: number(a, "height", height, 0.01..=10_000.0)?,
+            keep_model: flag(a, "keep_model", true)?,
+            smooth_outer: number(a, "smooth_outer", 0.0, 0.0..=1.0)?,
+            smooth_inner: number(a, "smooth_inner", 0.0, 0.0..=1.0)?,
+        };
+        self.outline_now(opts)
     }
 
     /// `load_image`: Load image's solid from a picture, added on the floor.

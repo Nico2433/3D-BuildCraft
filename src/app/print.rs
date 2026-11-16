@@ -478,13 +478,14 @@ impl App {
         let colors = self.scene_colors();
         let slots: Vec<usize> = colors.iter().map(|&c| self.filament_slot(c)).collect();
 
-        text(ui, tr(lang, "Material type"));
         // One filament for every colour; empty while the colours use different ones.
         let mut all = match slots.first() {
             Some(&s) if slots.iter().all(|&o| o == s) => s,
             _ => names.len(),
         };
-        if self.filament_row(ui, "print_material", None, &names, &mut all) {
+        if labeled_text(ui, tr(lang, "Material type"), |ui| {
+            self.filament_row(ui, "print_material", None, &names, &mut all)
+        }) {
             for &c in &colors {
                 self.actions.push(Action::ChooseFilament(c, all));
             }
@@ -540,13 +541,14 @@ impl App {
     fn design_page(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         title(ui, tr(lang, "Design"));
-        text(ui, tr(lang, "Units"));
         let names = Units::ALL.map(|u| tr(lang, u.name()));
         let mut k = Units::ALL
             .iter()
             .position(|&u| u == self.settings.units)
             .unwrap_or(0);
-        if style::dropdown(ui, "print_units", 160.0, &names, &mut k) {
+        if labeled_text(ui, tr(lang, "Units"), |ui| {
+            style::dropdown(ui, "print_units", 160.0, &names, &mut k)
+        }) {
             self.settings.units = Units::ALL[k];
             let _ = self.settings.save();
         }
@@ -564,18 +566,12 @@ impl App {
         let mut touched = false;
         let mut scale = size.x / base.x.max(1e-6) * 100.0;
         ui.add_space(10.0);
-        text(ui, tr(lang, "Scale factor"));
-        let r = ui.add_sized(
-            [160.0, 30.0],
-            egui::DragValue::new(&mut scale)
-                .speed(0.5)
-                .range(1.0..=10_000.0)
-                .clamp_existing_to_range(false)
-                .update_while_editing(false)
-                .suffix("%"),
-        );
-        touched |= r.has_focus() || r.dragged();
-        if r.changed() {
+        let was = scale;
+        let r = labeled_text(ui, tr(lang, "Scale factor"), |ui| {
+            style::number_field(ui, "scale", &mut scale, "%", 1.0..=10_000.0, 160.0, false)
+        });
+        touched |= r.has_focus();
+        if scale != was {
             target = Some(scale / 100.0);
         }
         for (label, i) in [
@@ -584,20 +580,25 @@ impl App {
             (tr(lang, "Depth"), 1),
         ] {
             ui.add_space(10.0);
-            text(ui, label);
             let mut v = size[i] / k;
-            let r = ui.add_enabled(
-                // A flat side cannot set the others.
-                base[i] > 1e-6,
-                egui::DragValue::new(&mut v)
-                    .speed(0.2)
-                    .range(0.001..=1.0e6)
-                    .clamp_existing_to_range(false)
-                    .update_while_editing(false)
-                    .suffix(format!(" {}", tr(lang, units.label()))),
-            );
-            touched |= r.has_focus() || r.dragged();
-            if r.changed() {
+            let was = v;
+            // A flat side cannot set the others.
+            let r = labeled_text(ui, label, |ui| {
+                ui.add_enabled_ui(base[i] > 1e-6, |ui| {
+                    style::number_field(
+                        ui,
+                        label,
+                        &mut v,
+                        tr(lang, units.label()),
+                        0.001..=1.0e6,
+                        160.0,
+                        false,
+                    )
+                })
+                .inner
+            });
+            touched |= r.has_focus();
+            if v != was {
                 // Uniform, like the original: one size sets all three.
                 target = Some(v * k / base[i]);
             }
@@ -921,11 +922,19 @@ fn title(ui: &mut egui::Ui, t: &str) {
 }
 
 fn text(ui: &mut egui::Ui, t: &str) {
-    ui.label(
-        egui::RichText::new(t)
-            .size(style::MENU_FONT)
-            .color(style::TEXT),
-    );
+    ui.label(text_style(t));
+}
+
+/// `t` as [`text`] writes it.
+fn text_style(t: &str) -> egui::RichText {
+    egui::RichText::new(t)
+        .size(style::MENU_FONT)
+        .color(style::TEXT)
+}
+
+/// [`text`] over the control `add` draws, as its label ([`style::labeled`]).
+fn labeled_text<R>(ui: &mut egui::Ui, t: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    style::labeled_rich(ui, text_style(t), add)
 }
 
 fn heading_info(ui: &mut egui::Ui, t: &str) {

@@ -5,8 +5,11 @@ use crate::snapping;
 use std::sync::Arc;
 
 mod drag;
+mod emboss;
 mod frame;
 mod overlay;
+
+pub(super) use emboss::EmbossDrag;
 
 impl App {
     /// Shared traversal keeps object and face picking consistent.
@@ -128,21 +131,20 @@ impl App {
                 self.update_settle(ctx, ui, &resp, rect, aspect, box_press);
                 let snap_guides = self.update_handle_drag(ui, &resp, rect, aspect);
             if resp.drag_started_by(PointerButton::Primary) {
-                if let (Some(Tool::Emboss { .. }), Some(pos)) =
-                    (&self.tool, resp.interact_pointer_pos())
-                {
-                    let (o, d) = self.camera.ray(to_ndc(rect, pos), aspect);
-                    self.emboss_drag = self
-                        .pick(o, d)
-                        .is_some_and(|(id, _)| self.scene.selection.contains(&id));
+                // Where the button went down, so a handle is grabbed where it was pressed.
+                let pos = ui
+                    .input(|i| i.pointer.press_origin())
+                    .or(resp.interact_pointer_pos());
+                if let (Some(Tool::Emboss { .. }), Some(pos)) = (&self.tool, pos) {
+                    self.emboss_drag = self.emboss_drag_start(pos, rect, aspect);
                 }
             }
             let texture = self.texture_pointer(ui, &resp, rect, aspect);
             let settling_grab = matches!(&self.tool, Some(Tool::Settle { bodies, .. }) if bodies.iter().any(|b| b.grab.is_some()));
             if self.handle.is_some() || settling_grab || texture.grab {
                 // A transform handle or suspended body drives the pointer alone.
-            } else if self.emboss_drag && resp.dragged_by(PointerButton::Primary) {
-                    self.emboss_place(ui, &resp, rect, aspect);
+            } else if self.emboss_drag.is_some() && resp.dragged_by(PointerButton::Primary) {
+                    self.emboss_drag_update(ui, &resp, rect, aspect);
                 } else if self.marquee.is_some() {
                 // The box is drawn with the overlays and applied when the drag stops.
             } else if resp.dragged_by(PointerButton::Primary) && !marquee_modifier {

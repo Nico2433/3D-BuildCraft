@@ -1,18 +1,17 @@
 //! The flat outlines of an emboss pattern: glyphs, built-in shapes, and traced images.
 
-use super::{fonts, Emboss, Pattern, Shape};
+use super::{fonts, Emboss, Pattern};
 use anyhow::{anyhow, bail, Result};
 use glam::Vec2;
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::PathBuf;
 
 /// The pattern as closed outlines, one list of contours per piece, centred on the origin
-/// and scaled to `size`.
+/// scaled to `size` and stretched sideways by `stretch`.
 pub(super) fn pattern_outlines(e: &Emboss) -> Result<Vec<Vec<Vec<Vec2>>>> {
     let mut pieces = match &e.pattern {
         Pattern::Text => text_outlines(&e.text, e.font.as_deref(), e.size)?,
-        Pattern::Shape(s) => vec![vec![shape_outline(*s)]],
+        Pattern::Shape(s) => vec![s.outline()],
         Pattern::Image(path) => vec![image_outlines(path)?],
     };
     let (lo, hi) = pieces
@@ -28,6 +27,7 @@ pub(super) fn pattern_outlines(e: &Emboss) -> Result<Vec<Vec<Vec<Vec2>>>> {
         Pattern::Text => 1.0,
         _ => e.size / (hi.y - lo.y).max(1e-6),
     };
+    let scale = Vec2::new(scale * e.stretch, scale);
     for p in pieces.iter_mut().flatten().flatten() {
         *p = (*p - mid) * scale;
     }
@@ -83,30 +83,6 @@ fn text_outlines(text: &str, font: Option<&str>, size: f32) -> Result<Vec<Vec<Ve
             .ok_or_else(|| anyhow!("Could not read the font {family}"))?
             .map_err(|err| anyhow!("Could not read the font {family}: {err}"))
         }
-    }
-}
-
-fn shape_outline(shape: Shape) -> Vec<Vec2> {
-    let ring = |n: usize, f: &dyn Fn(f32) -> Vec2| -> Vec<Vec2> {
-        (0..n).map(|i| f(i as f32 / n as f32 * TAU)).collect()
-    };
-    match shape {
-        Shape::Circle => ring(96, &|t| Vec2::new(t.cos(), t.sin())),
-        Shape::Star => ring(10, &|t| {
-            let r = if (t / (TAU / 10.0)).round() as usize % 2 == 0 {
-                1.0
-            } else {
-                0.4
-            };
-            Vec2::new((t + FRAC_PI_2).cos(), (t + FRAC_PI_2).sin()) * r
-        }),
-        // The classic heart curve.
-        Shape::Heart => ring(96, &|t| {
-            Vec2::new(
-                16.0 * t.sin().powi(3),
-                13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos(),
-            )
-        }),
     }
 }
 

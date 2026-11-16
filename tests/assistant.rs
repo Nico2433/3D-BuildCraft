@@ -182,29 +182,80 @@ fn detected_model_lists() {
 
 #[test]
 fn agent_registration_arguments() {
-    use buildcraft3d::assistant::AgentKind;
-    let mcp = vec!["/path with spaces/buildcraft3d".into(), "--mcp".into()];
-    for (kind, prefix) in [
+    use buildcraft3d::assistant::{antigravity_config, AgentKind};
+    let url = "http://127.0.0.1:47833/mcp/0123abcd-0000-4000-8000-000000000000";
+    for (kind, args) in [
         (
             AgentKind::Claude,
-            vec!["mcp", "add", "-s", "user", "buildcraft3d", "--"],
+            vec![
+                "mcp",
+                "add",
+                "-s",
+                "user",
+                "--transport",
+                "http",
+                "buildcraft3d",
+                url,
+            ],
         ),
-        (AgentKind::Codex, vec!["mcp", "add", "buildcraft3d", "--"]),
+        (
+            AgentKind::Codex,
+            vec!["mcp", "add", "buildcraft3d", "--url", url],
+        ),
         (
             AgentKind::OpenCode,
-            vec!["mcp", "add", "--global", "buildcraft3d", "--"],
+            vec!["mcp", "add", "--global", "buildcraft3d", "--url", url],
         ),
         (
             AgentKind::Gemini,
-            vec!["mcp", "add", "-s", "user", "buildcraft3d"],
+            vec![
+                "mcp",
+                "add",
+                "-s",
+                "user",
+                "-t",
+                "http",
+                "buildcraft3d",
+                url,
+            ],
         ),
     ] {
-        let expected: Vec<String> = prefix
-            .into_iter()
-            .map(str::to_owned)
-            .chain(mcp.iter().cloned())
-            .collect();
-        assert_eq!(kind.connect_args(&mcp), Some(expected));
+        let expected: Vec<String> = args.into_iter().map(str::to_owned).collect();
+        assert_eq!(kind.connect_args(url), Some(expected), "{kind:?}");
     }
-    assert_eq!(AgentKind::Antigravity.connect_args(&mcp), None);
+    assert_eq!(AgentKind::Antigravity.connect_args(url), None);
+    let config: serde_json::Value = serde_json::from_str(&antigravity_config(url)).unwrap();
+    assert_eq!(config["mcpServers"]["buildcraft3d"]["serverUrl"], url);
+}
+
+#[test]
+fn outdated_registrations_are_told_apart() {
+    use buildcraft3d::assistant::Registration;
+    let url = "http://127.0.0.1:47833/mcp/0123abcd-0000-4000-8000-000000000000";
+    // `claude mcp list`, `codex mcp list` and Gemini CLI's list, as they print them.
+    let claude_old = "Checking MCP server health…\n\nrea: /x/rea.mjs mcp - ✔ Connected\nbuildcraft3d: flatpak run io.github.nico2433.BuildCraft3D --mcp - ✔ Connected\n";
+    let claude_new = format!("Checking MCP server health…\n\nbuildcraft3d: {url} (HTTP) - ✘ Failed to connect — ECONNREFUSED: TypeError dialing http://127.0.0.1:47833/mcp/REDACTED (ECONNREFUSED)\n");
+    let codex_new = format!("Name          Url{0:62}Bearer Token Env Var  Status   Auth\nbuildcraft3d  {url}  -                     enabled  Unknown\n", "");
+    let codex_old = "Name          Command                       Args   Env  Cwd  Status   Auth\nbuildcraft3d  /opt/buildcraft3d/buildcraft3d  --mcp  -    -    enabled  Unsupported\n";
+    let gemini_new =
+        format!("Configured MCP servers:\n\n✓ buildcraft3d: {url} (http) - Connected\n");
+    let other = "Name  Command  Status\nrea  rea.mjs  enabled\n";
+    assert_eq!(Registration::read(claude_old, url), Registration::Outdated);
+    assert_eq!(Registration::read(&claude_new, url), Registration::Current);
+    assert_eq!(Registration::read(&codex_new, url), Registration::Current);
+    assert_eq!(Registration::read(codex_old, url), Registration::Outdated);
+    assert_eq!(Registration::read(&gemini_new, url), Registration::Current);
+    assert_eq!(Registration::read(other, url), Registration::No);
+    assert_eq!(
+        Registration::read("No MCP servers configured", url),
+        Registration::No
+    );
+    // Another token or port is an older setup too.
+    let moved = "http://127.0.0.1:47834/mcp/0123abcd-0000-4000-8000-000000000000";
+    assert_eq!(
+        Registration::read(&claude_new, moved),
+        Registration::Outdated
+    );
+    // Without a URL to compare, nothing counts as current.
+    assert_eq!(Registration::read(&claude_new, ""), Registration::Outdated);
 }

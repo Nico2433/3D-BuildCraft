@@ -11,7 +11,7 @@ use crate::io::{self, Format, ModelObject, Rgba};
 use crate::mesh::{ray_aabb, ray_triangle, Aabb, Mesh};
 use crate::primitives::Primitive;
 use crate::render::{DrawItem, FrameCallback, Renderer, ViewFlags};
-use crate::scene::{Axis, Material, Object, Scene, PALETTE};
+use crate::scene::{Axis, Material, Object, Scene};
 use crate::settings::{Autosave, ColorMode, Settings, Units};
 use eframe::egui::{
     self, Align2, Color32, Key, KeyboardShortcut, Modifiers, PointerButton, Pos2, Sense, Stroke,
@@ -33,13 +33,21 @@ mod agent_model;
 mod agent_print;
 mod assistant_ui;
 mod dialogs;
+mod emboss_bar;
+mod emboss_pattern;
+mod flyout;
+mod font_preview;
 mod gizmo;
 mod icons;
+mod import;
 mod jobs;
 mod launch;
+mod live;
 mod material;
+mod outline;
 mod paint_menu;
 mod paper;
+mod paste;
 mod picking;
 mod power;
 mod print;
@@ -55,9 +63,11 @@ mod thumbs;
 mod tool_bar;
 mod top_bar;
 mod transform;
+mod update_ui;
 mod viewport;
 
 use actions::Action;
+use import::{BatchSlot, PendingImport};
 pub use launch::Launch;
 
 /// One frame at the 60 fps cap.
@@ -74,18 +84,10 @@ enum Tab {
     Edit,
     Paint,
     View,
-    Help,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
-        Tab::Insert,
-        Tab::Object,
-        Tab::Edit,
-        Tab::Paint,
-        Tab::View,
-        Tab::Help,
-    ];
+    const ALL: [Tab; 5] = [Tab::Insert, Tab::Object, Tab::Edit, Tab::Paint, Tab::View];
     fn label(self) -> &'static str {
         match self {
             Tab::Insert => "Insert",
@@ -93,7 +95,6 @@ impl Tab {
             Tab::Edit => "Edit",
             Tab::Paint => "Paint",
             Tab::View => "View",
-            Tab::Help => "Help",
         }
     }
 }
@@ -128,6 +129,13 @@ enum Tool {
         /// The scene, undo depth and unsaved flag before smoothing, for Cancel.
         before: Box<Checkpoint>,
         run: smooth::Run,
+    },
+    /// Edit → Extrude outline: a border round each selected object, previewed in the scene.
+    Outline {
+        opts: crate::outline::Options,
+        /// The scene, undo depth and unsaved flag before the tool, for Cancel.
+        before: Box<Checkpoint>,
+        run: outline::Run,
     },
     /// Fraction of faces to remove, 0..1.
     Simplify {
@@ -190,15 +198,37 @@ enum Tool {
     },
     Emboss {
         params: Emboss,
-        /// The text solid for `built`, or why it could not be made.
-        preview: Result<std::sync::Arc<Mesh>, String>,
+        /// The outlines, card and handle anchor shown for `built`, or why the pattern
+        /// cannot be applied.
+        preview: Result<std::sync::Arc<crate::emboss::Preview>, String>,
         /// What the preview was made for: the settings and the one selected object (id,
         /// mesh and transform), so undo or a new selection rebuilds it.
         built: Option<EmbossKey>,
+        /// Width and height keep their proportion when one is changed (the bar's lock).
+        lock: bool,
+        /// [`Emboss::extents`] when the tool opened: 100 % in the bottom bar.
+        opened: Vec3,
+        /// Which colour button's menu is open (0 top, 1 sides) and that menu.
+        menu: (usize, paint_menu::PaintMenu),
+        /// The Pattern menu is open.
+        pattern_menu: bool,
     },
 }
 
 impl Tool {
+    /// Emboss opening with `params`, nothing previewed yet and the size lock on.
+    fn emboss(params: Emboss) -> Self {
+        Tool::Emboss {
+            opened: params.extents(),
+            params,
+            preview: Err(String::new()),
+            built: None,
+            lock: true,
+            menu: (0, paint_menu::PaintMenu::Closed),
+            pattern_menu: false,
+        }
+    }
+
     /// A measurement with its points preset, for screenshots: see `Launch::measure`.
     fn measure_preset(spec: &str) -> Self {
         let mut points = vec![];
@@ -230,49 +260,6 @@ impl Tool {
     }
 }
 
-struct PendingImport {
-    path: PathBuf,
-    objects: Vec<ModelObject>,
-    /// The objects' meshes for drawing while the units are chosen.
-    preview: Vec<std::sync::Arc<Mesh>>,
-    units: Units,
-    replace_scene: bool,
-    /// What the file says about the model; kept when it replaces the scene.
-    info: io::ModelInfo,
-    /// Where on the floor it lands: under the pointer for a dropped file, else the centre.
-    at: Vec3,
-}
-
-impl PendingImport {
-    /// Each object's mesh, placement and colour as it will be imported: at the chosen
-    /// units, the whole file moved so its footprint is centred on `at` and it rests on
-    /// the floor; the objects keep their places relative to each other.
-    fn placed(&self) -> impl Iterator<Item = (std::sync::Arc<Mesh>, glam::Mat4, Rgba)> + '_ {
-        let shift = glam::Mat4::from_translation(self.shift());
-        self.objects
-            .iter()
-            .zip(&self.preview)
-            .map(move |(o, mesh)| (mesh.clone(), shift * self.model(o), o.color))
-    }
-
-    /// An object's placement at the chosen units, before the shift.
-    fn model(&self, o: &ModelObject) -> glam::Mat4 {
-        glam::Mat4::from_scale(Vec3::splat(self.units.to_mm())) * o.transform
-    }
-
-    /// The move that puts the whole file on the floor, centred on `at`.
-    fn shift(&self) -> Vec3 {
-        let b = self
-            .objects
-            .iter()
-            .zip(&self.preview)
-            .map(|(o, mesh)| crate::scene::cached_aabb(mesh, &self.model(o)))
-            .fold(Aabb::empty(), Aabb::union);
-        let c = b.center();
-        Vec3::new(self.at.x - c.x, self.at.y - c.y, -b.min.z)
-    }
-}
-
 /// What Copy and Cut put on the system clipboard, so the window reports the paste.
 const CLIP_TEXT: &str = "3D BuildCraft objects";
 
@@ -280,11 +267,15 @@ const CLIP_TEXT: &str = "3D BuildCraft objects";
 const REPAIRING: &str = "Repairing...";
 const LOADING: &str = "Loading...";
 const SMOOTHING: &str = "Smoothing...";
+const OUTLINING: &str = "Extruding outline...";
+const SIMPLIFYING: &str = "Simplifying...";
 
 struct Toast {
     text: String,
     until: Instant,
     error: bool,
+    /// Run when the card is clicked.
+    action: Option<Action>,
 }
 
 pub struct App {
@@ -302,12 +293,15 @@ pub struct App {
     mode: TransformMode,
     tool: Option<Tool>,
     clipboard: Vec<Object>,
+    /// Ctrl+V tracking and what the system clipboard holds, for Paste.
+    paste: paste::PasteState,
     /// Files waiting for the units dialog; the first one is shown.
     pending_import: Vec<PendingImport>,
     /// Loading and repairing, running on their own threads.
     jobs: Vec<jobs::Job>,
-    /// The Emboss tool is moving (or, with Shift, turning) the pattern.
-    emboss_drag: bool,
+    /// The Emboss tool's drag under way: placing the pattern (Shift turns it) or one of
+    /// its handles.
+    emboss_drag: Option<viewport::EmbossDrag>,
     /// Dragging one of the selection's handles (move, turn or size).
     handle: Option<viewport::HandleDrag>,
     rotate_angles: [f32; 3],
@@ -316,6 +310,8 @@ pub struct App {
     glide: Option<(OrbitCamera, OrbitCamera, Instant)>,
     /// Installed font families, loaded when the Emboss panel first needs them.
     font_list: Option<Vec<String>>,
+    /// Installed fonts loaded for the Font list's "abc" samples.
+    font_previews: font_preview::FontPreviews,
     toasts: Vec<Toast>,
     invalid: BTreeSet<u64>,
     restore: Vec<PathBuf>,
@@ -345,8 +341,11 @@ pub struct App {
     /// over the local port.
     agent: std::sync::mpsc::Receiver<agent::Request>,
     agent_tx: std::sync::mpsc::Sender<agent::Request>,
-    /// The local MCP port while the assistant needs it, or why it could not open.
+    /// The local port for `--mcp` commands while external agents are on, or why it could
+    /// not open.
     listener: Option<Result<crate::mcp::Listener, String>>,
+    /// The MCP server agents reach at their registered URL, while external agents are on.
+    mcp_http: Option<Result<crate::mcp::http::Server, String>>,
     chat: assistant_ui::ChatState,
     /// Where the screenshot the assistant asked for goes, once it is taken.
     agent_shot: Option<std::sync::mpsc::Sender<crate::mcp::Reply>>,
@@ -389,6 +388,8 @@ pub struct App {
     actions: Vec<Action>,
     /// `--screenshot`: where to save the window and how many frames to wait first.
     screenshot: Option<(PathBuf, u32)>,
+    /// A newer release and the update in progress.
+    update: update_ui::UpdateState,
 }
 
 /// A slicer's printer profiles, and the chosen printer's processes and filament slots.
@@ -500,25 +501,52 @@ impl App {
                     fixed < total,
                 );
             }
+            jobs::Done::Simplified(Some(meshes)) => {
+                self.edit(|s| {
+                    for (id, old, mesh) in meshes {
+                        // Objects edited or deleted meanwhile keep what they have now.
+                        if let Some(o) = s
+                            .get_mut(id)
+                            .filter(|o| std::sync::Arc::ptr_eq(&o.mesh, &old))
+                        {
+                            o.mesh = std::sync::Arc::new(mesh);
+                        }
+                    }
+                });
+                self.refresh_invalid();
+            }
+            jobs::Done::Simplified(None) => {
+                self.toast(tr(lang, "Simplification produced an invalid solid"), true)
+            }
             jobs::Done::Smoothed { gen, result } => self.smooth_done(gen, result),
+            jobs::Done::Outlined { gen, result } => self.outline_done(gen, result),
             jobs::Done::Loaded {
                 path,
                 replace_scene,
                 model,
                 at,
+                batch,
             } => {
-                self.queue_import(&path, replace_scene, model, at);
+                self.queue_import(&path, replace_scene, model, at, batch);
             }
+            jobs::Done::Updated { result, page } => self.update_done(result, page),
         }
     }
 
     /// Loads the file on a thread; it then goes on as `load_file` does.
     fn load_file_async(&mut self, path: &Path, replace_scene: bool, ctx: &egui::Context) {
-        self.load_file_at(path, replace_scene, Vec3::ZERO, ctx);
+        self.load_file_at(path, replace_scene, Vec3::ZERO, None, ctx);
     }
 
     /// Loads the file on a thread, to land at `at` on the floor.
-    fn load_file_at(&mut self, path: &Path, replace_scene: bool, at: Vec3, ctx: &egui::Context) {
+    fn load_file_at(
+        &mut self,
+        path: &Path,
+        replace_scene: bool,
+        at: Vec3,
+        batch: Option<BatchSlot>,
+        ctx: &egui::Context,
+    ) {
         let path = path.to_path_buf();
         self.jobs.push(jobs::Job::spawn(LOADING, 0, ctx, move |_| {
             let model = io::load(&path);
@@ -527,6 +555,7 @@ impl App {
                 replace_scene,
                 model,
                 at,
+                batch,
             }
         }));
     }
@@ -592,6 +621,17 @@ impl App {
             text: text.into(),
             until: Instant::now() + Duration::from_secs(if error { 8 } else { 4 }),
             error,
+            action: None,
+        });
+    }
+
+    /// An error notice that runs `action` when clicked; it stays a little longer.
+    fn toast_action(&mut self, text: impl Into<String>, action: Action) {
+        self.toasts.push(Toast {
+            text: text.into(),
+            until: Instant::now() + Duration::from_secs(20),
+            error: true,
+            action: Some(action),
         });
     }
 
@@ -664,110 +704,7 @@ impl App {
     /// Queues the file for import; formats with units import at once. False on error.
     fn load_file(&mut self, path: &Path, replace_scene: bool) -> bool {
         let model = io::load(path);
-        self.queue_import(path, replace_scene, model, Vec3::ZERO)
-    }
-
-    /// Queues a loaded file for import, or reports why it could not be read. A file added
-    /// to the scene waits for Import model (and its units, when the format has none), as
-    /// in the original; one that replaces the scene with known units opens at once.
-    fn queue_import(
-        &mut self,
-        path: &Path,
-        replace_scene: bool,
-        model: anyhow::Result<io::LoadedModel>,
-        at: Vec3,
-    ) -> bool {
-        let lang = self.settings.lang();
-        match model {
-            Ok(m) => {
-                let p = PendingImport {
-                    path: path.to_path_buf(),
-                    preview: m
-                        .objects
-                        .iter()
-                        .map(|o| std::sync::Arc::new(o.mesh.clone()))
-                        .collect(),
-                    objects: m.objects,
-                    info: m.info,
-                    units: Units::Millimeter,
-                    replace_scene,
-                    at,
-                };
-                if m.units_known && replace_scene {
-                    self.pending_import.insert(0, p);
-                    self.finish_import(false);
-                } else {
-                    let b = p
-                        .placed()
-                        .map(|(mesh, model, _)| crate::scene::cached_aabb(&mesh, &model))
-                        .fold(Aabb::empty(), Aabb::union);
-                    self.glide_to(&b);
-                    self.pending_import.push(p);
-                }
-                true
-            }
-            Err(e) => {
-                self.toast(
-                    format!("{} {e:#}", tr(lang, "Could not open the file:")),
-                    true,
-                );
-                false
-            }
-        }
-    }
-
-    fn finish_import(&mut self, apply_units: bool) {
-        if self.pending_import.is_empty() {
-            return;
-        }
-        let p = self.pending_import.remove(0);
-        let before = self.snapshot();
-        if p.replace_scene {
-            self.scene = Scene::default();
-            self.history.clear();
-            self.scene.name = p
-                .path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string);
-            self.scene.info = p.info.clone();
-            if Format::from_path(&p.path) == Some(Format::ThreeMf) {
-                self.scene.path = Some(p.path.clone());
-            }
-        }
-        // Opening a file keeps its placement; adding one puts it where the preview showed.
-        let k = if apply_units { p.units.to_mm() } else { 1.0 };
-        let keep = !apply_units && p.objects.len() > 1
-            || Format::from_path(&p.path) == Some(Format::ThreeMf);
-        let shift = if p.replace_scene && keep {
-            None
-        } else {
-            Some(p.shift())
-        };
-        let mut new_ids = BTreeSet::new();
-        for mut m in p.objects {
-            if k != 1.0 {
-                m.mesh = m.mesh.transformed(&glam::Mat4::from_scale(Vec3::splat(k)));
-                m.transform.w_axis = (m.transform.w_axis.truncate() * k).extend(1.0);
-            }
-            let stats = m.mesh.stats();
-            let mut obj = Object::from_model(m);
-            obj.translation += shift.unwrap_or(Vec3::ZERO);
-            let id = self.scene.add(obj);
-            if !stats.is_closed_manifold() {
-                self.invalid.insert(id);
-            }
-            new_ids.insert(id);
-        }
-        self.scene.selection = new_ids;
-        if !p.replace_scene {
-            self.history.push(before);
-        } else {
-            self.scene.dirty = false;
-        }
-        self.settings.add_recent(&p.path);
-        let _ = self.settings.save();
-        self.camera.frame(&self.scene.scene_aabb(), self.aspect);
+        self.queue_import(path, replace_scene, model, Vec3::ZERO, None)
     }
 
     fn save(&mut self, choose: bool) {
@@ -847,6 +784,13 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // Ctrl+V is followed even in a text field, so a paste there is not taken for ours.
+        let paste = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| self.paste.key.on_event(e))
+                .last()
+        });
         // Delete or Ctrl+Z while editing a number belong to the field, not the scene.
         if ctx.wants_keyboard_input() {
             return;
@@ -874,15 +818,15 @@ impl App {
                     self.actions.push(action);
                 }
             }
-            // Ctrl+C, X and V arrive as clipboard events, not as keys.
+            // Ctrl+C and X arrive as clipboard events, not as keys; V is followed above.
             for e in &i.events {
                 self.actions.extend(match e {
                     egui::Event::Copy => Some(Action::Copy),
                     egui::Event::Cut => Some(Action::Cut),
-                    egui::Event::Paste(_) => Some(Action::Paste),
                     _ => None,
                 });
             }
+            self.actions.extend(paste.map(Action::Paste));
             if i.consume_key(Modifiers::NONE, Key::Delete) {
                 self.actions.push(Action::Delete);
             }
@@ -901,8 +845,14 @@ impl App {
 impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
-        let smoothing = matches!(&self.tool, Some(Tool::Smooth { amount, edges, run, .. })
-            if !run.is_shown(*amount, *edges));
+        // A live preview that is still waiting to start.
+        let previewing = match &self.tool {
+            Some(Tool::Smooth {
+                amount, edges, run, ..
+            }) => !run.is_shown((*amount, *edges)),
+            Some(Tool::Outline { opts, run, .. }) => !run.is_shown(*opts),
+            _ => false,
+        };
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };
@@ -933,7 +883,7 @@ impl App {
             && self.jobs.is_empty()
             && self.profiles_job.is_none()
             && status_read
-            && !smoothing
+            && !previewing
         {
             *frames -= 1;
             if *frames == 0 {
@@ -987,25 +937,18 @@ impl eframe::App for App {
                 .collect()
         });
         // Pictures open Load image; models land where the pointer let them go.
-        let at = ctx
-            .input(|i| i.pointer.hover_pos())
-            .and_then(|p| self.floor_point(p))
-            .unwrap_or(Vec3::ZERO);
-        for p in dropped {
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if crate::image3d::EXTENSIONS.contains(&ext.as_str()) {
-                self.tool = Some(Tool::image(p));
-            } else {
-                self.load_file_at(&p, false, at, ctx);
-            }
+        if !dropped.is_empty() {
+            let at = ctx
+                .input(|i| i.pointer.hover_pos())
+                .and_then(|p| self.floor_point(p))
+                .unwrap_or(Vec3::ZERO);
+            self.open_dropped(dropped, at, ctx);
         }
+        self.update_step(ctx);
         let jobs_before = self.jobs.len();
         self.collect_jobs();
         self.smooth_step(ctx);
+        self.outline_step(ctx);
         self.material_step();
         self.reclaim_after_work(ctx, picking_ready || self.jobs.len() != jobs_before);
         if !self.jobs.is_empty() {
@@ -1075,6 +1018,7 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // Stop accepting agent calls and remove the endpoint before other cleanup.
         self.listener = None;
+        self.mcp_http = None;
         self.tool = None;
         self.autosave.clear();
         let _ = self.settings.save();

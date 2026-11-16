@@ -1,31 +1,36 @@
 //! Emboss ("Relieve"): text, a shape or an image raised from or engraved into an object.
 //! The pattern is laid out flat, then each point is sent along a ray towards the object
-//! (straight down, towards the vertical axis, or towards the centre) and the pattern grows
-//! out of the surface along that ray, so it follows the surface.
+//! (straight into the face it lies on, towards the vertical axis, or towards the centre)
+//! and the pattern grows out of the surface along that ray, so it follows the surface.
 
 use crate::boolean::{self, Op};
 use crate::cut::fill;
 use crate::io::Rgba;
 use crate::mesh::{ray_triangle, Mesh};
-use anyhow::{anyhow, bail, Result};
-use glam::{Vec2, Vec3};
+use anyhow::{bail, Result};
+use glam::{Mat4, Vec2, Vec3};
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 mod outlines;
+mod preview;
+mod shapes;
 use outlines::pattern_outlines;
+pub use preview::{preview, Anchor, Preview};
+pub use shapes::{shape_fill, Filled, Shape};
 
 /// How the pattern is sent onto the object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Projection {
-    /// Straight down onto the top.
+    /// Straight into the face it lies on (see [`Emboss::facing`]); the top by default.
     #[default]
     Planar,
-    /// Wrapped around the vertical axis through the object's centre, on its front (−Y).
+    /// Wrapped around the vertical axis through the object's centre, on its front (−Y),
+    /// as a label round a mug.
     Cylindrical,
-    /// Wrapped around the object's centre, on its front (−Y).
+    /// Wrapped around the object's centre, on its front (−Y), as a sticker on a ball.
     Spherical,
 }
 
@@ -54,25 +59,6 @@ pub enum Pattern {
     Image(PathBuf),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shape {
-    Star,
-    Heart,
-    Circle,
-}
-
-impl Shape {
-    pub const ALL: [Shape; 3] = [Shape::Star, Shape::Heart, Shape::Circle];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Shape::Star => "Star",
-            Shape::Heart => "Heart",
-            Shape::Circle => "Circle",
-        }
-    }
-}
-
 /// How the pattern sits on the object. Lengths in mm, angle in degrees.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Emboss {
@@ -82,15 +68,21 @@ pub struct Emboss {
     pub font: Option<String>,
     /// Capital letter height for text, overall height for shapes and images.
     pub size: f32,
+    /// Width as a multiple of the pattern's natural width at `size`: 1 keeps its own
+    /// proportions, more stretches it sideways (see [`rescale`]).
+    pub stretch: f32,
     /// Height above the surface, or depth below it when engraving.
     pub depth: f32,
     /// Turn of the pattern in its own plane.
     pub angle: f32,
-    /// Pattern centre in its own plane: from the centre of the top for planar, along the
-    /// surface from the front for cylindrical and spherical.
+    /// Pattern centre in its own plane: from the object's centre across the face it lies
+    /// on for planar, along the surface from the front for cylindrical and spherical.
     pub offset: Vec2,
     pub engrave: bool,
     pub projection: Projection,
+    /// Planar only: the outward direction of the face the pattern lies on; +Z is the top.
+    /// [`place`] sets it from the surface under the pointer.
+    pub facing: Vec3,
     /// Slopes the edges: they start at a third of the height and rise to full height.
     pub bevel: bool,
     /// Colour of the top layer and of the sides of raised patterns; `None` keeps the
@@ -106,15 +98,25 @@ impl Default for Emboss {
             text: "Text".into(),
             font: None,
             size: 10.0,
+            stretch: 1.0,
             depth: 1.0,
             angle: 0.0,
             offset: Vec2::ZERO,
             engrave: false,
             projection: Projection::Planar,
+            facing: Vec3::Z,
             bevel: false,
             top_color: None,
             side_color: None,
         }
+    }
+}
+
+impl Emboss {
+    /// Factors that grow in proportion to the pattern's width, height and depth (its
+    /// `size` × `stretch`, `size` and `depth`): what the bar's percentages compare.
+    pub fn extents(&self) -> Vec3 {
+        Vec3::new(self.size * self.stretch, self.size, self.depth)
     }
 }
 
@@ -186,33 +188,57 @@ pub fn text_solid(target: &Mesh, e: &Emboss) -> Result<Mesh> {
     Ok(out)
 }
 
-/// The `offset` that centres the pattern on `p`, a point on `target`'s surface.
-pub fn offset_at(target: &Mesh, projection: Projection, p: Vec3) -> Vec2 {
-    Frame::new(target, projection).key(p)
+/// Centres the pattern on `p`, a point on `target`'s surface whose outward normal is
+/// `normal`. A planar pattern also turns to lie on that face.
+pub fn place(target: &Mesh, e: &mut Emboss, p: Vec3, normal: Vec3) {
+    set_facing(e, normal);
+    e.offset = Frame::new(target, e.projection, e.facing).key(p);
 }
 
-/// Reuse the projection frame while dragging an immutable placed target. This avoids
-/// cloning and transforming all its vertices for every pointer movement.
-pub fn offset_at_placed(
+/// [`place`] with the normal of the surface nearest to `p`.
+pub fn place_at(target: &Mesh, e: &mut Emboss, p: Vec3) {
+    let normal = target
+        .closest_triangle(&Mat4::IDENTITY, p)
+        .map_or(e.facing, |(i, _)| {
+            let [a, b, c] = target.triangles[i].map(|v| target.positions[v as usize]);
+            Mesh::face_normal(a, b, c)
+        });
+    place(target, e, p, normal);
+}
+
+/// [`place`] on an immutable placed target, reusing the projection frame while dragging.
+/// This avoids cloning and transforming all its vertices for every pointer movement.
+pub fn place_on_placed(
     target: &std::sync::Arc<Mesh>,
-    matrix: glam::Mat4,
-    projection: Projection,
+    matrix: Mat4,
+    e: &mut Emboss,
     p: Vec3,
-) -> Vec2 {
-    type Cached = (std::sync::Weak<Mesh>, glam::Mat4, Projection, Frame);
+    normal: Vec3,
+) {
+    type Cached = (std::sync::Weak<Mesh>, Mat4, Projection, Vec3, Frame);
     thread_local! { static LAST: std::cell::RefCell<Option<Cached>> = const { std::cell::RefCell::new(None) }; }
-    LAST.with(|last| {
+    set_facing(e, normal);
+    let (projection, facing) = (e.projection, e.facing);
+    e.offset = LAST.with(|last| {
         let mut last = last.borrow_mut();
         let key = std::sync::Arc::downgrade(target);
-        if !last
-            .as_ref()
-            .is_some_and(|(m, t, kind, _)| m.ptr_eq(&key) && *t == matrix && *kind == projection)
-        {
-            let frame = Frame::new(&target.transformed(&matrix), projection);
-            *last = Some((key, matrix, projection, frame));
+        if !last.as_ref().is_some_and(|(m, t, kind, f, _)| {
+            m.ptr_eq(&key) && *t == matrix && *kind == projection && *f == facing
+        }) {
+            let frame = Frame::new(&target.transformed(&matrix), projection, facing);
+            *last = Some((key, matrix, projection, facing, frame));
         }
-        last.as_ref().unwrap().3.key(p)
-    })
+        last.as_ref().unwrap().4.key(p)
+    });
+}
+
+/// A planar pattern lies on the face whose outward normal is `normal`.
+fn set_facing(e: &mut Emboss, normal: Vec3) {
+    if e.projection == Projection::Planar {
+        if let Some(n) = normal.try_normalize() {
+            e.facing = n;
+        }
+    }
 }
 
 /// Families of the fonts installed on this computer, sorted. Loaded once.
@@ -267,7 +293,7 @@ enum Layer {
 /// One glyph (or the whole shape or image), filled, refined and sent onto the surface.
 struct Piece {
     top: Vec<[u32; 3]>,
-    /// Where each vertex meets the surface and the ray direction there.
+    /// Where each vertex meets the surface and the direction it grows into the object.
     hits: Vec<(Vec3, Vec3)>,
     /// Height fraction from the bevel, 1 without one.
     rise: Vec<f32>,
@@ -317,78 +343,266 @@ impl Piece {
     }
 }
 
-fn pieces(target: &Mesh, e: &Emboss) -> Result<Vec<Piece>> {
-    let finite = [e.size, e.depth, e.angle, e.offset.x, e.offset.y]
+/// Said when no part of the pattern lands on the object.
+const MISSES: &str = "The pattern does not fit on the object; move it onto the object";
+
+/// The pattern laid out in its plane: each piece's contours turned by the angle and moved
+/// to the offset, with their bounds and the spacing of the rays that send it onto the
+/// object.
+struct Layout {
+    pieces: Vec<Vec<Vec<Vec2>>>,
+    lo: Vec2,
+    hi: Vec2,
+    /// Half the pattern's width and height before it is turned.
+    half: Vec2,
+    step: f32,
+}
+
+fn layout(e: &Emboss) -> Result<Layout> {
+    let finite = [e.size, e.stretch, e.depth, e.angle, e.offset.x, e.offset.y]
         .iter()
         .all(|v| v.is_finite());
-    if !(finite && e.size > 0.0 && e.depth > 0.0) {
+    if !(finite && e.size > 0.0 && e.stretch > 0.0 && e.depth > 0.0) {
         bail!("Size and depth must be greater than zero");
     }
+    let mut pieces = pattern_outlines(e)?;
+    if pieces.is_empty() {
+        bail!("Nothing to emboss: type some text or pick a pattern");
+    }
+    let (lo, hi) = bounds(&pieces);
+    let half = (hi - lo) * 0.5;
+    for p in pieces.iter_mut().flatten().flatten() {
+        *p = turn(e, *p);
+    }
+    let (lo, hi) = bounds(&pieces);
+    Ok(Layout {
+        pieces,
+        lo,
+        hi,
+        half,
+        step: (e.size / 16.0).clamp(0.2, 2.0),
+    })
+}
+
+/// The corners of the box round all of `pieces`' points.
+fn bounds(pieces: &[Vec<Vec<Vec2>>]) -> (Vec2, Vec2) {
+    pieces
+        .iter()
+        .flatten()
+        .flatten()
+        .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
+            (lo.min(*p), hi.max(*p))
+        })
+}
+
+/// The pattern's width and height in mm, before it is turned: what the bottom bar shows
+/// as X and Y (for text the height is the whole line, capitals and descenders).
+pub fn pattern_size(e: &Emboss) -> Result<Vec2> {
+    let pieces = pattern_outlines(e)?;
+    if pieces.is_empty() {
+        bail!("Nothing to emboss: type some text or pick a pattern");
+    }
+    let (lo, hi) = bounds(&pieces);
+    Ok(hi - lo)
+}
+
+/// Sizes of the pattern the bar and the handles may set, in mm (the width as a stretch).
+const SIZES: std::ops::RangeInclusive<f32> = 1.0..=200.0;
+const STRETCHES: std::ops::RangeInclusive<f32> = 0.05..=20.0;
+const DEPTHS: std::ops::RangeInclusive<f32> = 0.1..=50.0;
+
+/// The stretch that makes `e` `width` mm wide, kept in the range the handles and the
+/// bar allow (0.05–20 times its natural width), so no width gives a degenerate pattern.
+pub fn stretch_for_width(e: &Emboss, width: f32) -> Result<f32> {
+    let natural = pattern_size(&Emboss {
+        stretch: 1.0,
+        ..e.clone()
+    })?
+    .x;
+    Ok((width / natural.max(1e-6)).clamp(*STRETCHES.start(), *STRETCHES.end()))
+}
+
+/// Scales one of the pattern's extents by `ratio`: `axis` 0 is its width, 1 its height
+/// (with `size`), 2 its depth. With `lock`, width and height keep their proportion (the
+/// height changes and the width follows it); without, the other one stays as it is. The
+/// depth never follows the others: it is how far the pattern stands out, not how big it
+/// is. Each stays in its range (size 1–200 mm, depth 0.1–50 mm).
+pub fn rescale(e: &mut Emboss, axis: usize, ratio: f32, lock: bool) {
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return;
+    }
+    let clamp = |v: f32, r: &std::ops::RangeInclusive<f32>| v.clamp(*r.start(), *r.end());
+    match axis {
+        0 if !lock => e.stretch = clamp(e.stretch * ratio, &STRETCHES),
+        0 | 1 => {
+            let before = e.size;
+            e.size = clamp(e.size * ratio, &SIZES);
+            if !lock {
+                // Unlocked, the height alone changes: the width keeps its mm.
+                e.stretch = clamp(e.stretch * before / e.size, &STRETCHES);
+            }
+        }
+        _ => e.depth = clamp(e.depth * ratio, &DEPTHS),
+    }
+}
+
+/// A point of the flat pattern (centred on the origin) turned by the angle and moved to
+/// the offset in the pattern plane.
+fn turn(e: &Emboss, p: Vec2) -> Vec2 {
+    let (sin, cos) = e.angle.to_radians().sin_cos();
+    e.offset + Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos)
+}
+
+/// The pieces sent onto the object. Parts whose rays miss it are cut away, so a pattern
+/// hanging over an edge stops there; it is an error only when nothing lands on it.
+fn pieces(target: &Mesh, e: &Emboss) -> Result<Vec<Piece>> {
+    let l = layout(e)?;
+    let surface = Surface::new(target, e, l.step, l.lo, l.hi);
+    let pieces: Vec<Piece> = l
+        .pieces
+        .iter()
+        .filter_map(|contours| piece(contours, e, l.step, &surface))
+        .collect();
+    if pieces.is_empty() {
+        bail!(MISSES);
+    }
+    Ok(pieces)
+}
+
+/// One piece: its outlines filled, refined so it can bend with the surface, and sent onto
+/// it; `None` when none of it lands on the object.
+fn piece(contours: &[Vec<Vec2>], e: &Emboss, step: f32, surface: &Surface) -> Option<Piece> {
     // Narrower than half a stroke of a light font, so strokes still reach full height.
     let bevel_width = e.size * 0.04;
-    let step = (e.size / 16.0).clamp(0.2, 2.0);
     // A bevel needs fine points along the outline; inside, the normal step is enough.
     let edge_step = if e.bevel {
         step.min(bevel_width / 2.0).max(0.1)
     } else {
         step
     };
-    let (sin, cos) = e.angle.to_radians().sin_cos();
-    let place = |p: Vec2| e.offset + Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos);
-    let outlines = pattern_outlines(e)?;
-    if outlines.is_empty() {
-        bail!("Nothing to emboss: type some text or pick a pattern");
+    // Outlines with no edge longer than `edge_step`.
+    let mut positions = Vec::new();
+    let mut loops = Vec::new();
+    for contour in contours {
+        let mut ids = Vec::new();
+        for a in densify(contour, edge_step) {
+            ids.push(positions.len() as u32);
+            positions.push(a.extend(0.0));
+        }
+        loops.push(ids);
     }
-    let (lo, hi) = outlines
+    // `fill` faces down; the top face must face up.
+    let flat: Vec<[u32; 3]> = fill(&positions, &loops)
+        .into_iter()
+        .map(|[a, b, c]| [a, c, b])
+        .collect();
+    let top = refine(&mut positions, flat, step);
+    let rise = if e.bevel {
+        bevel(&positions, &top, bevel_width)
+    } else {
+        vec![1.0; positions.len()]
+    };
+    let hits: Vec<_> = positions
         .iter()
-        .flatten()
-        .flatten()
-        .map(|&p| place(p))
-        .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
-    let surface = Surface::new(target, e.projection, step, lo, hi);
-    outlines
+        .map(|q| surface.hit(q.truncate()))
+        .collect();
+    clip(&top, &hits, &rise)
+}
+
+/// Keeps the triangles of `top` whose corners all land on the object, with only the
+/// vertices they use (in their order, so an uncut piece is unchanged); the walls
+/// [`Piece::solid`] builds round what is left close it.
+fn clip(top: &[[u32; 3]], hits: &[Option<(Vec3, Vec3)>], rise: &[f32]) -> Option<Piece> {
+    let kept: Vec<[u32; 3]> = top
         .iter()
-        .map(|contours| {
-            // Flat face in the pattern's plane: outlines with no edge longer than
-            // `edge_step`, filled, then refined so it can bend with the surface.
-            let mut positions = Vec::new();
-            let mut loops = Vec::new();
-            for contour in contours {
-                let mut ids = Vec::new();
-                for (i, &a) in contour.iter().enumerate() {
-                    let b = contour[(i + 1) % contour.len()];
-                    let parts = ((b - a).length() / edge_step).ceil().max(1.0) as usize;
-                    for k in 0..parts {
-                        ids.push(positions.len() as u32);
-                        positions.push(place(a.lerp(b, k as f32 / parts as f32)).extend(0.0));
-                    }
-                }
-                loops.push(ids);
+        .filter(|t| t.iter().all(|&v| hits[v as usize].is_some()))
+        .copied()
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let mut new = vec![u32::MAX; hits.len()];
+    for &v in kept.iter().flatten() {
+        new[v as usize] = 0;
+    }
+    let (mut kept_hits, mut kept_rise) = (Vec::new(), Vec::new());
+    for (v, n) in new.iter_mut().enumerate() {
+        if let (0, Some(hit)) = (*n, hits[v]) {
+            *n = kept_hits.len() as u32;
+            kept_hits.push(hit);
+            kept_rise.push(rise[v]);
+        }
+    }
+    let mut piece = Piece {
+        top: kept.iter().map(|t| t.map(|v| new[v as usize])).collect(),
+        hits: kept_hits,
+        rise: kept_rise,
+    };
+    split_pinches(&mut piece);
+    Some(piece)
+}
+
+/// Gives each fan of triangles round a vertex its own copy of that vertex. Cutting a
+/// piece at the object's edge can leave two parts touching at a single corner; sharing
+/// it, their walls would share an upright edge and the solid would not be closed.
+fn split_pinches(piece: &mut Piece) {
+    let mut around: Vec<Vec<usize>> = vec![Vec::new(); piece.hits.len()];
+    for (t, tri) in piece.top.iter().enumerate() {
+        for &v in tri {
+            around[v as usize].push(t);
+        }
+    }
+    for (v, tris) in around.iter().enumerate() {
+        // Fans: triangles round `v` joined through an edge from `v` they share.
+        let mut fan: Vec<usize> = (0..tris.len()).collect();
+        let root = |fan: &[usize], mut k: usize| {
+            while fan[k] != k {
+                k = fan[k];
             }
-            // `fill` faces down; the top face must face up.
-            let flat: Vec<[u32; 3]> = fill(&positions, &loops)
-                .into_iter()
-                .map(|[a, b, c]| [a, c, b])
-                .collect();
-            let top = refine(&mut positions, flat, step);
-            let rise = if e.bevel {
-                bevel(&positions, &top, bevel_width)
-            } else {
-                vec![1.0; positions.len()]
-            };
-            let hits = positions
-                .iter()
-                .map(|q| {
-                    surface.hit(q.truncate()).ok_or_else(|| {
-                        anyhow!(
-                            "The pattern does not fit on the object; make it smaller or move it"
-                        )
-                    })
-                })
-                .collect::<Result<_>>()?;
-            Ok(Piece { top, hits, rise })
-        })
-        .collect()
+            k
+        };
+        let others = |t: usize| piece.top[t].into_iter().filter(move |&w| w as usize != v);
+        for a in 0..tris.len() {
+            for b in a + 1..tris.len() {
+                if others(tris[a]).any(|w| others(tris[b]).any(|x| x == w)) {
+                    let (ra, rb) = (root(&fan, a), root(&fan, b));
+                    fan[ra] = rb;
+                }
+            }
+        }
+        // The first fan keeps the vertex; each other fan gets one new copy.
+        let first = root(&fan, 0);
+        let mut copies: HashMap<usize, u32> = HashMap::new();
+        for k in 0..tris.len() {
+            let lead = root(&fan, k);
+            if lead == first {
+                continue;
+            }
+            let copy = *copies.entry(lead).or_insert_with(|| {
+                piece.hits.push(piece.hits[v]);
+                piece.rise.push(piece.rise[v]);
+                piece.hits.len() as u32 - 1
+            });
+            for w in piece.top[tris[k]].iter_mut() {
+                if *w as usize == v {
+                    *w = copy;
+                }
+            }
+        }
+    }
+}
+
+/// The points along a closed `contour` with no gap longer than `step`.
+fn densify(contour: &[Vec2], step: f32) -> Vec<Vec2> {
+    let mut out = Vec::new();
+    for (i, &a) in contour.iter().enumerate() {
+        let b = contour[(i + 1) % contour.len()];
+        let parts = ((b - a).length() / step).ceil().max(1.0) as usize;
+        for k in 0..parts {
+            out.push(a.lerp(b, k as f32 / parts as f32));
+        }
+    }
+    out
 }
 
 /// Height fraction per vertex: `BEVEL_EDGE` on the outline, rising to 1 at `width` in.
@@ -441,18 +655,36 @@ fn bevel(positions: &[Vec3], top: &[[u32; 3]], width: f32) -> Vec<f32> {
         .collect()
 }
 
+/// Right, up and out for a pattern lying on a face that faces `facing`: upright on steep
+/// faces, and with up towards +Y (as seen from outside) on flat ones such as the top.
+/// Right × up is out, so the pattern reads the right way round from outside.
+fn plane_axes(facing: Vec3) -> [Vec3; 3] {
+    let n = facing.try_normalize().unwrap_or(Vec3::Z);
+    let up = if n.z.abs() < FRAC_1_SQRT_2 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let v = (up - n * n.dot(up)).normalize();
+    [v.cross(n), v, n]
+}
+
 /// Where rays start and which way they go, for a projection around `target`.
 struct Frame {
     kind: Projection,
     center: Vec3,
     radius: f32,
+    /// Planar: the pattern's right, up and out ([`plane_axes`]).
+    axes: [Vec3; 3],
+    /// Planar: how far the object reaches out from its centre.
     top: f32,
 }
 
 impl Frame {
-    fn new(target: &Mesh, kind: Projection) -> Self {
+    fn new(target: &Mesh, kind: Projection, facing: Vec3) -> Self {
         let b = target.aabb();
         let center = (b.min + b.max) * 0.5;
+        let axes = plane_axes(facing);
         let radius = target
             .positions
             .iter()
@@ -461,11 +693,17 @@ impl Frame {
                 _ => p.distance(center),
             })
             .fold(1e-3, f32::max);
+        let top = target
+            .positions
+            .iter()
+            .map(|p| (*p - center).dot(axes[2]))
+            .fold(0.0, f32::max);
         Self {
             kind,
             center,
             radius,
-            top: b.max.z,
+            axes,
+            top,
         }
     }
 
@@ -473,7 +711,7 @@ impl Frame {
     fn normal(&self, q: Vec2) -> Vec3 {
         let az = -FRAC_PI_2 + q.x / self.radius;
         match self.kind {
-            Projection::Planar => Vec3::Z,
+            Projection::Planar => self.axes[2],
             Projection::Cylindrical => Vec3::new(az.cos(), az.sin(), 0.0),
             Projection::Spherical => {
                 let el = (q.y / self.radius).clamp(-FRAC_PI_2, FRAC_PI_2);
@@ -484,15 +722,39 @@ impl Frame {
 
     /// The ray for pattern-plane point `q`: from outside the object, pointing in.
     fn ray(&self, q: Vec2) -> (Vec3, Vec3) {
+        (self.lift(q, 1.0), -self.normal(q))
+    }
+
+    /// Pattern-plane point `q` on the surface the rays start from, `h` past the object:
+    /// a plane in front of the face, a cylinder round the vertical axis or a sphere round
+    /// the centre.
+    fn lift(&self, q: Vec2, h: f32) -> Vec3 {
         let n = self.normal(q);
-        let origin = match self.kind {
-            Projection::Planar => (self.center.truncate() + q).extend(self.top + 1.0),
-            Projection::Cylindrical => {
-                self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + 1.0)
+        match self.kind {
+            Projection::Planar => {
+                let [u, v, _] = self.axes;
+                self.center + u * q.x + v * q.y + n * (self.top + h)
             }
-            Projection::Spherical => self.center + n * (self.radius + 1.0),
-        };
-        (origin, -n)
+            Projection::Cylindrical => {
+                self.center + Vec3::new(0.0, 0.0, q.y) + n * (self.radius + h)
+            }
+            Projection::Spherical => self.center + n * (self.radius + h),
+        }
+    }
+
+    /// The pattern plane's right and up at `q`, in world space.
+    fn tangents(&self, q: Vec2) -> [Vec3; 2] {
+        match self.kind {
+            Projection::Planar => [self.axes[0], self.axes[1]],
+            Projection::Cylindrical => [Vec3::Z.cross(self.normal(q)), Vec3::Z],
+            // Right along the circle of latitude, up along the meridian; at a pole, where
+            // both are undefined, as on the front.
+            Projection::Spherical => {
+                let n = self.normal(q);
+                let right = Vec3::Z.cross(n).try_normalize().unwrap_or(Vec3::X);
+                [right, n.cross(right)]
+            }
+        }
     }
 
     /// The pattern-plane point whose ray passes through `p`.
@@ -510,7 +772,7 @@ impl Frame {
             }
         };
         match self.kind {
-            Projection::Planar => d.truncate(),
+            Projection::Planar => Vec2::new(d.dot(self.axes[0]), d.dot(self.axes[1])),
             Projection::Cylindrical => Vec2::new(az() * self.radius, d.z),
             Projection::Spherical => {
                 let el = (d.z / d.length().max(1e-9)).clamp(-1.0, 1.0).asin();
@@ -531,10 +793,11 @@ struct Surface<'a> {
 }
 
 impl<'a> Surface<'a> {
-    fn new(mesh: &'a Mesh, kind: Projection, step: f32, lo: Vec2, hi: Vec2) -> Self {
+    fn new(mesh: &'a Mesh, e: &Emboss, step: f32, lo: Vec2, hi: Vec2) -> Self {
+        let kind = e.projection;
         let (area_lo, area_hi) = (lo, hi);
         let mid = (lo.x + hi.x) * 0.5;
-        let frame = Frame::new(mesh, kind);
+        let frame = Frame::new(mesh, kind, e.facing);
         let cell = step.max(0.5);
         let mut bins: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, t) in mesh.triangles.iter().enumerate() {
@@ -587,6 +850,8 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// Where the ray for `q` first meets the surface, and the direction the pattern grows
+    /// into the object there: along the ray, as the original raises and cuts it.
     fn hit(&self, q: Vec2) -> Option<(Vec3, Vec3)> {
         let (origin, dir) = self.frame.ray(q);
         let bin = (
@@ -602,7 +867,7 @@ impl<'a> Surface<'a> {
                     self.mesh.triangles[i as usize].map(|v| self.mesh.positions[v as usize]);
                 ray_triangle(origin, dir, a, b, c)
             })
-            .fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.min(t))))?;
+            .min_by(f32::total_cmp)?;
         Some((origin + dir * t, dir))
     }
 }
@@ -660,20 +925,23 @@ mod tests {
     use glam::Vec3;
 
     #[test]
-    fn placed_offset_cache_matches_world_mesh_projection() {
+    fn placed_frame_cache_matches_world_mesh_projection() {
         let target = std::sync::Arc::new(Primitive::Cube.build());
-        for projection in [
-            Projection::Planar,
-            Projection::Cylindrical,
-            Projection::Spherical,
-        ] {
+        for projection in Projection::ALL {
             for translation in [Vec3::ZERO, Vec3::new(10.0, -20.0, 30.0)] {
                 let matrix = glam::Mat4::from_translation(translation);
                 let world = target.transformed(&matrix);
-                for p in [Vec3::X, Vec3::Y, Vec3::Z] {
-                    let p = p + translation;
-                    assert!(offset_at_placed(&target, matrix, projection, p)
-                        .abs_diff_eq(offset_at(&world, projection, p), 1e-5));
+                for n in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let p = n * 20.0 + translation;
+                    let mut cached = Emboss {
+                        projection,
+                        ..Emboss::default()
+                    };
+                    let mut plain = cached.clone();
+                    place_on_placed(&target, matrix, &mut cached, p, n);
+                    place(&world, &mut plain, p, n);
+                    assert!(cached.offset.abs_diff_eq(plain.offset, 1e-5));
+                    assert_eq!(cached.facing, plain.facing);
                 }
             }
         }
@@ -793,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn patterns_reach_the_back_and_the_poles() {
+    fn patterns_reach_the_back_and_the_top() {
         // Half a turn along a radius-20 cylinder is the back (+Y).
         let back = Emboss {
             projection: Projection::Cylindrical,
@@ -807,14 +1075,22 @@ mod tests {
             "{:?}",
             t.aabb()
         );
-        // Close to the top of a sphere, where triangles meet at the pole.
+        // High on a sphere, where triangles crowd towards the pole.
         let top = Emboss {
+            projection: Projection::Cylindrical,
+            offset: Vec2::new(0.0, 14.0),
+            size: 4.0,
+            ..Emboss::default()
+        };
+        closed(&text_solid(&Primitive::Sphere.build(), &top).unwrap());
+        // Close to the top of a sphere, where triangles meet at the pole.
+        let pole = Emboss {
             projection: Projection::Spherical,
             offset: Vec2::new(0.0, 25.0),
             size: 5.0,
             ..Emboss::default()
         };
-        closed(&text_solid(&Primitive::Sphere.build(), &top).unwrap());
+        closed(&text_solid(&Primitive::Sphere.build(), &pole).unwrap());
     }
 
     #[test]
@@ -846,11 +1122,91 @@ mod tests {
                 size: 20.0,
                 ..Emboss::default()
             };
-            let t = text_solid(&Primitive::Cube.build(), &e).unwrap();
-            closed(&t);
-            let b = t.aabb();
-            assert!((b.max.y - b.min.y - 20.0).abs() < 0.01, "{s:?} {b:?}");
+            // Wide ones (the flag) are cut at the cube's edge, so the size is measured
+            // on the flat pattern.
+            closed(&text_solid(&Primitive::Cube.build(), &e).unwrap());
+            let size = pattern_size(&e).unwrap();
+            assert!((size.y - 20.0).abs() < 0.01, "{s:?} {size}");
         }
+    }
+
+    #[test]
+    fn stretching_x_makes_it_wider_not_taller() {
+        let cube = Primitive::Cube.build();
+        let e = Emboss {
+            pattern: Pattern::Shape(Shape::Circle),
+            size: 20.0,
+            ..Emboss::default()
+        };
+        let mut wide = e.clone();
+        rescale(&mut wide, 0, 1.5, false);
+        assert!((wide.stretch - 1.5).abs() < 1e-6 && wide.size == 20.0);
+        let (a, b) = (pattern_size(&e).unwrap(), pattern_size(&wide).unwrap());
+        assert!(
+            (b.x - a.x * 1.5).abs() < 0.01 && (b.y - a.y).abs() < 0.01,
+            "{a} {b}"
+        );
+        let (narrow, broad) = (
+            text_solid(&cube, &e).unwrap().aabb().size(),
+            text_solid(&cube, &wide).unwrap().aabb().size(),
+        );
+        assert!((broad.x - narrow.x * 1.5).abs() < 0.05, "{narrow} {broad}");
+        assert!((broad.y - narrow.y).abs() < 0.01, "{narrow} {broad}");
+        // Unlocked, the height alone changes and the width stays.
+        let mut tall = wide.clone();
+        rescale(&mut tall, 1, 2.0, false);
+        let c = pattern_size(&tall).unwrap();
+        assert!(
+            (c.x - b.x).abs() < 0.01 && (c.y - b.y * 2.0).abs() < 0.01,
+            "{b} {c}"
+        );
+    }
+
+    #[test]
+    fn a_width_gives_a_stretch_in_range() {
+        let e = Emboss {
+            pattern: Pattern::Shape(Shape::Circle),
+            size: 20.0,
+            stretch: 3.0,
+            ..Emboss::default()
+        };
+        let natural = pattern_size(&Emboss {
+            stretch: 1.0,
+            ..e.clone()
+        })
+        .unwrap()
+        .x;
+        // Measured from the natural width, whatever the stretch was.
+        let twice = stretch_for_width(&e, natural * 2.0).unwrap();
+        assert!((twice - 2.0).abs() < 1e-4, "{twice}");
+        assert_eq!(stretch_for_width(&e, natural * 1000.0).unwrap(), 20.0);
+        assert_eq!(stretch_for_width(&e, 1e-6).unwrap(), 0.05);
+    }
+
+    #[test]
+    fn lock_keeps_the_ratio_and_not_the_depth() {
+        let mut e = Emboss {
+            stretch: 1.4,
+            ..Emboss::default()
+        };
+        let ratio = |e: &Emboss| {
+            let s = pattern_size(e).unwrap();
+            s.x / s.y
+        };
+        let before = ratio(&e);
+        rescale(&mut e, 0, 2.0, true);
+        assert!((e.size - 20.0).abs() < 1e-4 && (e.stretch - 1.4).abs() < 1e-6);
+        assert!((ratio(&e) - before).abs() < 1e-3);
+        rescale(&mut e, 1, 0.5, true);
+        assert!((e.size - 10.0).abs() < 1e-4 && (ratio(&e) - before).abs() < 1e-3);
+        assert_eq!(e.depth, 1.0);
+        rescale(&mut e, 2, 3.0, true);
+        assert!((e.depth - 3.0).abs() < 1e-6 && (e.size - 10.0).abs() < 1e-4);
+        // The ranges hold, and a locked clamp keeps the proportion.
+        rescale(&mut e, 1, 1000.0, true);
+        assert_eq!((e.size, e.stretch), (200.0, 1.4));
+        rescale(&mut e, 2, 1000.0, true);
+        assert_eq!(e.depth, 50.0);
     }
 
     #[test]

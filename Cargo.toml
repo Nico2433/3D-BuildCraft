@@ -1,6 +1,6 @@
 [package]
 name = "buildcraft3d"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 description = "3D BuildCraft: build, repair and prepare 3D models for printing"
 license = "MIT"
@@ -32,13 +32,22 @@ epaint_default_fonts = "0.31"
 ttf-parser = "0.25"
 meshopt = "0.7"
 manifold-rust = "0.19"
+# The 2D offsets and fill rules under manifold-rust's CrossSection, for SVG strokes.
+clipper2-rust = "1.2"
 sys-locale = "0.3"
 fontdb = "0.24"
 ureq = { version = "3", features = ["json"] }
+# Checks downloaded updates against the release's SHA256SUMS (already in the lock).
+sha2 = "0.10"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 nokhwa = { version = "0.10", features = ["input-native"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Ctrl+V of a picture or of copied files; eframe already pulls it in for text. On Linux
+# the window runs through XWayland (see winit below), so its X11 clipboard is enough.
+arboard = "3.7"
 qrcode = { version = "0.14", default-features = false }
+# SVG import: parses and resolves the drawing (transforms, shapes, styles, units).
+usvg = { version = "0.45", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

@@ -49,6 +49,17 @@ fn model_tools_are_listed_once_with_their_arguments() {
         ),
         ("import", &["path", "units"]),
         ("load_image", &["path", "method", "levels", "invert"]),
+        (
+            "extrude_outline",
+            &[
+                "side",
+                "width",
+                "height",
+                "keep_model",
+                "smooth_outer",
+                "smooth_inner",
+            ],
+        ),
     ] {
         let props = &tool(name)["inputSchema"]["properties"];
         for a in args {
@@ -58,6 +69,12 @@ fn model_tools_are_listed_once_with_their_arguments() {
     // The old forms still work: split by z alone, emboss_text without a pattern.
     assert!(tool("split")["inputSchema"]["required"].is_null());
     assert!(tool("emboss_text")["inputSchema"]["required"].is_null());
+    // Every extrude_outline setting has a default.
+    assert!(tool("extrude_outline")["inputSchema"]["required"].is_null());
+    // SVG drawings come in through import and open.
+    for name in ["import", "open"] {
+        assert!(tool(name)["description"].as_str().unwrap().contains("SVG"));
+    }
 }
 
 #[test]

@@ -1,7 +1,9 @@
 //! Paint's colour menus, as the original's: the swatch list (eyedropper, more colours,
 //! recent and standard colours) and "Add to custom colours" with hue, saturation and
-//! brightness.
+//! brightness. Material and Emboss open the same menus ([`color_menu`]) with their own
+//! rows at the top.
 
+use super::flyout::{Flyout, Grid, Mark, Menu, BUTTON, ROW};
 use super::icons::Icon;
 use super::style;
 use super::*;
@@ -18,6 +20,47 @@ pub(super) enum PaintMenu {
         hsv: [f32; 3],
         hex: String,
     },
+}
+
+/// A row at the top of the swatch list, above the colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum MenuRow {
+    /// Paint's: pick the colour from the object.
+    Eyedropper,
+    /// Material's: the full picker, as More colours.
+    ChooseColor,
+    /// The full picker: hue, saturation and brightness, or a hex code.
+    MoreColors,
+    /// Emboss's: no colour of its own, the object's.
+    Background,
+}
+
+impl MenuRow {
+    fn label(self) -> &'static str {
+        match self {
+            MenuRow::Eyedropper => "Eyedropper",
+            MenuRow::ChooseColor => "Choose color",
+            MenuRow::MoreColors => "More colors...",
+            MenuRow::Background => "Use background color",
+        }
+    }
+}
+
+/// What a colour menu shows: its top rows, the recent colours (none for Material) and
+/// whether the swatches are drawn as Material's bevelled tiles.
+pub(super) struct MenuLook<'a> {
+    pub rows: &'a [MenuRow],
+    pub recent: Option<&'a [Rgba]>,
+    pub material: bool,
+}
+
+/// What a click in a colour menu chose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Picked {
+    /// A colour, from the swatches or the full picker; it is now the menu's colour.
+    Color,
+    /// The eyedropper or the background colour row.
+    Row(MenuRow),
 }
 
 /// The original's standard colours, in its order.
@@ -39,9 +82,6 @@ const STANDARD: [Rgba; 12] = [
 /// Most recent colours kept.
 pub(super) const RECENT: usize = 6;
 
-pub(super) const ROW_DARK: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
-pub(super) const ROW: Color32 = Color32::from_rgb(0x2B, 0x2B, 0x2B);
-pub(super) const BUTTON: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
 const KNOB: Color32 = Color32::from_rgb(0x88, 0x17, 0x98);
 
 fn rgb(c: Rgba) -> Color32 {
@@ -132,147 +172,80 @@ pub(super) fn selected_color(
         }
     });
     if opening {
-        *menu = match menu {
-            PaintMenu::Closed => PaintMenu::Swatches,
-            _ => PaintMenu::Closed,
-        };
+        toggle(menu);
     }
-    let mut dropper = false;
-    let ctx = ui.ctx().clone();
-    let font = egui::FontId::proportional(13.0);
+    let look = if material {
+        MenuLook {
+            rows: &[MenuRow::ChooseColor, MenuRow::MoreColors],
+            recent: None,
+            material,
+        }
+    } else {
+        MenuLook {
+            rows: &[MenuRow::Eyedropper, MenuRow::MoreColors],
+            recent: Some(recent),
+            material,
+        }
+    };
+    let at = egui::pos2(rect.right() + 12.0, rect.top() + 18.0);
+    let picked = color_menu(ui.ctx(), at, opening, lang, color, menu, &look);
+    picked == Some(Picked::Row(MenuRow::Eyedropper))
+}
+
+/// Opens the swatch list when no menu is open, else closes it: a click on the button the
+/// menus hang from.
+pub(super) fn toggle(menu: &mut PaintMenu) {
+    *menu = match menu {
+        PaintMenu::Closed => PaintMenu::Swatches,
+        _ => PaintMenu::Closed,
+    };
+}
+
+/// Whichever colour menu is open: the swatch list with its top left at `at`, or the full
+/// picker near it, both kept on screen. `opening` is true on the frame the button that
+/// opens them was clicked, so that click does not close them again. Rows that open the
+/// picker are handled here; the others, and a colour picked into `color`, are returned.
+pub(super) fn color_menu(
+    ctx: &egui::Context,
+    at: Pos2,
+    opening: bool,
+    lang: Lang,
+    color: &mut Rgba,
+    menu: &mut PaintMenu,
+    look: &MenuLook,
+) -> Option<Picked> {
+    let mut picked = None;
     match menu {
         PaintMenu::Closed => {}
         PaintMenu::Swatches => {
-            // Material has no recent colours.
-            let size = Vec2::new(337.0, if material { 252.0 } else { 349.0 });
-            let mut next = None;
-            let area = egui::Area::new(egui::Id::new("paint_swatches"))
-                .fixed_pos(egui::pos2(rect.right() + 12.0, rect.top() + 18.0))
-                .order(egui::Order::Foreground)
-                .fade_in(false)
-                .show(&ctx, |ui| {
-                    let (panel, _) = ui.allocate_exact_size(size, Sense::hover());
-                    let p = ui.painter().clone();
-                    p.rect_filled(panel, egui::CornerRadius::ZERO, ROW_DARK);
-                    let mut y = panel.top();
-                    let mut band = |h: f32, fill: Color32| {
-                        let r = egui::Rect::from_min_size(
-                            egui::pos2(panel.left(), y),
-                            Vec2::new(size.x, h),
-                        );
-                        p.rect_filled(r, egui::CornerRadius::ZERO, fill);
-                        y += h;
-                        r
-                    };
-                    let text = |r: egui::Rect, t: &str| {
-                        p.text(
-                            r.left_center() + Vec2::new(12.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            t,
-                            font.clone(),
-                            style::TEXT,
-                        )
-                    };
-                    let first = if material {
-                        "Choose color"
-                    } else {
-                        "Eyedropper"
-                    };
-                    for (k, label) in [tr(lang, first), tr(lang, "More colors...")]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let r = band(48.0, BUTTON);
-                        band(2.0, ROW);
-                        let hit = ui.interact(r, ui.id().with(("paint_row", k)), Sense::click());
-                        if hit.hovered() {
-                            p.rect_filled(r, egui::CornerRadius::ZERO, Color32::from_gray(0x63));
-                        }
-                        text(r, label);
-                        if hit.clicked() {
-                            next = Some(k);
-                        }
-                    }
-                    // Swatch rows: 20 point squares, 56 points apart.
-                    let mut swatches = |colors: &[Rgba], top: f32, ui: &mut egui::Ui| {
-                        for (k, c) in colors.iter().enumerate() {
-                            let centre = egui::pos2(
-                                panel.left() + 25.0 + (k % 6) as f32 * 56.0,
-                                top + 28.0 + (k / 6) as f32 * 56.0,
-                            );
-                            let r = egui::Rect::from_center_size(
-                                centre,
-                                Vec2::splat(if material { 28.0 } else { 20.0 }),
-                            );
-                            let hit = ui.interact(
-                                r.expand(6.0),
-                                ui.id().with(("swatch", top as i32, k)),
-                                Sense::click(),
-                            );
-                            if hit.hovered() {
-                                p.rect_stroke(
-                                    r.expand(3.0),
-                                    egui::CornerRadius::ZERO,
-                                    Stroke::new(1.0_f32, style::TEXT),
-                                    egui::StrokeKind::Inside,
-                                );
-                            }
-                            if material {
-                                bevel(&p, r, rgb(*c));
-                                if c == color {
-                                    p.rect_stroke(
-                                        r.expand(5.0),
-                                        egui::CornerRadius::ZERO,
-                                        Stroke::new(2.0_f32, style::TOGGLE_ON),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
-                            } else {
-                                p.rect_filled(r, egui::CornerRadius::ZERO, rgb(*c));
-                            }
-                            if hit.clicked() {
-                                *color = *c;
-                                next = Some(9);
-                            }
-                        }
-                    };
-                    if !material {
-                        let h = band(40.0, ROW_DARK);
-                        text(h, tr(lang, "Recent colors"));
-                        let r = band(56.0, ROW);
-                        swatches(recent, r.top(), ui);
-                    }
-                    let h = band(40.0, ROW_DARK);
-                    text(h, tr(lang, "Standard colors"));
-                    let r = band(112.0, ROW);
-                    swatches(&STANDARD, r.top(), ui);
-                });
-            match next {
-                Some(0) if !material => {
-                    dropper = true;
-                    *menu = PaintMenu::Closed;
-                }
+            let shown = Flyout::new("paint_swatches", at, 337.0)
+                .show(ctx, opening, |m| swatch_list(m, lang, color, look));
+            match shown.inner {
                 // Material's "Choose color" opens the full picker, as More colors does.
-                Some(0 | 1) => {
+                Some(Picked::Row(MenuRow::ChooseColor | MenuRow::MoreColors)) => {
                     let h = Hsva::from_srgb([color[0], color[1], color[2]]);
                     *menu = PaintMenu::More {
                         hsv: [h.h, h.s, h.v],
                         hex: hex(*color),
                     };
                 }
-                Some(_) => *menu = PaintMenu::Closed,
-                None if !opening && area.response.clicked_elsewhere() => *menu = PaintMenu::Closed,
+                Some(p) => {
+                    picked = Some(p);
+                    *menu = PaintMenu::Closed;
+                }
+                None if shown.dismissed => *menu = PaintMenu::Closed,
                 None => {}
             }
         }
         PaintMenu::More { hsv, hex: text } => {
             let size = Vec2::new(308.0, 321.0);
             let mut accept = false;
-            let area = egui::Area::new(egui::Id::new("paint_more"))
-                .fixed_pos(egui::pos2(rect.left() - 90.0, rect.top() + 47.0))
-                .order(egui::Order::Foreground)
-                .fade_in(false)
-                .show(&ctx, |ui| {
+            // Below and left of where the swatch list opens.
+            let shown = Flyout::new("paint_more", at + Vec2::new(-166.0, 29.0), size.x).show(
+                ctx,
+                opening,
+                |m| {
+                    let ui = &mut *m.ui;
                     let (panel, _) = ui.allocate_exact_size(size, Sense::hover());
                     let p = ui.painter().clone();
                     p.rect_filled(panel, egui::CornerRadius::ZERO, Color32::from_gray(0x29));
@@ -401,16 +374,66 @@ pub(super) fn selected_color(
                     if moved {
                         *text = hex(from_hsv(*hsv));
                     }
-                });
+                },
+            );
             if accept {
                 *color = from_hsv(*hsv);
+                picked = Some(Picked::Color);
                 *menu = PaintMenu::Closed;
-            } else if !opening && area.response.clicked_elsewhere() {
+            } else if shown.dismissed {
                 *menu = PaintMenu::Closed;
             }
         }
     }
-    dropper
+    picked
+}
+
+/// The swatch list: the look's rows, then the recent (if it has them) and standard
+/// colours under their headers. What a click chose; a colour goes into `color`.
+fn swatch_list(m: &mut Menu, lang: Lang, color: &mut Rgba, look: &MenuLook) -> Option<Picked> {
+    let mut picked = None;
+    for row in look.rows {
+        if m.button_row(tr(lang, row.label()), true) {
+            picked = Some(Picked::Row(*row));
+        }
+    }
+    // Rows of six squares, 56 points apart; Material's are larger bevelled tiles.
+    let grid = Grid {
+        columns: 6,
+        tile: if look.material { 28.0 } else { 20.0 },
+        pitch: 56.0,
+        first: Vec2::new(25.0, 28.0),
+        extra: 0.0,
+        fill: ROW,
+        mark: Mark::Swatch,
+    };
+    let mut swatches = |m: &mut Menu, colors: &[Rgba]| {
+        let chosen = |k: usize| look.material && colors[k] == *color;
+        let paint = |p: &egui::Painter, k: usize, r: egui::Rect| {
+            if look.material {
+                bevel(p, r, rgb(colors[k]));
+            } else {
+                p.rect_filled(r, egui::CornerRadius::ZERO, rgb(colors[k]));
+            }
+        };
+        if let Some(k) = m.tile_grid(colors.len(), &grid, chosen, paint) {
+            *color = colors[k];
+            picked = Some(Picked::Color);
+        }
+    };
+    // Material has no recent colours; an empty list still keeps its row.
+    if let Some(recent) = look.recent {
+        m.header(tr(lang, "Recent colors"));
+        if recent.is_empty() {
+            m.band(56.0, ROW);
+        } else {
+            swatches(m, recent);
+        }
+    }
+    m.header(tr(lang, "Standard colors"));
+    swatches(m, &STANDARD);
+    m.band(1.0, super::flyout::ROW_DARK);
+    picked
 }
 
 /// "DC4E62" or "#dc4e62" as a colour.

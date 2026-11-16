@@ -41,23 +41,18 @@ struct Connection {
 }
 
 impl App {
-    /// Opens or closes the local MCP port as the settings ask: external agents attach to
-    /// the open window through it.
+    /// Opens or closes the local MCP servers as the settings ask: external agents attach
+    /// to the open window at the server URL, and `--mcp` commands through the other port.
     pub(super) fn sync_listener(&mut self, ctx: &egui::Context) {
         let ai = &self.settings.ai;
-        let want = ai.enabled && ai.external;
-        match (&self.listener, want) {
-            (None, true) => {
-                let call = agent::caller(self.agent_tx.clone(), ctx.clone());
-                let started = crate::mcp::Listener::start(call).map_err(|e| format!("{e:#}"));
-                if let Err(e) = &started {
-                    log::warn!("MCP listener: {e}");
-                }
-                self.listener = Some(started);
-            }
-            (Some(_), false) => self.listener = None,
-            _ => {}
-        }
+        let (want, port) = (ai.enabled && ai.external, ai.mcp_port);
+        let call = || agent::caller(self.agent_tx.clone(), ctx.clone());
+        keep_running(&mut self.listener, want, "MCP listener", || {
+            crate::mcp::Listener::start(call())
+        });
+        keep_running(&mut self.mcp_http, want, "MCP server", || {
+            crate::mcp::http::Server::start(port, call())
+        });
     }
 
     /// Takes what the chat did since the last frame.
@@ -265,8 +260,9 @@ impl App {
     fn start_detection(&mut self, ctx: &egui::Context) {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
+        let url = assistant::mcp_url(self.settings.ai.mcp_port).unwrap_or_default();
         std::thread::spawn(move || {
-            let _ = tx.send(assistant::detect());
+            let _ = tx.send(assistant::detect(&url));
             ctx.request_repaint();
         });
         self.chat.detecting = Some(rx);
@@ -297,14 +293,25 @@ impl App {
         if self.chat.detected.is_none() && self.chat.detecting.is_none() {
             self.start_detection(ui.ctx());
         }
+        let url = assistant::mcp_url(self.settings.ai.mcp_port).map_err(|e| format!("{e:#}"));
+        let mcp_errors: Vec<String> = [
+            self.listener.as_ref().and_then(|r| r.as_ref().err()),
+            self.mcp_http.as_ref().and_then(|r| r.as_ref().err()),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
 
-        let text = |ui: &mut egui::Ui, t: &str| {
-            ui.label(
-                egui::RichText::new(t)
-                    .size(style::MENU_FONT)
-                    .color(style::TEXT),
-            );
+        let text_style = |t: &str| {
+            egui::RichText::new(t)
+                .size(style::MENU_FONT)
+                .color(style::TEXT)
         };
+        let text = |ui: &mut egui::Ui, t: &str| {
+            ui.label(text_style(t));
+        };
+
         let dim = |ui: &mut egui::Ui, t: &str| {
             ui.label(egui::RichText::new(t).color(style::TEXT_DIM));
         };
@@ -349,7 +356,6 @@ impl App {
                 {
                     {
                         egui::Grid::new("ai_api").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                            text(ui, tr(lang, "Preset"));
                             // The preset is known by its URL, and gives the protocol.
                             let preset = assistant::PRESETS.iter().find(|p| p.base_url == ai.base_url.trim());
                             if let Some(p) = preset {
@@ -364,8 +370,11 @@ impl App {
                                     names.len() - 1
                                 }
                             };
-                            let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
-                            if style::dropdown(ui, "ai_preset", width, &names, &mut k) {
+                            let picked = style::labeled_rich(ui, text_style(tr(lang, "Preset")), |ui| {
+                                let width = (ui.available_width() - 10.0).clamp(80.0, 240.0);
+                                style::dropdown(ui, "ai_preset", width, &names, &mut k)
+                            });
+                            if picked {
                                 if let Some(p) = assistant::PRESETS.get(k) {
                                     ai.protocol = p.protocol;
                                     ai.base_url = p.base_url.into();
@@ -373,15 +382,15 @@ impl App {
                                 }
                             }
                             ui.end_row();
-                            text(ui, tr(lang, "Base URL"));
-                            ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
+                            style::labeled_rich(ui, text_style(tr(lang, "Base URL")), |ui| {
+                                style::lead_target(ui, |ui| ui.add(egui::TextEdit::singleline(&mut ai.base_url).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0))))
+                            });
                             ui.end_row();
-                            text(ui, tr(lang, "Model"));
                             // A detected server offers its models; any other endpoint takes a typed name.
                             let detected = self.chat.detected.as_ref().and_then(|d| {
                                 d.servers.iter().find(|s| s.base_url == ai.base_url.trim().trim_end_matches('/'))
                             });
-                            match detected {
+                            style::labeled_rich(ui, text_style(tr(lang, "Model")), |ui| match detected {
                                 Some(server) => {
                                     // A model the server does not list stays shown as it is.
                                     let mut names: Vec<&str> = server.models.iter().map(String::as_str).collect();
@@ -397,21 +406,23 @@ impl App {
                                     }
                                 }
                                 None => {
-                                    ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0)));
+                                    style::lead_target(ui, |ui| ui.add(egui::TextEdit::singleline(&mut ai.model).desired_width((ui.available_width() - 10.0).clamp(80.0, 240.0))));
                                 }
-                            }
+                            });
                             ui.end_row();
-                            text(ui, tr(lang, "Request timeout"));
-                            ui.add(egui::DragValue::new(&mut ai.timeout).range(10..=3600).suffix(" s"));
+                            let mut secs = ai.timeout as f32;
+                            style::labeled_rich(ui, text_style(tr(lang, "Request timeout")), |ui| {
+                                style::number_field(ui, "timeout", &mut secs, "s", 10.0..=3600.0, 100.0, false)
+                            });
+                            ai.timeout = secs.round() as u32;
                             ui.end_row();
-                            text(ui, tr(lang, "API key"));
-                            ui.horizontal(|ui| {
-                                ui.add(
+                            style::labeled_rich(ui, text_style(tr(lang, "API key")), |ui| ui.horizontal(|ui| {
+                                style::lead_target(ui, |ui| ui.add(
                                     egui::TextEdit::singleline(&mut self.chat.key)
                                         .password(true)
                                         .desired_width((ui.available_width() - 90.0).clamp(60.0, 160.0))
                                         .hint_text(tr(lang, "optional")),
-                                );
+                                ));
                                 if button(ui, tr(lang, "Save key")).clicked() {
                                     let saved = assistant::set_api_key(&ai.base_url, self.chat.key.trim());
                                     self.chat.key.clear();
@@ -421,7 +432,7 @@ impl App {
                                             .map_err(|e| format!("{e:#}")),
                                     );
                                 }
-                            });
+                            }));
                             ui.end_row();
                         });
                         dim(ui, tr(lang, "The key is stored in the system keychain, never in the app's settings. Leave it empty for a local server; saving an empty key removes it."));
@@ -463,7 +474,7 @@ impl App {
                         for agent in &found.agents {
                             let kind = agent.kind;
                             let index = self.chat.connections.iter().position(|c| c.kind == kind).unwrap_or_else(|| {
-                                let enabled = agent.registered.as_ref().copied().unwrap_or(false);
+                                let enabled = agent.registered == Ok(assistant::Registration::Current);
                                 self.chat.connections.push(Connection { kind, pending: None, result: None, enabled, target: enabled });
                                 self.chat.connections.len() - 1
                             });
@@ -479,9 +490,14 @@ impl App {
                                         let (tx, rx) = std::sync::mpsc::channel();
                                         let agent = agent.clone();
                                         let ctx = ui.ctx().clone();
+                                        let url = url.clone();
                                         std::thread::spawn(move || {
-                                            let result = if enabled { assistant::connect(&agent, &assistant::mcp_command()) } else { assistant::disconnect(&agent) };
-                                            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+                                            let result = if enabled {
+                                                url.and_then(|url| assistant::connect(&agent, &url).map_err(|e| format!("{e:#}")))
+                                            } else {
+                                                assistant::disconnect(&agent).map_err(|e| format!("{e:#}"))
+                                            };
+                                            let _ = tx.send(result);
                                             ctx.request_repaint();
                                         });
                                         connection.target = enabled;
@@ -497,19 +513,36 @@ impl App {
                                     dim(ui, tr(lang, "Manage removal in the agent's settings."));
                                 }
                                 if let Err(error) = &agent.registered { dim(ui, error); }
+                                if agent.registered == Ok(assistant::Registration::Outdated) && !connection.enabled && connection.result.is_none() {
+                                    dim(ui, tr(lang, "Registered with an older setup; turn on to update."));
+                                }
                                 if let Some(Err(error)) = &connection.result { ui.colored_label(Color32::LIGHT_RED, error); }
-                                ui.collapsing(tr(lang, "Show command"), |ui| {
-                                    let cmd = assistant::mcp_command();
-                                    let args = kind.connect_args(&cmd).map(|args| std::iter::once(kind.names().1.to_owned()).chain(args).collect::<Vec<_>>()).unwrap_or(cmd);
-                                    let line = args.iter().map(|arg| format!("{arg:?}")).collect::<Vec<_>>().join(" ");
-                                    code(ui, &line, lang);
+                                ui.collapsing(tr(lang, "Show setup"), |ui| match &url {
+                                    Ok(url) => {
+                                        dim(ui, tr(lang, "Server URL:"));
+                                        code(ui, url, lang);
+                                        match kind.connect_args(url) {
+                                            Some(args) => {
+                                                let line = std::iter::once(kind.names().1.to_owned()).chain(args).map(|arg| format!("{arg:?}")).collect::<Vec<_>>().join(" ");
+                                                dim(ui, tr(lang, "Command:"));
+                                                code(ui, &line, lang);
+                                            }
+                                            None => {
+                                                dim(ui, tr(lang, "In mcp_config.json:"));
+                                                code(ui, &assistant::antigravity_config(url), lang);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        ui.colored_label(Color32::LIGHT_RED, e);
+                                    }
                                 });
                             });
                         }
                     }
                 });
-                dim(ui, tr(lang, "With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools."));
-                if let Some(Err(e)) = &self.listener {
+                dim(ui, tr(lang, "With this switch on and the app open, agents work in this window through the server URL. Nothing runs for them while the app is closed; open it before using tools."));
+                for e in &mcp_errors {
                     ui.label(egui::RichText::new(e).color(Color32::from_rgb(0xFF, 0x7A, 0x7A)));
                 }
             });
@@ -517,6 +550,27 @@ impl App {
         if self.settings.ai != before {
             let _ = self.settings.save();
         }
+    }
+}
+
+/// Starts or stops a server so it runs exactly while `want`; a failed start is kept, to be
+/// shown, until `want` turns off.
+fn keep_running<T>(
+    slot: &mut Option<Result<T, String>>,
+    want: bool,
+    what: &str,
+    start: impl FnOnce() -> anyhow::Result<T>,
+) {
+    match (slot.is_some(), want) {
+        (false, true) => {
+            let started = start().map_err(|e| format!("{e:#}"));
+            if let Err(e) = &started {
+                log::warn!("{what}: {e}");
+            }
+            *slot = Some(started);
+        }
+        (true, false) => *slot = None,
+        _ => {}
     }
 }
 

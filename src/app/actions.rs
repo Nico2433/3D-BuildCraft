@@ -18,7 +18,8 @@ pub(super) enum Action {
     Duplicate,
     Copy,
     Cut,
-    Paste,
+    /// Ctrl+V or the Paste button, with the clipboard's text when the window read it.
+    Paste(Option<String>),
     Delete,
     Settle,
     SettleInstant,
@@ -42,14 +43,20 @@ pub(super) enum Action {
     StartSmooth,
     ApplySmooth,
     ExtrudeDown,
+    StartOutline,
+    ApplyOutline,
     StartHollow,
     ApplyHollow,
     StartEmboss,
     ApplyEmboss,
+    /// Sets the Emboss tool up for a screenshot (`--tool emboss-spherical` and so on):
+    /// the part of the name after "emboss-".
+    EmbossPreset(String),
     StartPaint,
     StartMaterial,
     ApplyMaterial,
-    /// Opens Paint's colour list, or with `true` its "more colours" panel (screenshots).
+    /// Opens Paint's colour list, or with `true` its "more colours" panel; with Emboss
+    /// open, its top colour's list (screenshots).
     PaintMenu(bool),
     ApplyPaint,
     StartTexture,
@@ -93,6 +100,10 @@ pub(super) enum Action {
     Restore(PathBuf),
     DiscardRestore,
     Quit,
+    /// Opens a release page in the browser.
+    OpenReleasePage(String),
+    /// Starts the installed update and closes; asks about unsaved changes first.
+    RestartForUpdate(std::sync::Arc<crate::update::install::Restart>),
 }
 
 impl App {
@@ -100,7 +111,11 @@ impl App {
         let lang = self.settings.lang();
         let replaces_scene = matches!(
             a,
-            Action::New | Action::Open | Action::OpenPath(_) | Action::Quit
+            Action::New
+                | Action::Open
+                | Action::OpenPath(_)
+                | Action::Quit
+                | Action::RestartForUpdate(_)
         );
         if replaces_scene && self.scene.dirty && self.confirm.is_none() {
             self.confirm = Some(a);
@@ -148,16 +163,13 @@ impl App {
             Action::Duplicate => self.edit(Scene::duplicate_selected),
             action @ (Action::Copy | Action::Cut) => {
                 self.clipboard = self.scene.selected().cloned().collect();
-                // The window only reports Ctrl+V when the system clipboard holds text.
+                // Ctrl+V then knows these objects are the latest thing copied.
                 ctx.copy_text(CLIP_TEXT.into());
                 if matches!(action, Action::Cut) {
                     self.edit(Scene::delete_selected);
                 }
             }
-            Action::Paste => {
-                let clip = self.clipboard.clone();
-                self.edit(|s| s.paste(&clip));
-            }
+            Action::Paste(text) => self.paste(text, ctx),
             Action::Delete => {
                 self.edit(Scene::delete_selected);
                 self.refresh_invalid();
@@ -238,17 +250,7 @@ impl App {
             Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
             Action::ApplySimplify => {
                 if let Some(Tool::Simplify { level }) = self.tool.take() {
-                    let mut result = Ok(());
-                    self.edit(|s| result = s.simplify_selected(1.0 - level));
-                    if result.is_err() {
-                        self.toast(
-                            tr(
-                                self.settings.lang(),
-                                "Simplification produced an invalid solid",
-                            ),
-                            true,
-                        );
-                    }
+                    self.start_simplify(1.0 - level, ctx);
                 }
             }
             Action::ApplyCut => {
@@ -262,7 +264,7 @@ impl App {
                         amount: 0.0,
                         edges: true,
                         before: self.checkpoint(),
-                        run: smooth::Run::new(self.scene.selected_ids(), 0.0, true),
+                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, true)),
                     });
                 }
             }
@@ -273,6 +275,8 @@ impl App {
             Action::ExtrudeDown => {
                 self.modify_selected(|m| crate::solid::extrude_down(m, 0.0));
             }
+            Action::StartOutline => self.start_outline(),
+            Action::ApplyOutline => self.apply_outline(),
             Action::StartHollow => self.tool = Some(Tool::Hollow { wall: 1.0 }),
             Action::ApplyHollow => {
                 // The panel stays open when it fails, so the wall can be changed.
@@ -283,16 +287,13 @@ impl App {
                 }
             }
             Action::StartEmboss => {
-                self.tool = Some(Tool::Emboss {
-                    params: Emboss {
-                        text: tr(lang, "Text").to_string(),
-                        ..Emboss::default()
-                    },
-                    preview: Err(String::new()),
-                    built: None,
-                })
+                self.tool = Some(Tool::emboss(Emboss {
+                    text: tr(lang, "Text").to_string(),
+                    ..Emboss::default()
+                }))
             }
             Action::ApplyEmboss => self.apply_emboss(),
+            Action::EmbossPreset(preset) => self.emboss_preset(&preset, ctx),
             Action::StartPaint => {
                 let color = self
                     .scene
@@ -338,6 +339,9 @@ impl App {
                     } else {
                         paint_menu::PaintMenu::Swatches
                     };
+                } else if let Some(Tool::Emboss { menu, .. }) = &mut self.tool {
+                    // The top colour's swatches, for screenshots.
+                    *menu = (0, paint_menu::PaintMenu::Swatches);
                 }
             }
             Action::StartTexture => {
@@ -461,11 +465,7 @@ impl App {
             }
             Action::SetSize(size) => self.scene.resize_selection(size),
             Action::ImportConfirm => self.finish_import(true),
-            Action::ImportCancel => {
-                if !self.pending_import.is_empty() {
-                    self.pending_import.remove(0);
-                }
-            }
+            Action::ImportCancel => self.cancel_import(),
             Action::Restore(p) => {
                 // A recovery file that fails to load is kept for another try.
                 if self.load_file(&p, true) {
@@ -485,7 +485,38 @@ impl App {
                 self.scene.dirty = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Action::OpenReleasePage(page) => self.open_release_page(&page),
+            Action::RestartForUpdate(restart) => self.restart_for_update(&restart, ctx),
         }
+    }
+
+    /// Simplify runs on a thread behind a progress card: large meshes take seconds.
+    /// Every selected object is reduced or none is.
+    fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
+        let meshes: Vec<(u64, std::sync::Arc<Mesh>)> = self
+            .scene
+            .selected()
+            .map(|o| (o.id, o.mesh.clone()))
+            .collect();
+        // One object gives no steps to count, so its bar fills with time.
+        let steps = if meshes.len() > 1 {
+            meshes.len() as u32
+        } else {
+            0
+        };
+        self.jobs
+            .push(jobs::Job::spawn(SIMPLIFYING, steps, ctx, move |done| {
+                jobs::Done::Simplified(
+                    meshes
+                        .into_iter()
+                        .map(|(id, mesh)| {
+                            let reduced = mesh.try_simplified(keep).ok();
+                            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Some((id, mesh, reduced?))
+                        })
+                        .collect(),
+                )
+            }));
     }
 
     fn start_repair(&mut self, ctx: &egui::Context) {
@@ -544,6 +575,7 @@ impl App {
                 Tool::Paint { before, .. }
                 | Tool::Settle { before, .. }
                 | Tool::Smooth { before, .. }
+                | Tool::Outline { before, .. }
                 | Tool::Material { before, .. },
             ) => Some(*before),
             Some(Tool::Texture(t)) => Some(*t.before),

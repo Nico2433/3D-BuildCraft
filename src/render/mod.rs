@@ -91,6 +91,38 @@ pub struct ViewFlags {
     pub reflections: bool,
 }
 
+/// The unit square -1..1 in XY under `model`, filled with `color`.
+#[derive(Clone, Copy)]
+pub struct Slab {
+    pub model: Mat4,
+    pub color: [f32; 4],
+    /// A solid line a pixel or two wide along its border.
+    pub edge: bool,
+}
+
+/// A world-space polyline drawn `width` pixels wide whatever its distance, as tool guides
+/// are. Depth tested against the scene, nudged a little towards the eye so a line lying on
+/// a surface is not lost in it; the floor does not hide it.
+#[derive(Clone)]
+pub struct Polyline {
+    pub points: Vec<Vec3>,
+    /// Straight (not premultiplied) RGBA, 0 to 1.
+    pub color: [f32; 4],
+    /// In physical pixels.
+    pub width: f32,
+}
+
+/// One segment of a [`Polyline`] on the GPU, an instance of the line pipeline's quad.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct LineSegment {
+    /// Start (xyz) and the width in pixels (w).
+    a: [f32; 4],
+    /// End (xyz).
+    b: [f32; 4],
+    color: [f32; 4],
+}
+
 /// A sticker shown live on one item, before it is baked into the mesh.
 #[derive(Clone, Copy)]
 pub struct DecalPreview {
@@ -110,9 +142,11 @@ pub struct FrameCallback {
     pub viewport: glam::Vec2,
     /// A plane (normal, distance) whose positive side is cut away, as in the Split preview.
     pub clip: Option<(Vec3, f32)>,
-    /// A translucent square (the Split plane): the unit square -1..1 in XY under this
-    /// matrix, with its colour. Depth tested, so objects hide it.
-    pub slab: Option<(Mat4, [f32; 4])>,
+    /// Translucent squares: the Split plane and the floor bands under objects that need
+    /// repair. Depth tested, so objects hide them.
+    pub slabs: Vec<Slab>,
+    /// Tool guides, such as the Emboss preview's outlines, drawn last.
+    pub lines: Vec<Polyline>,
 }
 
 struct GpuMesh {
@@ -153,6 +187,10 @@ pub struct Renderer {
     shadow: wgpu::RenderPipeline,
     floor: wgpu::RenderPipeline,
     slab: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    /// This frame's [`LineSegment`]s and how many there are.
+    line_buf: wgpu::Buffer,
+    line_count: u32,
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -340,6 +378,37 @@ impl Renderer {
             lines: None,
             triangles: shading.triangles,
         }
+    }
+
+    /// The segments of `lines`, uploaded to `line_buf` (grown to fit).
+    fn upload_lines(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lines: &[Polyline]) {
+        let segments: Vec<LineSegment> = lines
+            .iter()
+            .flat_map(|l| {
+                l.points.windows(2).map(|w| LineSegment {
+                    a: w[0].extend(l.width).to_array(),
+                    b: w[1].extend(0.0).to_array(),
+                    color: l.color,
+                })
+            })
+            .collect();
+        let bytes: &[u8] = bytemuck::cast_slice(&segments);
+        if bytes.len() as u64 > self.line_buf.size() {
+            self.line_buf = Self::line_buffer(device, (bytes.len() as u64).next_power_of_two());
+        }
+        if !bytes.is_empty() {
+            queue.write_buffer(&self.line_buf, 0, bytes);
+        }
+        self.line_count = segments.len() as u32;
+    }
+
+    fn line_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lines"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn line_indices(triangles: &[[u32; 3]]) -> Vec<u32> {

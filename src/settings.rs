@@ -138,6 +138,8 @@ pub struct Settings {
     pub process: Option<String>,
     /// The AI assistant; its API key is in the system keychain, not here.
     pub ai: crate::assistant::Config,
+    /// Look for a newer release on GitHub at startup; off makes no network request.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -158,6 +160,7 @@ impl Default for Settings {
             process: None,
             ai: crate::assistant::Config::default(),
             libraries: Vec::new(),
+            check_updates: true,
         }
     }
 }

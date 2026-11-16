@@ -133,6 +133,14 @@ impl App {
         (!pts.is_empty()).then(|| egui::Rect::from_points(&pts))
     }
 
+    /// True when the object under `pos` in the view is selected: a press there drags it
+    /// (or, with Emboss open, the pattern).
+    pub(super) fn selection_under(&self, pos: Pos2, rect: egui::Rect, aspect: f32) -> bool {
+        let (o, d) = self.camera.ray(to_ndc(rect, pos), aspect);
+        self.pick(o, d)
+            .is_some_and(|(id, _)| self.scene.selection.contains(&id))
+    }
+
     /// Picks a handle: the bottom bar's field for its axis becomes the current one, and
     /// with it the handle stays green.
     pub(super) fn pick_handle(&mut self, kind: gizmo::Kind) {
@@ -506,7 +514,7 @@ impl App {
             Some(pos) => self.camera.ray(to_ndc(rect, pos), aspect),
             None => (Vec3::ZERO, Vec3::Z),
         };
-        let hit = self.pick(o, d);
+        let hit = self.pick_hit(o, d);
         let target = self
             .scene
             .selected()
@@ -516,10 +524,13 @@ impl App {
             if shift {
                 params.angle =
                     (params.angle + resp.drag_delta().x * 0.5 + 180.0).rem_euclid(360.0) - 180.0;
-            } else if let (Some((hit_id, p)), Some((id, mesh, matrix))) = (hit, target) {
+            } else if let (Some((hit_id, tri, t)), Some((id, mesh, matrix))) = (hit, target) {
                 if hit_id == id {
-                    params.offset =
-                        crate::emboss::offset_at_placed(&mesh, matrix, params.projection, p);
+                    // The face under the pointer, in world space: a planar pattern lies on it.
+                    let [a, b, c] = mesh.triangles[tri]
+                        .map(|v| matrix.transform_point3(mesh.positions[v as usize]));
+                    let normal = Mesh::face_normal(a, b, c);
+                    crate::emboss::place_on_placed(&mesh, matrix, params, o + d * t, normal);
                 }
             }
         }
@@ -594,7 +605,7 @@ impl App {
                 self.history.push(h.before);
             }
         }
-        self.emboss_drag = false;
+        self.emboss_drag = None;
     }
 
     /// The measure marker takes the place of the cursor.
@@ -685,6 +696,7 @@ impl App {
                         | Tool::Cut { .. }
                         | Tool::Simplify { .. }
                         | Tool::Smooth { .. }
+                        | Tool::Outline { .. }
                         | Tool::Hollow { .. }
                         | Tool::Emboss { .. }
                         | Tool::Custom { .. }

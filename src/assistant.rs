@@ -33,6 +33,8 @@ pub struct Config {
     pub timeout: u32,
     /// Lets agents outside the app attach to it over MCP.
     pub external: bool,
+    /// The local port of the MCP server agents connect to while the app is open.
+    pub mcp_port: u16,
 }
 
 impl Default for Config {
@@ -44,6 +46,7 @@ impl Default for Config {
             model: PRESETS[0].model.into(),
             timeout: 300,
             external: false,
+            mcp_port: mcp::http::DEFAULT_PORT,
         }
     }
 }
@@ -125,22 +128,49 @@ impl AgentKind {
         }
     }
 
-    /// Registration arguments, without a shell; Antigravity uses settings instead.
-    pub fn connect_args(self, mcp: &[String]) -> Option<Vec<String>> {
-        let prefix = match self {
-            Self::Claude => vec!["mcp", "add", "-s", "user", SERVER, "--"],
-            Self::Codex => vec!["mcp", "add", SERVER, "--"],
-            Self::OpenCode => vec!["mcp", "add", "--global", SERVER, "--"],
-            Self::Gemini => vec!["mcp", "add", "-s", "user", SERVER],
+    /// Arguments that register the server at `url`, without a shell; Antigravity uses
+    /// settings instead.
+    pub fn connect_args(self, url: &str) -> Option<Vec<String>> {
+        let args = match self {
+            Self::Claude => vec![
+                "mcp",
+                "add",
+                "-s",
+                "user",
+                "--transport",
+                "http",
+                SERVER,
+                url,
+            ],
+            Self::Codex => vec!["mcp", "add", SERVER, "--url", url],
+            Self::OpenCode => vec!["mcp", "add", "--global", SERVER, "--url", url],
+            Self::Gemini => vec!["mcp", "add", "-s", "user", "-t", "http", SERVER, url],
             Self::Antigravity => return None,
         };
-        Some(
-            prefix
-                .into_iter()
-                .map(str::to_owned)
-                .chain(mcp.iter().cloned())
-                .collect(),
-        )
+        Some(args.into_iter().map(str::to_owned).collect())
+    }
+}
+
+/// Whether an agent's `mcp list` shows our server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registration {
+    No,
+    /// Registered some other way, such as the `--mcp` command older versions added.
+    Outdated,
+    /// Registered with the current URL.
+    Current,
+}
+
+impl Registration {
+    /// Reads an agent's `mcp list` output.
+    pub fn read(list: &str, url: &str) -> Self {
+        if !url.is_empty() && list.contains(url) {
+            Self::Current
+        } else if list.contains(SERVER) {
+            Self::Outdated
+        } else {
+            Self::No
+        }
     }
 }
 
@@ -149,7 +179,7 @@ impl AgentKind {
 pub struct InstalledAgent {
     pub kind: AgentKind,
     pub path: std::path::PathBuf,
-    pub registered: Result<bool, String>,
+    pub registered: Result<Registration, String>,
 }
 
 /// The providers available on this computer.
@@ -159,19 +189,14 @@ pub struct Detected {
     pub agents: Vec<InstalledAgent>,
 }
 
-/// The command registered with host agents.
-pub fn mcp_command() -> Vec<String> {
-    if in_flatpak() {
-        ["flatpak", "run", "io.github.nico2433.BuildCraft3D", "--mcp"]
-            .map(str::to_owned)
-            .to_vec()
-    } else {
-        vec![
-            std::env::current_exe()
-                .map_or_else(|_| "buildcraft3d".into(), |p| p.display().to_string()),
-            "--mcp".into(),
-        ]
-    }
+/// The URL agents register: the open app's MCP server on `port`.
+pub fn mcp_url(port: u16) -> Result<String> {
+    Ok(mcp::http::url(port, &mcp::http::token()?))
+}
+
+/// Antigravity's `mcp_config.json` entry for the server at `url`.
+pub fn antigravity_config(url: &str) -> String {
+    json!({ "mcpServers": { SERVER: { "serverUrl": url } } }).to_string()
 }
 
 /// Finds executable programs on PATH, including Windows command wrappers.
@@ -235,8 +260,9 @@ pub fn parse_models(body: &str, ollama: bool) -> Result<Vec<String>> {
     Ok(models)
 }
 
-/// Probes local servers with one-second timeouts and finds installed agents.
-pub fn detect() -> Detected {
+/// Probes local servers with one-second timeouts and finds installed agents and whether
+/// they have the server at `url`.
+pub fn detect(url: &str) -> Detected {
     let mut found = Detected::default();
     let http: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(1)))
@@ -277,7 +303,7 @@ pub fn detect() -> Detected {
     ] {
         if let Some(path) = find_program(kind.names().1) {
             let registered = run_agent(&path, &["mcp".into(), "list".into()])
-                .map(|output| output.contains(SERVER))
+                .map(|output| Registration::read(&output, url))
                 .map_err(|e| format!("{e:#}"));
             found.agents.push(InstalledAgent {
                 kind,
@@ -289,12 +315,17 @@ pub fn detect() -> Detected {
     found
 }
 
-/// Registers the MCP server, capturing output and stopping after twenty seconds.
-pub fn connect(agent: &InstalledAgent, mcp: &[String]) -> Result<String> {
+/// Registers the MCP server at `url`, capturing output and stopping after twenty seconds.
+/// An outdated registration is removed first; agents that cannot remove one replace it.
+pub fn connect(agent: &InstalledAgent, url: &str) -> Result<String> {
     let args = agent
         .kind
-        .connect_args(mcp)
+        .connect_args(url)
         .ok_or_else(|| anyhow!("Use Antigravity's settings"))?;
+    if agent.registered == Ok(Registration::Outdated) {
+        // It may already be gone, if it was switched off since detection.
+        let _ = disconnect(agent);
+    }
     run_agent(&agent.path, &args)
 }
 

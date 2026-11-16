@@ -77,6 +77,8 @@ pub struct Gizmo {
     guide: Option<[Pos2; 2]>,
     /// While turning: the ring's centre and the arc swept since the drag began.
     sweep: Vec<Pos2>,
+    /// Raises [`FLOOR`] for this gizmo's handles (0 keeps it).
+    floor: f32,
 }
 
 /// The handles for `mode` around the box `b`, seen from `eye`. `radius` is the rings'
@@ -140,58 +142,29 @@ pub fn build(
             }
         }
         TransformMode::Rotate => {
-            let r = radius * 1.05;
             // Ring about each axis, its handle's point and which way positive turns go.
             let rings = [
                 (0, -Vec3::Y, -Vec3::Z),
                 (1, Vec3::Z, Vec3::X),
                 (2, Vec3::X, Vec3::Y),
             ];
-            for (axis, at, tangent) in rings {
-                let (u, v) = (at, tangent);
-                let pts: Vec<Pos2> = (0..=72)
-                    .filter_map(|i| {
-                        let t = i as f32 / 72.0 * std::f32::consts::TAU;
-                        to_screen(c + (u * t.cos() + v * t.sin()) * r)
-                    })
-                    .collect();
-                g.rings.push((pts, axis));
+            for (axis, rest, tangent) in rings {
                 let turned = match drag {
                     Some((Kind::Turn(a), d)) if a == axis => d,
                     _ => 0.0,
                 };
-                // The wedge from where the object was when the drag began to now; after a
-                // full turn it starts again from empty.
-                let wedge = turned % 360.0;
-                if wedge != 0.0 {
-                    let turned = wedge;
-                    let steps = (turned.abs() / 3.0).ceil() as usize;
-                    g.sweep = to_screen(c)
-                        .into_iter()
-                        .chain((0..=steps).filter_map(|i| {
-                            let t = (angles[axis] + turned * i as f32 / steps as f32).to_radians();
-                            to_screen(c + (u * t.cos() + v * t.sin()) * r)
-                        }))
-                        .collect();
-                }
-                let q =
-                    glam::Quat::from_axis_angle(axes[axis], (angles[axis] + turned).to_radians());
-                let radial = q * at;
-                add(
-                    Kind::Turn(axis),
-                    c + radial * r,
-                    axes[axis].cross(radial) * r * 1f32.to_radians(),
-                    1.0,
+                g.add_ring(
+                    &Ring {
+                        axis,
+                        centre: c,
+                        rest,
+                        tangent,
+                        radius: radius * 1.05,
+                        angle: angles[axis],
+                        turned,
+                    },
+                    to_screen,
                 );
-            }
-            // Turn round the ring's centre unless the ring is nearly a line on screen.
-            if let Some(centre) = to_screen(c) {
-                for h in &mut g.handles {
-                    let (radius, tangent) = (h.at - centre, h.per.normalized());
-                    if cross(radius.normalized(), tangent).abs() > 0.3 {
-                        h.pivot = Some(centre);
-                    }
-                }
             }
         }
     }
@@ -226,22 +199,106 @@ pub fn build(
     g
 }
 
+/// A turn ring: a circle of `radius` round `centre` in the plane of `rest` and `tangent`
+/// (unit, perpendicular), with the arrow handle that turns about `axis` (its
+/// [`Kind::Turn`]). The handle rests `angle` degrees from `rest` towards `tangent`, and a
+/// drag under way has `turned` it this many more.
+pub struct Ring {
+    pub axis: usize,
+    pub centre: Vec3,
+    pub rest: Vec3,
+    pub tangent: Vec3,
+    pub radius: f32,
+    pub angle: f32,
+    pub turned: f32,
+}
+
+impl Ring {
+    /// The ring's point `degrees` round from `rest`.
+    fn point(&self, degrees: f32) -> Vec3 {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        self.centre + (self.rest * cos + self.tangent * sin) * self.radius
+    }
+}
+
+/// A single turn ring with its handle, as the tools that are not objects use it (Emboss).
+pub fn ring(ring: &Ring, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
+    let mut g = Gizmo::default();
+    g.add_ring(ring, to_screen);
+    g
+}
+
 /// The Split tool's move handle: a double arrow at `at` on the plane's edge, along its
 /// `normal`.
 pub fn plane_arrow(at: Vec3, normal: Vec3, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
-    let mut g = Gizmo::default();
-    if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + normal)) {
-        g.handles.push(Handle {
-            kind: Kind::Move(0),
-            at: a,
-            per: q - a,
-            pivot: None,
-        });
+    handles(&[(Kind::Move(0), at, normal)], to_screen)
+}
+
+/// The smallest a foreshortened handle is drawn, as a fraction of the longest: on
+/// objects, and on [`handles`].
+const FLOOR: f32 = 0.35;
+const LOOSE_FLOOR: f32 = 0.8;
+
+/// Loose handles, each a kind at a point working along a direction (one unit of drag per
+/// length of it), as the tools that are not objects use them (Split, Emboss).
+pub fn handles(list: &[(Kind, Vec3, Vec3)], to_screen: &dyn Fn(Vec3) -> Option<Pos2>) -> Gizmo {
+    // Loose handles lie on one face, often seen at a steep angle; they stay readable.
+    let mut g = Gizmo {
+        floor: LOOSE_FLOOR,
+        ..Gizmo::default()
+    };
+    for &(kind, at, along) in list {
+        if let (Some(a), Some(q)) = (to_screen(at), to_screen(at + along)) {
+            g.handles.push(Handle {
+                kind,
+                at: a,
+                per: q - a,
+                pivot: None,
+            });
+        }
     }
     g
 }
 
 impl Gizmo {
+    /// Adds `r`: its circle, its handle where the drag has turned it to and, while
+    /// turning, the wedge swept since the drag began (empty again after a full turn).
+    fn add_ring(&mut self, r: &Ring, to_screen: &dyn Fn(Vec3) -> Option<Pos2>) {
+        let pts: Vec<Pos2> = (0..=72)
+            .filter_map(|i| to_screen(r.point(i as f32 * 5.0)))
+            .collect();
+        self.rings.push((pts, r.axis));
+        let wedge = r.turned % 360.0;
+        if wedge != 0.0 {
+            let steps = (wedge.abs() / 3.0).ceil() as usize;
+            self.sweep =
+                to_screen(r.centre)
+                    .into_iter()
+                    .chain((0..=steps).filter_map(|i| {
+                        to_screen(r.point(r.angle + wedge * i as f32 / steps as f32))
+                    }))
+                    .collect();
+        }
+        let now = r.angle + r.turned;
+        let at = r.point(now);
+        // One degree further round, along the ring's tangent there.
+        let (sin, cos) = now.to_radians().sin_cos();
+        let along = (r.tangent * cos - r.rest * sin) * r.radius * 1f32.to_radians();
+        let (Some(a), Some(q)) = (to_screen(at), to_screen(at + along)) else {
+            return;
+        };
+        let per = q - a;
+        // Turn round the ring's centre unless the ring is nearly a line on screen.
+        let pivot = to_screen(r.centre)
+            .filter(|c| cross((a - *c).normalized(), per.normalized()).abs() > 0.3);
+        self.handles.push(Handle {
+            kind: Kind::Turn(r.axis),
+            at: a,
+            per,
+            pivot,
+        });
+    }
+
     /// The handle under `p`, nearest first.
     pub fn grab(&self, p: Pos2) -> Option<Handle> {
         self.handles
@@ -301,14 +358,14 @@ impl Gizmo {
         for h in &self.handles {
             match h.kind {
                 Kind::Move(_) => {
-                    let len = 16.0 * (h.per.length() / longest).max(0.35);
+                    let len = 16.0 * (h.per.length() / longest).max(FLOOR.max(self.floor));
                     arrow(painter, h.at, h.per.normalized() * len, color(h.kind));
                 }
                 Kind::Turn(_) => {
                     arrow(painter, h.at, h.per.normalized() * 14.0, color(h.kind));
                 }
                 Kind::Size(_, side) => {
-                    let len = (h.per.length() / longest).max(0.35);
+                    let len = (h.per.length() / longest).max(FLOOR.max(self.floor));
                     chevrons(
                         painter,
                         h.at,
@@ -325,7 +382,7 @@ impl Gizmo {
 }
 
 /// A double arrow through `at`, `half` long each way.
-fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
+pub(super) fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
     let (a, b) = (at - half, at + half);
     painter.line_segment([a, b], Stroke::new(3.0_f32, color));
     let d = half.normalized();
@@ -345,7 +402,7 @@ fn arrow(painter: &egui::Painter, at: Pos2, half: Vec2, color: Color32) {
 }
 
 /// Two arrow heads one after the other, pointing along `out`; `out`'s length (0..1) sizes them.
-fn chevrons(painter: &egui::Painter, at: Pos2, out: Vec2, color: Color32) {
+pub(super) fn chevrons(painter: &egui::Painter, at: Pos2, out: Vec2, color: Color32) {
     let k = out.length().clamp(0.35, 1.0);
     let d = out.normalized();
     let n = d.rot90();
@@ -491,6 +548,32 @@ mod tests {
         assert!((corner.amount(corner.per) - 1.0).abs() < 1e-4);
         assert!(g.grab(corner.at + Vec2::new(3.0, 0.0)).is_some());
         assert!(g.grab(Pos2::new(500.0, 500.0)).is_none());
+    }
+
+    #[test]
+    fn a_loose_ring_turns_its_arrow_and_sweeps_the_turn() {
+        let r = Ring {
+            axis: 0,
+            centre: Vec3::new(0.0, -10.0, 10.0),
+            rest: -Vec3::X,
+            tangent: -Vec3::Z,
+            radius: 5.0,
+            angle: 0.0,
+            turned: 0.0,
+        };
+        let g = ring(&r, &screen);
+        let h = g.grab(screen(r.centre - Vec3::X * 5.0).unwrap()).unwrap();
+        assert_eq!(h.kind, Kind::Turn(0));
+        assert!(h.pivot.is_some() && g.sweep.is_empty());
+        // A quarter turn moves the arrow from the left to the bottom and sweeps between.
+        let g = ring(&Ring { turned: 90.0, ..r }, &screen);
+        let bottom = screen(r.centre - Vec3::Z * 5.0).unwrap();
+        assert!(g.handles[0].at.distance(bottom) < 1e-3);
+        assert!(g.sweep.len() > 3 && g.sweep[0] == screen(r.centre).unwrap());
+        // The pointer going round the centre turns the pattern the arrow's way.
+        let c = screen(r.centre).unwrap();
+        let turned = h.turned(h.at, c + (h.at - c).rot90()).unwrap();
+        assert!((turned.abs() - 90.0).abs() < 1e-3);
     }
 
     #[test]

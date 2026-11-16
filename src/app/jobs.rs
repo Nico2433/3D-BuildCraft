@@ -1,4 +1,4 @@
-//! Work that takes a while (loading a file, repairing) runs on its own thread while a
+//! Work that takes a while (loading a file, repairing, simplifying) runs on its own thread while a
 //! notice card shows it with a progress bar, as in the original.
 
 use crate::io::LoadedModel;
@@ -13,10 +13,17 @@ use std::time::Instant;
 pub(super) enum Done {
     /// New meshes for objects, with the mesh each one had when the job started.
     Repaired(Vec<(u64, Arc<Mesh>, Mesh)>),
+    /// Simplify's meshes, as in `Repaired`; None when a result collapsed.
+    Simplified(Option<Vec<(u64, Arc<Mesh>, Mesh)>>),
     /// The Smooth tool's preview, by object id; `gen` tells which request it answers.
     Smoothed {
         gen: u64,
         result: Result<Vec<(u64, Mesh)>, String>,
+    },
+    /// Extrude outline's preview, as `Smoothed`.
+    Outlined {
+        gen: u64,
+        result: Result<crate::outline::Outlined, String>,
     },
     Loaded {
         path: PathBuf,
@@ -24,6 +31,14 @@ pub(super) enum Done {
         model: anyhow::Result<LoadedModel>,
         /// Where on the floor it lands.
         at: glam::Vec3,
+        /// Set when it was dropped together with other files.
+        batch: Option<super::BatchSlot>,
+    },
+    /// An update downloaded and installed, ready to restart; or why not, with the release
+    /// page to offer instead.
+    Updated {
+        result: Result<crate::update::install::Restart, String>,
+        page: String,
     },
 }
 

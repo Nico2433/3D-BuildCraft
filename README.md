@@ -22,18 +22,20 @@ macOS builds are planned but not published yet.
 ## What it does
 
 **Files**
-- Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window. Unitless formats (STL, OBJ, PLY) ask for the units.
+- Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window (several models dropped together are previewed side by side and imported with one confirm and one units choice). Unitless formats (STL, OBJ, PLY) ask for the units.
+- Import SVG drawings: filled areas (with their holes) and stroked lines become 3 mm solids, one object per colour, at the drawing's real size.
 - Undo/redo, autosave with recovery after a crash, recent files, start screen.
+- Updates: at startup the app looks for a newer release on GitHub (Settings > Check for updates turns it off, and then nothing is sent). A bar under the start screen's tiles offers it; after a confirmation the Flatpak, AppImage, MSI or portable zip updates itself and restarts. Other builds open the release page.
 - About the model: title, designer, copyright, license terms and description, kept in the 3MF metadata. The window title follows the model title.
 
 **Building**
 - Shapes: cube, cylinder, pyramid, cone, sphere, hexagon, wedge, torus, tetrahedron (40 mm), and Custom with subdivisions, size, roundness and a wireframe option.
 - Add dialog: recent files as thumbnails, local 3D libraries (your own folders, browsed and searched with thumbnails), Load image as a height relief or an outline, Camera (a webcam photo).
 - Select (click, Ctrl/Shift for more, box selection), move, rotate and scale with handles or exact values in the bottom bar. Objects snap to each other's edges and centres with alignment guides; hold Alt while dragging to turn snapping off.
-- Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances.
-- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down.
-- Emboss text (bundled or installed font), a shape or an image onto an object: planar, cylindrical or spherical, raised or engraved, with bevel and separate top and side colours.
-- Open or non-manifold meshes are flagged with a red box and can be repaired.
+- Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances. Ctrl+V of a picture from the clipboard (a screenshot, an image copied in a browser) opens Load image with it; Ctrl+V of files copied in a file manager imports them as a drop.
+- Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains, with sharp corners and separate smoothing for its outer and inner edges).
+- Emboss text (bundled or installed font, each shown with an "abc" sample in the Font list), one of 19 shapes (stars, arrow, chevron, cloud, ring, wave, heart, lightning, moon, crosses, no sign, circle, square, smiley, triangle, flag and more, from the original-style Pattern menu) or an image onto an object: planar onto any face (top, sides, bottom or slanted; drag it there), cylindrical (wrapped round the object like a label) or spherical (wrapped round its centre), raised or engraved, with bevel and separate top and side colours (from Paint's colour menu, or the object's own). It rises (or is cut) along the projection, as the original's. While it is open the pattern shows as white outlines where it lands, with the flat card it is projected from floating in front (and the projection cylinder for Cylindrical, a wire sphere round the object for Spherical), the object hiding the parts behind it; drag it over the object to move it or its two arrows (Move) to slide it along one direction, drag the arrow on its turn ring (Rotate) to turn it, as an object's, or the edge arrows and corner dot (Scale) to stretch or size it. The bottom bar sizes it as X (width), Y (height) and Z (depth) in mm or %, with a lock that keeps width and height in proportion. Parts past the object's edge are cut off.
+- Open or non-manifold meshes are flagged with a red rectangle on the floor and can be repaired.
 
 **Painting**
 - Colour per object, or paint areas with a Coverage slider (kept in 3MF).
@@ -54,15 +56,17 @@ macOS builds are planned but not published yet.
 
 The assistant button in the top bar opens a chat with Chat and Settings tabs. Settings turns the assistant on and picks what it talks to: an installed agent (Claude Code or Codex, found on PATH), a command of your own, or a model endpoint (OpenAI-compatible such as Ollama, LM Studio, OpenAI or OpenRouter, or Anthropic-compatible). API keys go to the system keychain, never to the settings file.
 
-The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file, load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
+The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, extrude an outline, split with a level or slanted plane, emboss text, shapes or pictures, colour, paint an area, materials, textures and stickers, add a file (SVG too), load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
 
-The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)" and add the command to your agent, for example with Claude Code:
+The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)": while the app is open, it serves MCP over HTTP at a local URL, `http://127.0.0.1:47833/mcp/<token>`, and stops when the app closes. The agent starts no process of ours; it talks to the open window. The settings list the agents found on this computer (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity) with a switch that registers the URL, and show the URL and the command to copy, for example:
 
 ```bash
-claude mcp add buildcraft3d -- /path/to/buildcraft3d --mcp
+claude mcp add -s user --transport http buildcraft3d http://127.0.0.1:47833/mcp/<token>
 ```
 
-With the app open, `--mcp` attaches to that window through a local port (127.0.0.1, with a token in a file only you can read); otherwise it opens a window of its own.
+The token is made once and kept in the config folder (readable by you only), so the URL stays the same between runs; the port is `mcp_port` under `[ai]` in the settings file. Registrations from older versions (the `--mcp` command) show as outdated; turning the switch on replaces them.
+
+`buildcraft3d --mcp` still serves MCP on stdio, for custom commands and clients without HTTP: with the app open it attaches to that window through a local port (127.0.0.1, with a token in a file only you can read); otherwise it opens a window of its own.
 
 ## Not yet
 
@@ -89,6 +93,8 @@ Packages are built locally with the scripts in `packaging/`:
 - `packaging/flatpak/io.github.nico2433.BuildCraft3D.yml`: Flatpak manifest for `flatpak-builder`.
 - `packaging/appimage/build-appimage.sh`: AppImage linked against glibc 2.31 (cargo-zigbuild, zig, appimagetool).
 
+Releases are GitHub pre-releases tagged `vX.Y.Z` (the in-app update reads the release list and takes the highest tag). Keep the asset names `buildcraft3d-linux-x86_64.flatpak`, `buildcraft3d-linux-x86_64.AppImage`, `buildcraft3d-windows-x64.msi` and `buildcraft3d-windows-x64.zip` (with `buildcraft3d.exe` inside): the updater looks for them by name. Also attach a `SHA256SUMS` file (`sha256sum buildcraft3d-* > SHA256SUMS` in `dist/`); when a release has one, every download is checked against it.
+
 ## Screenshots
 
 The window can save itself as a PNG and quit, which is how the pictures in `docs/screenshots/` are made:
@@ -99,10 +105,11 @@ cargo run --release -- model.3mf --select-all --lang en --size 1920x1080 --zoom 
 
 Options that open a given state:
 
-- `--tab insert|object|edit|paint|view|help`, `--mode move|rotate|scale`, `--menu`, `--select-all`
-- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
-- `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`
+- `--tab insert|object|edit|paint|view`, `--mode move|rotate|scale`, `--menu`, `--select-all`
+- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
+- `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`, `start`, `update`
 - `--image <file>` opens Load image, `--library <folder>` a 3D library
+- `--fake-update 0.1.14` shows that version as available without asking GitHub (`--tool update` opens its question); `BUILDCRAFT3D_FAKE_VERSION=0.1.0` makes a normal run believe it is that version, to test a real check
 
 Development notes (architecture, decisions, progress log and the study of the original app) are in [docs/dev](docs/dev/README.md).
 

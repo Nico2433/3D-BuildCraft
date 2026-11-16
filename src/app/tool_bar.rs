@@ -79,6 +79,11 @@ impl App {
                             Some(Tool::Smooth { .. }) => {
                                 Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
                             }
+                            Some(Tool::Outline { .. }) => Some((
+                                tr(lang, "Extrude outline"),
+                                Action::ApplyOutline,
+                                self.outline_ready(),
+                            )),
                             Some(Tool::Hollow { .. }) => {
                                 Some((tr(lang, "Hollow"), Action::ApplyHollow, true))
                             }
@@ -180,12 +185,13 @@ impl App {
     fn tool_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         let units = self.settings.units;
-        if let Some(p) = self.pending_import.first_mut() {
+        // One choice applies to every file shown, as files dropped together share it.
+        if let Some(chosen) = self.import_units() {
             style::label(ui, tr(lang, "File units"));
             ui.add_space(12.0);
             for u in Units::ALL {
-                if unit_choice(ui, tr(lang, u.label()), p.units == u).clicked() {
-                    p.units = u;
+                if unit_choice(ui, tr(lang, u.label()), chosen == u).clicked() {
+                    self.set_import_units(u);
                 }
             }
             return;
@@ -205,14 +211,13 @@ impl App {
             Some(Tool::Simplify { level }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Reduction level"));
-                ui.spacing_mut().slider_width = 360.0;
                 let max_level = self
                     .scene
                     .selected()
                     .map(|o| 1.0 - 4.0 / o.mesh.triangles.len().max(4) as f32)
                     .fold(0.99_f32, f32::min);
                 *level = level.clamp(0.0, max_level);
-                ui.add(egui::Slider::new(level, 0.0..=max_level).show_value(false));
+                style::slider(ui, level, 0.0..=max_level, 360.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let faces: usize = self.scene.selected().map(|o| o.mesh.triangles.len()).sum();
                 let kept: usize = self
@@ -234,14 +239,59 @@ impl App {
                 style::label(ui, tr(lang, "Smoothness"));
                 style::slider(ui, amount, 0.0..=1.0, 250.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Smooth edges"));
-                style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"));
+                style::labeled(ui, tr(lang, "Smooth edges"), |ui| {
+                    style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"))
+                });
+            }
+            Some(Tool::Outline { opts, .. }) => {
+                use crate::outline::Side;
+                ui.add_space(12.0);
+                let names = Side::ALL.map(|s| tr(lang, s.label()));
+                let mut k = Side::ALL.iter().position(|s| *s == opts.side).unwrap_or(0);
+                if style::labeled(ui, tr(lang, "Side"), |ui| {
+                    style::dropdown(ui, "outline_side", 120.0, &names, &mut k)
+                }) {
+                    opts.side = Side::ALL[k];
+                }
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                // Width above height, their labels in one column.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (key, v, range) in [
+                        ("Width", &mut opts.width, 0.1..=50.0),
+                        ("Height", &mut opts.height, 0.1..=1000.0),
+                    ] {
+                        ui.horizontal(|ui| {
+                            style::labeled_wide(ui, tr(lang, key), 64.0, |ui| {
+                                style::unit_field(ui, key, v, "mm", range)
+                            });
+                        });
+                    }
+                });
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                // Outer and inner edge smoothing, stacked as the sizes are.
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (key, v) in [
+                        ("Outer smoothing", &mut opts.smooth_outer),
+                        ("Inner smoothing", &mut opts.smooth_inner),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let label = style::label(ui, tr(lang, key));
+                            ui.add_space((150.0 - label.rect.width()).max(0.0));
+                            style::slider(ui, v, 0.0..=1.0, 200.0, 0);
+                        });
+                    }
+                });
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                style::labeled(ui, tr(lang, "Keep model"), |ui| {
+                    style::switch(ui, &mut opts.keep_model, tr(lang, "On"), tr(lang, "Off"))
+                });
             }
             Some(Tool::Hollow { wall }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Minimum wall thickness"));
-                ui.spacing_mut().slider_width = 360.0;
-                ui.add(egui::Slider::new(wall, 0.5..=10.0).show_value(false));
+                style::slider(ui, wall, 0.5..=10.0, 360.0, 0);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
@@ -261,9 +311,11 @@ impl App {
                     ),
                 );
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                style::label(ui, tr(lang, "Snap"));
-                if style::switch(ui, &mut self.settings.snap, tr(lang, "On"), tr(lang, "Off"))
-                    .changed()
+                let snap = &mut self.settings.snap;
+                if style::labeled(ui, tr(lang, "Snap"), |ui| {
+                    style::switch(ui, snap, tr(lang, "On"), tr(lang, "Off"))
+                })
+                .changed()
                 {
                     let _ = self.settings.save();
                 }
@@ -284,36 +336,42 @@ impl App {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 7.0;
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Wireframe"));
-                        style::switch(ui, wire, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Wireframe"), |ui| {
+                            style::switch(ui, wire, tr(lang, "On"), tr(lang, "Off"))
+                        });
                         style::separator(ui, style::FIELD_H, style::BLUE_FIELD_BORDER);
-                        style::label(ui, tr(lang, "Shape"));
                         let names = CUSTOM_SHAPES.map(|p| tr(lang, p.label()));
                         let mut k = CUSTOM_SHAPES.iter().position(|p| p == shape).unwrap_or(0);
-                        if style::dropdown(ui, "custom_shape", 82.0, &names, &mut k) {
+                        if style::labeled(ui, tr(lang, "Shape"), |ui| {
+                            style::dropdown(ui, "custom_shape", 82.0, &names, &mut k)
+                        }) {
                             *shape = CUSTOM_SHAPES[k];
                         }
                         for (label, v) in [
                             (tr(lang, "Latitude"), &mut *lat),
                             (tr(lang, "Longitude"), &mut *lon),
                         ] {
-                            style::label(ui, label);
-                            number_dropdown(ui, label, &SEGMENTS, v);
+                            style::labeled(ui, label, |ui| {
+                                number_dropdown(ui, label, &SEGMENTS, v)
+                            });
                         }
-                        style::label(ui, tr(lang, "Width"));
-                        style::unit_field(ui, width, "mm", 1.0..=1000.0);
+                        style::labeled(ui, tr(lang, "Width"), |ui| {
+                            style::unit_field(ui, "width", width, "mm", 1.0..=1000.0)
+                        });
                     });
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Height"));
-                        style::unit_field(ui, height, "mm", 1.0..=1000.0);
-                        style::label(ui, tr(lang, "Roundness"));
+                        style::labeled(ui, tr(lang, "Height"), |ui| {
+                            style::unit_field(ui, "height", height, "mm", 1.0..=1000.0)
+                        });
                         let mut r = *roundness as usize;
-                        number_dropdown(
-                            ui,
-                            "roundness",
-                            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                            &mut r,
-                        );
+                        style::labeled(ui, tr(lang, "Roundness"), |ui| {
+                            number_dropdown(
+                                ui,
+                                "roundness",
+                                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                                &mut r,
+                            )
+                        });
                         *roundness = r as u8;
                     });
                 });
@@ -335,10 +393,11 @@ impl App {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 7.0;
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Method"));
                         let names = Mode::ALL.map(|m| tr(lang, m.label()));
                         let mut k = Mode::ALL.iter().position(|m| *m == opts.mode).unwrap_or(0);
-                        if style::dropdown(ui, "image_method", 180.0, &names, &mut k) {
+                        if style::labeled(ui, tr(lang, "Method"), |ui| {
+                            style::dropdown(ui, "image_method", 180.0, &names, &mut k)
+                        }) {
                             opts.mode = Mode::ALL[k];
                         }
                         ui.add_space(24.0);
@@ -351,11 +410,13 @@ impl App {
                         style::slider(ui, &mut opts.smooth, 0.0..=1.0, 250.0, 9);
                     });
                     ui.horizontal(|ui| {
-                        style::label(ui, tr(lang, "Textures"));
-                        style::switch(ui, &mut opts.textures, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Textures"), |ui| {
+                            style::switch(ui, &mut opts.textures, tr(lang, "On"), tr(lang, "Off"))
+                        });
                         ui.add_space(24.0);
-                        style::label(ui, tr(lang, "Invert"));
-                        style::switch(ui, &mut opts.invert, tr(lang, "On"), tr(lang, "Off"));
+                        style::labeled(ui, tr(lang, "Invert"), |ui| {
+                            style::switch(ui, &mut opts.invert, tr(lang, "On"), tr(lang, "Off"))
+                        });
                     });
                 });
                 // Rebuilding decodes the image again: wait until a drag ends.
@@ -392,8 +453,9 @@ impl App {
                 ..
             }) => {
                 ui.add_space(12.0);
-                style::label(ui, tr(lang, "Type"));
-                super::material::type_dropdown(ui, lang, kind, *color, type_open);
+                style::labeled(ui, tr(lang, "Type"), |ui| {
+                    super::material::type_dropdown(ui, lang, kind, *color, type_open)
+                });
                 ui.add_space(12.0);
                 super::paint_menu::selected_color(ui, lang, color, menu, &[], true);
                 if style::option(ui, Icon::Eyedropper, tr(lang, "Select material"), *dropper)
@@ -402,95 +464,7 @@ impl App {
                     *dropper = !*dropper;
                 }
             }
-            Some(Tool::Emboss {
-                params,
-                preview,
-                built,
-            }) => {
-                style::label(ui, tr(lang, "Pattern"));
-                // Text, the shapes, then Image, which asks for the picture.
-                let mut patterns: Vec<&str> = vec![tr(lang, "Text")];
-                patterns.extend(Shape::ALL.map(|s| tr(lang, s.label())));
-                patterns.push(tr(lang, "Image"));
-                let mut k = match &params.pattern {
-                    Pattern::Text => 0,
-                    Pattern::Shape(s) => 1 + Shape::ALL.iter().position(|o| o == s).unwrap_or(0),
-                    Pattern::Image(_) => patterns.len() - 1,
-                };
-                if style::dropdown(ui, "emboss_pattern", 150.0, &patterns, &mut k) {
-                    if k == 0 {
-                        params.pattern = Pattern::Text;
-                    } else if let Some(&s) = Shape::ALL.get(k - 1) {
-                        params.pattern = Pattern::Shape(s);
-                    } else if let Some(p) = rfd::FileDialog::new()
-                        .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
-                        .pick_file()
-                    {
-                        params.pattern = Pattern::Image(p);
-                    }
-                }
-                style::label(ui, tr(lang, "Projection"));
-                let names = Projection::ALL.map(|p| tr(lang, p.label()));
-                let mut k = Projection::ALL
-                    .iter()
-                    .position(|&p| p == params.projection)
-                    .unwrap_or(0);
-                if style::dropdown(ui, "emboss_projection", 150.0, &names, &mut k) {
-                    params.projection = Projection::ALL[k];
-                }
-                if style::option(ui, Icon::Pyramid, tr(lang, "Bevel"), params.bevel).clicked() {
-                    params.bevel = !params.bevel;
-                }
-                if style::option(ui, Icon::Hollow, tr(lang, "Engrave"), params.engrave).clicked() {
-                    params.engrave = !params.engrave;
-                }
-                ui.end_row();
-                if params.pattern == Pattern::Text {
-                    style::label(ui, tr(lang, "Text"));
-                    ui.add(egui::TextEdit::singleline(&mut params.text).desired_width(200.0));
-                    style::label(ui, tr(lang, "Font"));
-                    let fonts = self
-                        .font_list
-                        .get_or_insert_with(crate::emboss::font_families);
-                    let mut names = vec![tr(lang, "Built-in")];
-                    names.extend(fonts.iter().map(String::as_str));
-                    let mut k = params
-                        .font
-                        .as_ref()
-                        .and_then(|f| fonts.iter().position(|o| o == f))
-                        .map_or(0, |k| k + 1);
-                    if style::dropdown(ui, "emboss_font", 200.0, &names, &mut k) {
-                        params.font = k.checked_sub(1).map(|k| fonts[k].clone());
-                    }
-                }
-                if !params.engrave {
-                    style::label(ui, tr(lang, "Color"));
-                    for (salt, label, color) in [
-                        ("emboss_top", tr(lang, "Top"), &mut params.top_color),
-                        ("emboss_sides", tr(lang, "Sides"), &mut params.side_color),
-                    ] {
-                        style::label(ui, label);
-                        color_combo(ui, salt, lang, color);
-                    }
-                }
-                let target = match self.scene.selection.len() {
-                    1 => self.scene.selected().next(),
-                    _ => None,
-                };
-                let key = (
-                    params.clone(),
-                    target.map(|o| (o.id, std::sync::Arc::as_ptr(&o.mesh) as usize, o.matrix())),
-                );
-                if built.as_ref() != Some(&key) {
-                    *preview = match target {
-                        Some(o) => crate::emboss::text_solid(&o.world_mesh(), params)
-                            .map(std::sync::Arc::new)
-                            .map_err(|e| format!("{e:#}")),
-                        None => Err(tr(lang, "Select one object").to_string()),
-                    };
-                    *built = Some(key);
-                }
-            }
+            Some(Tool::Emboss { .. }) => self.emboss_settings(ui),
             Some(Tool::Texture(_)) => self.texture_settings(ui),
             Some(Tool::Camera { .. } | Tool::Settle { .. }) | None => {}
         }
@@ -522,18 +496,6 @@ fn unit_choice(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response 
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, style::TEXT);
     resp
-}
-
-/// A colour picker for an emboss part: the object's colour or one from the palette.
-fn color_combo(ui: &mut egui::Ui, salt: &str, lang: Lang, color: &mut Option<Rgba>) {
-    let mut names = vec![tr(lang, "Object color")];
-    names.extend(PALETTE.iter().map(|(n, _)| tr(lang, n)));
-    let mut k = color
-        .and_then(|c| PALETTE.iter().position(|(_, rgba)| *rgba == c))
-        .map_or(0, |k| k + 1);
-    if style::dropdown(ui, salt, 130.0, &names, &mut k) {
-        *color = k.checked_sub(1).map(|k| PALETTE[k].1);
-    }
 }
 
 /// Custom's shape for its settings: (shape, latitude, longitude, width, height, roundness).

@@ -79,6 +79,41 @@ fn spanish() -> &'static HashMap<&'static str, &'static str> {
 }
 
 const ES: &[(&str, &str)] = &[
+    // Updates
+    (
+        "Update available: version {to}. Click to update.",
+        "Actualización disponible: versión {to}. Haz clic para actualizar.",
+    ),
+    (
+        "Version {to} of 3D BuildCraft is available. This copy cannot update itself: open the download page?",
+        "La versión {to} de 3D BuildCraft está disponible. Esta copia no puede actualizarse sola: ¿abrir la página de descarga?",
+    ),
+    (
+        "Update 3D BuildCraft from version {from} to {to}? The installer will open and the app will close.",
+        "¿Actualizar 3D BuildCraft de la versión {from} a la {to}? Se abrirá el instalador y la aplicación se cerrará.",
+    ),
+    (
+        "Update 3D BuildCraft from version {from} to {to}? The app will restart.",
+        "¿Actualizar 3D BuildCraft de la versión {from} a la {to}? La aplicación se reiniciará.",
+    ),
+    (
+        "There are unsaved changes: you can save them before it restarts.",
+        "Hay cambios sin guardar: podrás guardarlos antes de que se reinicie.",
+    ),
+    ("Open page", "Abrir página"),
+    ("Downloading the update...", "Descargando la actualización..."),
+    ("Could not update:", "No se pudo actualizar:"),
+    (
+        "Click here to open the download page.",
+        "Haz clic aquí para abrir la página de descarga.",
+    ),
+    ("Could not restart:", "No se pudo reiniciar:"),
+    (
+        "The new version opens the next time you start the app.",
+        "La nueva versión se abrirá la próxima vez que inicies la aplicación.",
+    ),
+    ("Could not open the page:", "No se pudo abrir la página:"),
+    ("Check for updates", "Buscar actualizaciones"),
     // Tabs and top bar
     ("Insert", "Insertar"),
     ("Invert", "Inverso"),
@@ -148,9 +183,6 @@ const ES: &[(&str, &str)] = &[
     ("Add", "Agregar"),
     ("Shadows", "Sombras"),
     ("Reflections", "Reflejos"),
-    ("Introduction", "Introducción"),
-    ("Supported printers", "Impresoras compatibles"),
-    ("User guide", "Guía del usuario"),
     ("Reduce faces", "Reducir caras"),
     ("Undo", "Deshacer"),
     ("Redo", "Rehacer"),
@@ -196,7 +228,6 @@ const ES: &[(&str, &str)] = &[
     ("Edit", "Editar"),
     ("Paint", "Pintar"),
     ("View", "Ver"),
-    ("Help", "Ayuda"),
     ("3D print", "Impresión 3D"),
     ("Undo (Ctrl+Z)", "Deshacer (Ctrl+Z)"),
     ("Redo (Ctrl+Y)", "Rehacer (Ctrl+Y)"),
@@ -232,6 +263,8 @@ const ES: &[(&str, &str)] = &[
     ("Split", "Dividir"),
     ("Smooth", "Suave"),
     ("Smoothness", "Suavidad"),
+    ("Outer smoothing", "Suavizado exterior"),
+    ("Inner smoothing", "Suavizado interior"),
     ("Apply", "Aplicar"),
     ("Type", "Tipo"),
     ("No material", "Ninguno"),
@@ -247,6 +280,12 @@ const ES: &[(&str, &str)] = &[
     ("Smooth edges", "Suavizar bordes"),
     ("Emboss", "Relieve"),
     ("Extrude down", "Extrudir hacia abajo"),
+    ("Extrude outline", "Extrudir contorno"),
+    ("Extruding outline...", "Extrudiendo contorno..."),
+    ("Side", "Lado"),
+    ("Outside", "Exterior"),
+    ("Inside", "Interior"),
+    ("Keep model", "Conservar modelo"),
     ("Merge", "Combinar"),
     ("Intersect", "Intersecar"),
     ("Subtract", "Restar"),
@@ -259,8 +298,25 @@ const ES: &[(&str, &str)] = &[
     ("Engrave", "Grabar"),
     ("Pattern", "Patrón"),
     ("Star", "Estrella"),
+    ("Burst", "Estallido"),
+    ("Arrow", "Flecha"),
+    ("Chevron", "Cheurón"),
+    ("Cloud", "Nube"),
+    ("Ring", "Anillo"),
+    ("Wave", "Onda"),
     ("Heart", "Corazón"),
+    ("Lightning", "Rayo"),
+    ("Moon", "Luna"),
+    ("Cross", "Equis"),
+    ("No sign", "Prohibido"),
     ("Circle", "Círculo"),
+    ("Plus", "Más"),
+    ("Square", "Cuadrado"),
+    ("Rounded square", "Cuadrado redondeado"),
+    ("Smiley", "Cara sonriente"),
+    ("Triangle", "Triángulo"),
+    ("Flag", "Bandera"),
+    ("Shapes", "Formas"),
     ("Image", "Imagen"),
     ("Font", "Fuente"),
     ("Built-in", "Integrada"),
@@ -271,7 +327,6 @@ const ES: &[(&str, &str)] = &[
     ("Bevel", "Bisel"),
     ("Top", "Superior"),
     ("Sides", "Lateral"),
-    ("Object color", "Color del objeto"),
     (
         "Drag on the object to move; Shift+drag to rotate",
         "Arrastra sobre el objeto para mover; Mayús+arrastrar para girar",
@@ -354,6 +409,10 @@ const ES: &[(&str, &str)] = &[
     ("Scale", "Escalar"),
     ("Select one object", "Selecciona un objeto"),
     ("Uniform scale", "Escala uniforme"),
+    (
+        "Keep the width and height in proportion",
+        "Mantener la proporción entre ancho y alto",
+    ),
     ("ft", "pie"),
     // Viewport and dialogs
     ("Import model", "Importar modelo"),
@@ -378,7 +437,11 @@ const ES: &[(&str, &str)] = &[
     ("Use", "Usar"),
     ("installed", "instalado"),
     ("Connect", "Conectar"),
-    ("Show command", "Mostrar comando"),
+    ("Show setup", "Mostrar configuración"),
+    ("Server URL:", "URL del servidor:"),
+    ("Command:", "Comando:"),
+    ("In mcp_config.json:", "En mcp_config.json:"),
+    ("Registered with an older setup; turn on to update.", "Registrado con una configuración anterior; actívalo para actualizarlo."),
     ("Manage removal in the agent's settings.", "Gestiona la eliminación en la configuración del agente."),
     ("MCP server connected.", "Servidor MCP conectado."),
     ("Add this MCP server in Antigravity's settings", "Agrega este servidor MCP en la configuración de Antigravity"),
@@ -395,7 +458,7 @@ const ES: &[(&str, &str)] = &[
     ("External agents (MCP)", "Agentes externos (MCP)"),
     ("To use the tools from an agent outside the app (Claude Code, Claude Desktop, Codex, Cursor or any MCP client), add this command to it as an MCP server:", "Para usar las herramientas desde un agente fuera de la app (Claude Code, Claude Desktop, Codex, Cursor o cualquier cliente MCP), agrégale este comando como servidor MCP:"),
     ("With Claude Code:", "Con Claude Code:"),
-    ("With this switch on and the app open, the agent works in this window. The command never opens the app; open it before using tools.", "Con este interruptor activado y la app abierta, el agente trabaja en esta ventana. El comando nunca abre la app; ábrela antes de usar las herramientas."),
+    ("With this switch on and the app open, agents work in this window through the server URL. Nothing runs for them while the app is closed; open it before using tools.", "Con este interruptor activado y la app abierta, los agentes trabajan en esta ventana a través de la URL del servidor. Con la app cerrada no se ejecuta nada para ellos; ábrela antes de usar las herramientas."),
     ("AI assistant:", "Asistente de IA:"),
     ("Print", "Imprimir"),
     ("Choose a slicer first.", "Elige primero un laminador."),
@@ -439,6 +502,7 @@ const ES: &[(&str, &str)] = &[
     ),
     ("Eyedropper", "Gotero"),
     ("More colors...", "Más colores..."),
+    ("Use background color", "Usar color de fondo"),
     ("Recent colors", "Colores recientes"),
     ("Standard colors", "Colores estándares"),
     ("Add to custom colors", "Agregar a colores personalizados"),
@@ -455,6 +519,7 @@ const ES: &[(&str, &str)] = &[
     ("Show grid labels", "Mostrar etiquetas de cuadrícula"),
     ("Repairing...", "Reparando..."),
     ("Loading...", "Cargando..."),
+    ("Simplifying...", "Simplificando..."),
     ("The operation failed.", "La operación falló."),
     ("Pitch", "Tono"),
     ("Yaw", "Yaw"),
@@ -543,6 +608,7 @@ mod tests {
         dynamic.extend(crate::emboss::Projection::ALL.iter().map(|p| p.label()));
         dynamic.extend(crate::settings::Units::ALL.iter().map(|u| u.name()));
         dynamic.extend(crate::image3d::Mode::ALL.iter().map(|m| m.label()));
+        dynamic.extend(crate::outline::Side::ALL.iter().map(|s| s.label()));
         dynamic.extend(["Coming soon", "New scene", "ft", "warning", "warnings"]);
         // Names that read the same in both languages.
         let neutral = ["STL", "OBJ", "PLY", "glTF", "GLB"];

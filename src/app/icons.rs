@@ -52,6 +52,8 @@ pub enum Icon {
     Smooth,
     Emboss,
     ExtrudeDown,
+    /// A shape inside a rounded border: Extrude outline.
+    ExtrudeOutline,
     Merge,
     Intersect,
     Subtract,
@@ -70,10 +72,7 @@ pub enum Icon {
     Wireframe,
     Grid,
     XRay,
-    // Help
-    Help,
     Info,
-    Guide,
     // Selection
     Group,
     Ungroup,
@@ -113,6 +112,17 @@ pub enum Icon {
     Brush,
     /// A hand with a pointing finger: edit the sticker.
     Hand,
+    /// A block seen from above with its edges sloped: Emboss's bevel.
+    Bevel,
+    /// Stars, filled and in outline: Emboss's top and side colours.
+    StarFilled,
+    StarOutline,
+    /// A capital A with serifs: Emboss's text pattern.
+    SerifA,
+    /// A framed picture of a hill under the sun: load an image as the pattern.
+    Picture,
+    /// An arrow down inside a circle: download the update.
+    Download,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -153,6 +163,21 @@ impl Pen<'_> {
         let pts: Vec<Pos2> = pts.iter().map(|&(x, y)| self.p(x, y)).collect();
         self.painter
             .add(Shape::convex_polygon(pts, self.color, Stroke::NONE));
+    }
+    /// Fills a concave outline through an explicitly triangulated mesh.
+    fn fill_concave(&self, pts: &[(f32, f32)]) {
+        let mut mesh = eframe::egui::Mesh::default();
+        for &(x, y) in pts {
+            mesh.colored_vertex(self.p(x, y), self.color);
+        }
+        let coords: Vec<f64> = pts
+            .iter()
+            .flat_map(|&(x, y)| [x as f64, y as f64])
+            .collect();
+        if let Ok(indices) = earcutr::earcut(&coords, &[], 2) {
+            mesh.indices = indices.into_iter().map(|i| i as u32).collect();
+        }
+        self.painter.add(Shape::mesh(mesh));
     }
     fn rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
         self.closed(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]);
@@ -262,19 +287,7 @@ impl Pen<'_> {
                         (17., 21.),
                     ]
                 };
-                // A concave outline is filled with an explicitly triangulated mesh.
-                let mut mesh = eframe::egui::Mesh::default();
-                for &(x, y) in points {
-                    mesh.colored_vertex(self.p(x, y), self.color);
-                }
-                let coords: Vec<f64> = points
-                    .iter()
-                    .flat_map(|&(x, y)| [x as f64, y as f64])
-                    .collect();
-                if let Ok(indices) = earcutr::earcut(&coords, &[], 2) {
-                    mesh.indices = indices.into_iter().map(|i| i as u32).collect();
-                }
-                self.painter.add(Shape::mesh(mesh));
+                self.fill_concave(points);
                 self.painter.add(Shape::closed_line(
                     points.iter().map(|&(x, y)| self.p(x, y)).collect(),
                     Stroke::new(1.2_f32, Color32::from_gray(35)),
@@ -471,6 +484,27 @@ impl Pen<'_> {
                 self.rect(4.0, 4.0, 20.0, 20.0);
                 self.fill(&[(4.0, 4.0), (20.0, 4.0), (20.0, 11.0), (4.0, 11.0)]);
             }
+            ExtrudeOutline => {
+                // A filled star with a border all round it, as a keychain tag.
+                self.closed(&[
+                    (3.0, 7.0),
+                    (7.0, 3.0),
+                    (17.0, 3.0),
+                    (21.0, 7.0),
+                    (21.0, 17.0),
+                    (17.0, 21.0),
+                    (7.0, 21.0),
+                    (3.0, 17.0),
+                ]);
+                let star: Vec<(f32, f32)> = (0..10)
+                    .map(|k| {
+                        let a = k as f32 * PI / 5.0 - PI / 2.0;
+                        let r = if k % 2 == 0 { 6.5 } else { 2.8 };
+                        (12.0 + r * a.cos(), 12.6 + r * a.sin())
+                    })
+                    .collect();
+                self.fill_concave(&star);
+            }
             Merge => {
                 self.rect(3.0, 3.0, 14.0, 14.0);
                 self.rect(10.0, 10.0, 21.0, 21.0);
@@ -571,26 +605,10 @@ impl Pen<'_> {
                 self.line(&[(4.0, 7.5), (20.0, 16.5)]);
                 self.line(&[(4.0, 16.5), (20.0, 7.5)]);
             }
-            Help => {
-                self.arc(12.0, 8.0, 5.0, PI, TAU + 0.6);
-                self.line(&[(16.0, 11.0), (12.0, 14.0), (12.0, 16.0)]);
-                self.dot(12.0, 20.0, 1.2);
-            }
             Info => {
                 self.circle(12.0, 12.0, 9.0);
                 self.line(&[(12.0, 10.0), (12.0, 17.0)]);
                 self.dot(12.0, 7.0, 1.1);
-            }
-            Guide => {
-                self.closed(&[(2.0, 9.0), (12.0, 4.0), (22.0, 9.0), (12.0, 14.0)]);
-                self.line(&[
-                    (6.0, 11.0),
-                    (6.0, 17.0),
-                    (12.0, 20.0),
-                    (18.0, 17.0),
-                    (18.0, 11.0),
-                ]);
-                self.line(&[(22.0, 9.0), (22.0, 15.0)]);
             }
             Group => {
                 self.dashed_rect(3.0, 3.0, 21.0, 21.0);
@@ -728,6 +746,11 @@ impl Pen<'_> {
                 self.line(&[(9.0, 15.0), (3.0, 21.0)]);
                 self.fill(&[(3.0, 21.0), (3.0, 16.5), (7.5, 21.0)]);
             }
+            Download => {
+                self.circle(12.0, 12.0, 9.5);
+                self.line(&[(12.0, 6.5), (12.0, 17.0)]);
+                self.line(&[(8.0, 13.0), (12.0, 17.0), (16.0, 13.0)]);
+            }
             FileUp => {
                 // The page with its corner folded, open at the bottom right for the arrow.
                 self.line(&[
@@ -825,12 +848,64 @@ impl Pen<'_> {
                     self.dot(x, 12.0, 1.4);
                 }
             }
+            Bevel => {
+                self.rect(4.0, 4.0, 20.0, 20.0);
+                self.rect(9.0, 9.0, 15.0, 15.0);
+                for (a, b) in [(4.0, 9.0), (20.0, 15.0)] {
+                    self.line(&[(a, a), (b, b)]);
+                    self.line(&[(a, 24.0 - a), (b, 24.0 - b)]);
+                }
+            }
+            StarFilled => self.fill_concave(&star()),
+            StarOutline => self.closed(&star()),
+            SerifA => {
+                // A thin left stroke, a thick right one, the bar and the serifs.
+                self.fill(&[(11.0, 2.5), (12.4, 4.4), (6.0, 21.0), (4.8, 21.0)]);
+                self.fill(&[(10.6, 2.0), (13.6, 2.0), (20.6, 21.0), (17.0, 21.0)]);
+                self.fill(&[(7.5, 13.6), (16.2, 13.6), (16.7, 15.0), (7.0, 15.0)]);
+                self.fill(&[(2.6, 20.4), (8.4, 20.4), (8.4, 21.8), (2.6, 21.8)]);
+                self.fill(&[(14.6, 20.4), (22.4, 20.4), (22.4, 21.8), (14.6, 21.8)]);
+                self.fill(&[(9.0, 2.0), (13.6, 2.0), (13.6, 3.2), (9.0, 3.2)]);
+            }
+            Picture => {
+                self.rect(3.0, 5.0, 21.0, 19.0);
+                self.fill_concave(&[
+                    (5.0, 17.0),
+                    (10.0, 10.0),
+                    (13.0, 14.0),
+                    (15.5, 11.5),
+                    (19.0, 17.0),
+                ]);
+                self.dot(16.5, 8.5, 1.6);
+            }
             KeepTop => {
                 self.fill(&[(12.0, 3.0), (15.0, 12.0), (9.0, 12.0)]);
                 self.line(&[(7.0, 15.0), (17.0, 15.0)]);
                 self.line(&[(5.0, 19.0), (19.0, 19.0)]);
             }
         }
+    }
+}
+
+/// A five-pointed star's outline on the 24-unit grid, point up.
+fn star() -> Vec<(f32, f32)> {
+    (0..10)
+        .map(|k| {
+            let r = if k % 2 == 0 { 10.0 } else { 4.2 };
+            let a = -PI / 2.0 + k as f32 * PI / 5.0;
+            (12.0 + r * a.cos(), 13.0 + r * a.sin())
+        })
+        .collect()
+}
+
+/// The pointer over something that can be dragged, as over the objects: a closed hand
+/// while `dragging`, an open one when `over` it (closing while the button is held, before
+/// the drag starts), the usual pointer otherwise.
+pub fn grab_cursor(ctx: &eframe::egui::Context, dragging: bool, over: bool) {
+    if dragging {
+        hand_cursor(ctx, true);
+    } else if over {
+        hand_cursor(ctx, ctx.input(|i| i.pointer.primary_down()));
     }
 }
 

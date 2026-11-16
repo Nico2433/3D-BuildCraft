@@ -28,6 +28,10 @@ pub struct Launch {
     pub drag: Option<String>,
     /// Measure points `x,y,z;x,y,z`; an entry starting with `~` is the hover point.
     pub measure: Option<String>,
+    /// Files dropped onto the window together, as `--drop a.stl,b.stl`.
+    pub drop: Vec<PathBuf>,
+    /// Shows this version as available without asking GitHub, as `--fake-update 0.1.14`.
+    pub fake_update: Option<String>,
 }
 
 impl App {
@@ -58,14 +62,16 @@ impl App {
             mode: TransformMode::Move,
             tool: None,
             clipboard: Vec::new(),
+            paste: Default::default(),
             pending_import: Vec::new(),
             jobs: Vec::new(),
-            emboss_drag: false,
+            emboss_drag: None,
             handle: None,
             rotate_angles: [0.0; 3],
             rotate_selection: BTreeSet::new(),
             glide: None,
             font_list: None,
+            font_previews: Default::default(),
             toasts: Vec::new(),
             invalid: BTreeSet::new(),
             // A screenshot shows the requested state, not a recovery prompt.
@@ -76,7 +82,8 @@ impl App {
             },
             menu_open: false,
             add_open: false,
-            start_open: launch.screenshot.is_none() || launch.tool.as_deref() == Some("start"),
+            start_open: launch.screenshot.is_none()
+                || matches!(launch.tool.as_deref(), Some("start" | "update")),
             library: add_dialog::LibraryView::default(),
             extra_libraries: Vec::new(),
             thumbs: thumbs::Thumbs::new(),
@@ -91,6 +98,7 @@ impl App {
             agent: agent_rx,
             agent_tx,
             listener: None,
+            mcp_http: None,
             chat: Default::default(),
             agent_shot: None,
             print_status_open: false,
@@ -115,6 +123,13 @@ impl App {
             view_rect: egui::Rect::NOTHING,
             actions: Vec::new(),
             screenshot: launch.screenshot.clone().map(|p| (p, 10)),
+            update: update_ui::UpdateState::new(
+                launch.screenshot.is_some(),
+                launch
+                    .fake_update
+                    .as_deref()
+                    .and_then(crate::update::Version::parse),
+            ),
         };
         app.open_launch(launch, &cc.egui_ctx);
         app
@@ -125,13 +140,15 @@ impl App {
         if let Some(p) = launch.file {
             self.load_file(&p, true);
         }
+        if !launch.drop.is_empty() {
+            self.open_dropped(launch.drop, Vec3::ZERO, ctx);
+        }
         let tab = launch.tab.as_deref().unwrap_or("insert");
         self.tab = match tab {
             "object" => Tab::Object,
             "edit" => Tab::Edit,
             "paint" => Tab::Paint,
             "view" => Tab::View,
-            "help" => Tab::Help,
             _ => Tab::Insert,
         };
         if launch.select_all {
@@ -190,7 +207,8 @@ impl App {
             Some("cut") if !cut_now => Some(Action::StartCut),
             Some("simplify") => Some(Action::StartSimplify),
             Some("hollow") => Some(Action::StartHollow),
-            Some("emboss") => Some(Action::StartEmboss),
+            Some("extrude-outline") => Some(Action::StartOutline),
+            Some(t) if t.starts_with("emboss") => Some(Action::StartEmboss),
             Some("measure") if launch.measure.is_none() => Some(Action::Measure),
             Some("settle") => Some(Action::Settle),
             Some("paint" | "paint-colors" | "paint-more") => Some(Action::StartPaint),
@@ -248,7 +266,10 @@ impl App {
             self.tool = Some(Tool::measure_preset(&spec));
         }
         match launch.tool.as_deref() {
-            Some("paint-colors") => self.actions.push(Action::PaintMenu(false)),
+            Some("paint-colors" | "emboss-colors") => self.actions.push(Action::PaintMenu(false)),
+            Some(t) if t.starts_with("emboss-") => self
+                .actions
+                .push(Action::EmbossPreset(t["emboss-".len()..].to_string())),
             Some("paint-more") => self.actions.push(Action::PaintMenu(true)),
             Some(
                 t @ ("texture-menu" | "texture-sticker" | "texture-edit" | "texture-brush"
@@ -272,6 +293,10 @@ impl App {
         // The bottom bar's editor open on the current field, for screenshots.
         if launch.tool.as_deref() == Some("bar-edit") {
             self.bar_edit = Some("42.998".into());
+        }
+        // The update question, over the start screen.
+        if launch.tool.as_deref() == Some("update") {
+            self.update.dialog = true;
         }
         if launch.tool.as_deref() == Some("recover") {
             self.restore = vec![PathBuf::from("recover.3mf")];

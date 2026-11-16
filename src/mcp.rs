@@ -1,9 +1,13 @@
 //! A Model Context Protocol server, so an AI agent can use the app's tools: JSON-RPC 2.0
-//! over stdio, one message per line. The tools themselves run in the app; this module
-//! only speaks the protocol and describes them.
+//! over stdio, one message per line, or over HTTP from the open app (`http`). The tools
+//! themselves run in the app; this module only speaks the protocol and describes them.
+
+pub mod http;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// What a tool call answers when no app window takes MCP calls.
 pub const NOT_OPEN: &str =
@@ -26,11 +30,7 @@ pub fn serve(
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&msg, &mut call),
-            Err(e) => Some(error(Value::Null, -32700, &format!("parse error: {e}"))),
-        };
-        if let Some(r) = reply {
+        if let Some(r) = reply(line.as_bytes(), &mut call) {
             writeln!(output, "{r}")?;
             output.flush()?;
         }
@@ -38,9 +38,25 @@ pub fn serve(
     Ok(())
 }
 
+/// The JSON-RPC error code for a message that is not JSON.
+const PARSE_ERROR: i32 = -32700;
+
+/// The answer to one JSON-RPC message, or None when it needs none.
+fn reply(message: &[u8], call: &mut impl FnMut(&str, Value) -> Reply) -> Option<Value> {
+    match serde_json::from_slice::<Value>(message) {
+        Ok(msg) => handle(&msg, call),
+        Err(e) => Some(error(
+            Value::Null,
+            PARSE_ERROR,
+            &format!("parse error: {e}"),
+        )),
+    }
+}
+
 fn handle(msg: &Value, call: &mut impl FnMut(&str, Value) -> Reply) -> Option<Value> {
-    // Notifications (no id) get no answer.
+    // Notifications (no id) and the client's own responses (no method) get no answer.
     let id = msg.get("id")?.clone();
+    msg.get("method")?;
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     let result = match msg["method"].as_str().unwrap_or("") {
         "initialize" => {
@@ -180,7 +196,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "open",
-            "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
+            "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
             json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }, "required": ["path"] }),
         ),
         tool(
@@ -212,6 +228,12 @@ fn model_tools() -> Vec<Value> {
     let color = |what: &str| text(&format!("{what}, #RRGGBB"));
     let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
     let textures: Vec<String> = crate::texture_gen::Kind::all().map(|k| k.name()).collect();
+    // Text, every built-in shape by name, and a picture.
+    let shapes: Vec<String> = crate::emboss::Shape::ALL.iter().map(|s| s.name()).collect();
+    let patterns: Vec<&str> = std::iter::once("text")
+        .chain(shapes.iter().map(String::as_str))
+        .chain(["image"])
+        .collect();
     let textures: Vec<&str> = textures.iter().map(String::as_str).collect();
     let point = "a world point in mm on (or within 5 mm of) the surface; the nearest triangle is used. Points from get_scene bounds work, e.g. [center x, center y, top] is the middle of a flat top";
     vec![
@@ -243,20 +265,21 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, a star, heart or circle, or the dark areas of a picture. planar projects straight down onto the top, centred unless offset or at moves it; cylindrical and spherical wrap it around the object's vertical axis or centre on its front (-Y). A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the original's shapes (named in pattern), or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
             json!({ "type": "object", "properties": {
-                "pattern": one_of(&["text", "star", "heart", "circle", "image"], "default text"),
+                "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text("the text, for pattern text"),
                 "image": text("PNG or JPEG path, for pattern image"),
                 "font": text("installed font family; default the bundled font"),
-                "size": num("capital letter height for text, overall height for shapes and images, mm, default 10"),
+                "size": num("capital letter height for text, overall height for shapes and images, mm, default 10; the width follows in proportion unless width is given"),
+                "width": num("overall width of the pattern, mm, stretching it sideways without changing its height; default: in proportion to size"),
                 "depth": num("height above the surface (or depth when engraving), mm, default 1"),
                 "engrave": flag("cut into the surface instead of raising"),
                 "bevel": flag("slope the edges"),
                 "angle": num("turn in its own plane, degrees"),
                 "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
-                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the centre of the top (planar) or along the surface from the front (cylindrical, spherical)" },
-                "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset"),
+                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical)" },
+                "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face there, facing out"),
                 "top_color": color("colour of the top layer"),
                 "side_color": color("colour of the sides of a raised pattern"),
             } }),
@@ -295,11 +318,23 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "import",
-            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
+            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
             json!({ "type": "object", "properties": {
                 "path": text("model file path"),
-                "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF and glTF carry their own"),
+                "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
             }, "required": ["path"] }),
+        ),
+        tool(
+            "extrude_outline",
+            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a keychain or badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection. One undo step.",
+            json!({ "type": "object", "properties": {
+                "side": one_of(&["outside", "inside"], "outside: a ring around the outline; inside: a band just within its edge. Default outside"),
+                "width": num("border width, mm, default 2"),
+                "height": num("border height from the object's bottom, mm; default the selection's height"),
+                "keep_model": flag("merge the border with the object (default true); false leaves only the border"),
+                "smooth_outer": num("round the corners of the border's outer edge, 0 (sharp, default) to 1"),
+                "smooth_inner": num("round the corners of the border's inner edge, 0 (sharp, default) to 1"),
+            } }),
         ),
         tool(
             "load_image",
@@ -364,10 +399,10 @@ fn endpoint_file() -> Option<std::path::PathBuf> {
     crate::settings::dirs().map(|d| d.data_local_dir().join("mcp.json"))
 }
 
-/// The app's MCP server on a local port, so agents started elsewhere (or by the in-app
-/// chat) work on the window that is already open. Stops when dropped.
+/// The local port the `--mcp` stdio bridge forwards tool calls to, so commands started
+/// elsewhere work on the window that is already open. Stops when dropped.
 pub struct Listener {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Listener {
@@ -376,64 +411,82 @@ impl Listener {
     pub fn start(
         call: impl Fn(&str, Value) -> Reply + Clone + Send + 'static,
     ) -> anyhow::Result<Self> {
-        use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
         let token = uuid::Uuid::new_v4().to_string();
         let file = endpoint_file().ok_or_else(|| anyhow::anyhow!("no data folder"))?;
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let port = listener.local_addr()?.port();
-        options.open(&file)?.write_all(
+        write_private(
+            &file,
             json!({ "port": port, "token": token })
                 .to_string()
                 .as_bytes(),
         )?;
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let quit = stop.clone();
-        std::thread::spawn(move || {
-            while !quit.load(Ordering::Relaxed) {
-                let stream = match listener.accept() {
-                    Ok((s, _)) => s,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        continue;
-                    }
-                    Err(e) => {
-                        log::warn!("MCP listener: {e}");
-                        break;
-                    }
-                };
-                let (call, token) = (call.clone(), token.clone());
-                std::thread::spawn(move || {
-                    let _ = stream.set_nonblocking(false);
-                    let Ok(out) = stream.try_clone() else { return };
-                    let mut input = std::io::BufReader::new(stream);
-                    let mut first = String::new();
-                    if input.read_line(&mut first).is_err() || first.trim() != token {
-                        return;
-                    }
-                    if let Err(e) = serve(input, out, call) {
-                        log::info!("MCP client left: {e}");
-                    }
-                });
+        let stop = accept(listener, move |stream| {
+            let Ok(out) = stream.try_clone() else { return };
+            let mut input = std::io::BufReader::new(stream);
+            let mut first = String::new();
+            if input.read_line(&mut first).is_err() || first.trim() != token {
+                return;
             }
-            if let Some(f) = endpoint_file() {
-                let _ = std::fs::remove_file(f);
+            if let Err(e) = serve(input, out, call.clone()) {
+                log::info!("MCP client left: {e}");
             }
-        });
+        })?;
         Ok(Self { stop })
     }
 }
 
+/// Writes a file only this user can read, creating its folder.
+fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options.open(file)?;
+    // The mode above applies only to a new file.
+    #[cfg(unix)]
+    f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    f.write_all(bytes)
+}
+
+/// Hands each connection to `listener` to `serve` on its own thread, until the returned
+/// flag is set; the port closes soon after.
+fn accept(
+    listener: std::net::TcpListener,
+    serve: impl Fn(std::net::TcpStream) + Clone + Send + 'static,
+) -> std::io::Result<Arc<AtomicBool>> {
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let quit = stop.clone();
+    std::thread::spawn(move || {
+        while !quit.load(Ordering::Relaxed) {
+            let stream = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("MCP listener: {e}");
+                    break;
+                }
+            };
+            let serve = serve.clone();
+            std::thread::spawn(move || {
+                let _ = stream.set_nonblocking(false);
+                serve(stream);
+            });
+        }
+    });
+    Ok(stop)
+}
+
 impl Drop for Listener {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(f) = endpoint_file() {
             let _ = std::fs::remove_file(f);
         }

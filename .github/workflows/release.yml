@@ -1,10 +1,9 @@
 name: Release
 
-# A tag such as v0.1.0 builds Windows, macOS and Linux (Flatpak) packages and publishes
-# them as a GitHub release. Run it by hand to get the packages as artifacts only.
+# Builds Windows, macOS and Linux (Flatpak) packages as artifacts, by hand only. Releases
+# are built locally and uploaded with SHA256SUMS, which the in-app updater checks; a run
+# on every tag would replace those files and break the sums.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 env:

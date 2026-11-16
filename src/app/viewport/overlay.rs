@@ -82,31 +82,17 @@ impl App {
                 .or_else(|| resp.hover_pos().and_then(|p| g.grab(p)).map(|h| h.kind));
             // An open hand over a handle or the selection, a closed one dragging.
             let over_selection = || {
-                resp.hover_pos().is_some_and(|p| {
-                    let (o, d) = self.camera.ray(to_ndc(rect, p), aspect);
-                    self.pick(o, d)
-                        .is_some_and(|(id, _)| self.scene.selection.contains(&id))
-                })
+                resp.hover_pos()
+                    .is_some_and(|p| self.selection_under(p, rect, aspect))
             };
-            let pressed = ui.input(|i| i.pointer.primary_down());
-            if self.handle.is_some() {
-                icons::hand_cursor(ui.ctx(), true);
-            } else if hot.is_some() || over_selection() {
-                // Held down on them, the hand closes before the drag starts.
-                icons::hand_cursor(ui.ctx(), pressed);
-            }
+            icons::grab_cursor(
+                ui.ctx(),
+                self.handle.is_some(),
+                hot.is_some() || over_selection(),
+            );
             g.paint(&painter, hot, self.field);
         }
-        for id in &self.invalid {
-            if let Some(o) = self.scene.get(*id) {
-                draw_box(
-                    &painter,
-                    &o.world_aabb(),
-                    Stroke::new(2.0_f32, Color32::from_rgb(0xE0, 0x30, 0x30)),
-                    &to_screen,
-                );
-            }
-        }
+        self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
         if let Some(Tool::Measure { points, hover }) = &self.tool {
             // The placed points are blue and the live one green, as the original's.
             let live = if points.len() < 2 { *hover } else { None };
@@ -132,42 +118,6 @@ impl App {
                     measure_arrow(&painter, tip, color, ui.ctx().pixels_per_point());
                 }
             }
-        }
-    }
-}
-
-fn draw_box(
-    painter: &egui::Painter,
-    b: &Aabb,
-    stroke: Stroke,
-    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
-) {
-    if !b.is_valid() {
-        return;
-    }
-    let c = |i: u8| {
-        Vec3::new(
-            if i & 1 != 0 { b.max.x } else { b.min.x },
-            if i & 2 != 0 { b.max.y } else { b.min.y },
-            if i & 4 != 0 { b.max.z } else { b.min.z },
-        )
-    };
-    for (a, bb) in [
-        (0, 1),
-        (1, 3),
-        (3, 2),
-        (2, 0),
-        (4, 5),
-        (5, 7),
-        (7, 6),
-        (6, 4),
-        (0, 4),
-        (1, 5),
-        (2, 6),
-        (3, 7),
-    ] {
-        if let (Some(p), Some(q)) = (to_screen(c(a)), to_screen(c(bb))) {
-            painter.line_segment([p, q], stroke);
         }
     }
 }
