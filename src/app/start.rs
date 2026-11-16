@@ -6,8 +6,8 @@ use super::icons::Icon;
 use super::style;
 use super::*;
 
-const TILE: Color32 = Color32::from_rgb(0x00, 0x78, 0xA6);
-const TILE_HOVER: Color32 = Color32::from_rgb(0x1A, 0x8C, 0xB8);
+pub(super) const TILE: Color32 = Color32::from_rgb(0x00, 0x78, 0xA6);
+pub(super) const TILE_HOVER: Color32 = Color32::from_rgb(0x1A, 0x8C, 0xB8);
 const MORE: Color32 = Color32::from_rgb(0xEA, 0x31, 0x10);
 /// Small tile side and the gap between tiles; the big one is two tiles and a gap.
 const SIDE: f32 = 150.0;
@@ -31,8 +31,14 @@ impl App {
         let view = ctx.available_rect();
         let big = 2.0 * SIDE + GAP;
         let panel = Vec2::new(big + 3.0 * SIDE + 5.0 * GAP + 2.0 * 15.0, big + 30.0);
-        // Logo and panel together, centred in the view.
-        let block = Vec2::new(panel.x, 100.0 + panel.y);
+        // A newer version adds a bar along the panel's bottom edge.
+        let bar = if self.update.available.is_some() {
+            super::update_ui::BAR_H
+        } else {
+            0.0
+        };
+        // Logo, panel and bar together, centred in the view.
+        let block = Vec2::new(panel.x, 100.0 + panel.y + bar);
         let top = view.center() - block / 2.0;
         egui::Area::new(egui::Id::new("start"))
             .fixed_pos(view.min)
@@ -49,6 +55,8 @@ impl App {
                 logo(&p, top);
                 let frame = egui::Rect::from_min_size(top + Vec2::new(0.0, 100.0), panel);
                 p.rect_filled(frame, egui::CornerRadius::ZERO, Color32::from_gray(0x1F));
+                let bar = egui::Rect::from_min_size(frame.left_bottom(), Vec2::new(panel.x, bar));
+                self.update_bar(ui, bar);
                 let at = |col: f32, row: f32| {
                     frame.min
                         + Vec2::new(15.0 + big + GAP, 15.0)

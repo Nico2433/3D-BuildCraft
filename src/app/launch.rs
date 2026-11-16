@@ -30,6 +30,8 @@ pub struct Launch {
     pub measure: Option<String>,
     /// Files dropped onto the window together, as `--drop a.stl,b.stl`.
     pub drop: Vec<PathBuf>,
+    /// Shows this version as available without asking GitHub, as `--fake-update 0.1.14`.
+    pub fake_update: Option<String>,
 }
 
 impl App {
@@ -80,7 +82,8 @@ impl App {
             },
             menu_open: false,
             add_open: false,
-            start_open: launch.screenshot.is_none() || launch.tool.as_deref() == Some("start"),
+            start_open: launch.screenshot.is_none()
+                || matches!(launch.tool.as_deref(), Some("start" | "update")),
             library: add_dialog::LibraryView::default(),
             extra_libraries: Vec::new(),
             thumbs: thumbs::Thumbs::new(),
@@ -120,6 +123,13 @@ impl App {
             view_rect: egui::Rect::NOTHING,
             actions: Vec::new(),
             screenshot: launch.screenshot.clone().map(|p| (p, 10)),
+            update: update_ui::UpdateState::new(
+                launch.screenshot.is_some(),
+                launch
+                    .fake_update
+                    .as_deref()
+                    .and_then(crate::update::Version::parse),
+            ),
         };
         app.open_launch(launch, &cc.egui_ctx);
         app
@@ -283,6 +293,10 @@ impl App {
         // The bottom bar's editor open on the current field, for screenshots.
         if launch.tool.as_deref() == Some("bar-edit") {
             self.bar_edit = Some("42.998".into());
+        }
+        // The update question, over the start screen.
+        if launch.tool.as_deref() == Some("update") {
+            self.update.dialog = true;
         }
         if launch.tool.as_deref() == Some("recover") {
             self.restore = vec![PathBuf::from("recover.3mf")];

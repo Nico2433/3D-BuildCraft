@@ -34,6 +34,12 @@ pub(super) enum Done {
         /// Set when it was dropped together with other files.
         batch: Option<super::BatchSlot>,
     },
+    /// An update downloaded and installed, ready to restart; or why not, with the release
+    /// page to offer instead.
+    Updated {
+        result: Result<crate::update::install::Restart, String>,
+        page: String,
+    },
 }
 
 pub(super) struct Job {

@@ -25,6 +25,7 @@ macOS builds are planned but not published yet.
 - Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window (several models dropped together are previewed side by side and imported with one confirm and one units choice). Unitless formats (STL, OBJ, PLY) ask for the units.
 - Import SVG drawings: filled areas (with their holes) and stroked lines become 3 mm solids, one object per colour, at the drawing's real size.
 - Undo/redo, autosave with recovery after a crash, recent files, start screen.
+- Updates: at startup the app looks for a newer release on GitHub (Settings > Check for updates turns it off, and then nothing is sent). A bar under the start screen's tiles offers it; after a confirmation the Flatpak, AppImage, MSI or portable zip updates itself and restarts. Other builds open the release page.
 - About the model: title, designer, copyright, license terms and description, kept in the 3MF metadata. The window title follows the model title.
 
 **Building**
@@ -92,6 +93,8 @@ Packages are built locally with the scripts in `packaging/`:
 - `packaging/flatpak/io.github.nico2433.BuildCraft3D.yml`: Flatpak manifest for `flatpak-builder`.
 - `packaging/appimage/build-appimage.sh`: AppImage linked against glibc 2.31 (cargo-zigbuild, zig, appimagetool).
 
+Releases are GitHub pre-releases tagged `vX.Y.Z` (the in-app update reads the release list and takes the highest tag). Keep the asset names `buildcraft3d-linux-x86_64.flatpak`, `buildcraft3d-linux-x86_64.AppImage`, `buildcraft3d-windows-x64.msi` and `buildcraft3d-windows-x64.zip` (with `buildcraft3d.exe` inside): the updater looks for them by name. Also attach a `SHA256SUMS` file (`sha256sum buildcraft3d-* > SHA256SUMS` in `dist/`); when a release has one, every download is checked against it.
+
 ## Screenshots
 
 The window can save itself as a PNG and quit, which is how the pictures in `docs/screenshots/` are made:
@@ -104,8 +107,9 @@ Options that open a given state:
 
 - `--tab insert|object|edit|paint|view`, `--mode move|rotate|scale`, `--menu`, `--select-all`
 - `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
-- `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`
+- `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`, `start`, `update`
 - `--image <file>` opens Load image, `--library <folder>` a 3D library
+- `--fake-update 0.1.14` shows that version as available without asking GitHub (`--tool update` opens its question); `BUILDCRAFT3D_FAKE_VERSION=0.1.0` makes a normal run believe it is that version, to test a real check
 
 Development notes (architecture, decisions, progress log and the study of the original app) are in [docs/dev](docs/dev/README.md).
 

@@ -121,6 +121,8 @@ pub enum Icon {
     SerifA,
     /// A framed picture of a hill under the sun: load an image as the pattern.
     Picture,
+    /// An arrow down inside a circle: download the update.
+    Download,
 }
 
 /// Draws `icon` centred in `rect` (a square works best).
@@ -743,6 +745,11 @@ impl Pen<'_> {
                 self.line(&[(18.0, 12.0), (21.0, 15.0), (18.0, 18.0)]);
                 self.line(&[(9.0, 15.0), (3.0, 21.0)]);
                 self.fill(&[(3.0, 21.0), (3.0, 16.5), (7.5, 21.0)]);
+            }
+            Download => {
+                self.circle(12.0, 12.0, 9.5);
+                self.line(&[(12.0, 6.5), (12.0, 17.0)]);
+                self.line(&[(8.0, 13.0), (12.0, 17.0), (16.0, 13.0)]);
             }
             FileUp => {
                 // The page with its corner folded, open at the bottom right for the arrow.

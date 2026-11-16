@@ -100,6 +100,10 @@ pub(super) enum Action {
     Restore(PathBuf),
     DiscardRestore,
     Quit,
+    /// Opens a release page in the browser.
+    OpenReleasePage(String),
+    /// Starts the installed update and closes; asks about unsaved changes first.
+    RestartForUpdate(std::sync::Arc<crate::update::install::Restart>),
 }
 
 impl App {
@@ -107,7 +111,11 @@ impl App {
         let lang = self.settings.lang();
         let replaces_scene = matches!(
             a,
-            Action::New | Action::Open | Action::OpenPath(_) | Action::Quit
+            Action::New
+                | Action::Open
+                | Action::OpenPath(_)
+                | Action::Quit
+                | Action::RestartForUpdate(_)
         );
         if replaces_scene && self.scene.dirty && self.confirm.is_none() {
             self.confirm = Some(a);
@@ -477,6 +485,8 @@ impl App {
                 self.scene.dirty = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Action::OpenReleasePage(page) => self.open_release_page(&page),
+            Action::RestartForUpdate(restart) => self.restart_for_update(&restart, ctx),
         }
     }
 

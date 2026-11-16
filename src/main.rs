@@ -14,7 +14,7 @@ const APP_ID: &str = "io.github.nico2433.BuildCraft3D";
 
 const USAGE: &str = "usage: buildcraft3d [model] [--screenshot out.png] [--size WxH] \
 [--tab insert|object|edit|paint|view] [--lang es|en] [--select-all] [--menu] \
-[--zoom F] [--image file] [--drop a,b,...] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|smooth|material|cut|cut-bottom|simplify|hollow|extrude-outline|emboss|emboss-colors|emboss-pattern|emboss-fonts|emboss-spherical|emboss-cylindrical|emboss-<shape, e.g. heart>|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|texture-split|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|bar-edit|add|print|print-material|print-design|print-about|print-status|about]";
+[--zoom F] [--fake-update X.Y.Z] [--image file] [--drop a,b,...] [--library dir] [--mcp] [--mode move|rotate|scale] [--drag x|y|z:mm|rot-x|rot-y|rot-z:degrees] [--measure x,y,z;x,y,z;~x,y,z] [--tool settings|settle|smooth|material|cut|cut-bottom|simplify|hollow|extrude-outline|emboss|emboss-colors|emboss-pattern|emboss-fonts|emboss-spherical|emboss-cylindrical|emboss-<shape, e.g. heart>|measure|paint|paint-colors|paint-more|texture|texture-menu|texture-sticker|texture-edit|texture-brush|texture-split|custom|camera|ai|chat|chat-settings|unsaved|repairing|grid|recover|start|update|bar-edit|add|print|print-material|print-design|print-about|print-status|about]";
 
 /// Reads the command line: the launch options and the window size.
 fn parse_args() -> (app::Launch, [f32; 2]) {
@@ -51,6 +51,7 @@ fn parse_args() -> (app::Launch, [f32; 2]) {
             Some("--mode") => launch.mode = value(),
             Some("--drag") => launch.drag = value(),
             Some("--measure") => launch.measure = value(),
+            Some("--fake-update") => launch.fake_update = value(),
             Some(s) if s.starts_with("--") => {
                 eprintln!("{USAGE}");
                 std::process::exit(2);

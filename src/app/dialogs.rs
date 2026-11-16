@@ -42,6 +42,8 @@ impl App {
             self.about_open = open;
         }
 
+        self.update_dialog(ctx);
+
         if self.confirm.is_some() {
             let buttons = [
                 tr(lang, "Save scene"),
@@ -151,7 +153,7 @@ impl App {
                 style::CARD_INFO
             };
             let icon = if t.error { Icon::Info } else { Icon::Check };
-            cards.push((icon, t.text.clone(), edge, None));
+            cards.push((icon, t.text.clone(), edge, t.action.clone()));
         }
         if !self.toasts.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -183,6 +185,8 @@ impl App {
                         .clicked()
                     {
                         self.actions.extend(action);
+                        // A clicked notice with an action has done its job.
+                        self.toasts.retain(|t| t.text != text);
                     }
                 }
             });
@@ -267,7 +271,7 @@ fn card(
 /// The original's question box: the window dims and a black box shows `text` with grey
 /// buttons from its bottom left, 24 px in from the edges; `fill` stretches them to share
 /// the row. Returns the button clicked.
-fn black_box(
+pub(super) fn black_box(
     ctx: &egui::Context,
     id: &str,
     text: &str,

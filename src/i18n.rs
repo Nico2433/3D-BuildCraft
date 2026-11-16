@@ -79,6 +79,41 @@ fn spanish() -> &'static HashMap<&'static str, &'static str> {
 }
 
 const ES: &[(&str, &str)] = &[
+    // Updates
+    (
+        "Update available: version {to}. Click to update.",
+        "Actualización disponible: versión {to}. Haz clic para actualizar.",
+    ),
+    (
+        "Version {to} of 3D BuildCraft is available. This copy cannot update itself: open the download page?",
+        "La versión {to} de 3D BuildCraft está disponible. Esta copia no puede actualizarse sola: ¿abrir la página de descarga?",
+    ),
+    (
+        "Update 3D BuildCraft from version {from} to {to}? The installer will open and the app will close.",
+        "¿Actualizar 3D BuildCraft de la versión {from} a la {to}? Se abrirá el instalador y la aplicación se cerrará.",
+    ),
+    (
+        "Update 3D BuildCraft from version {from} to {to}? The app will restart.",
+        "¿Actualizar 3D BuildCraft de la versión {from} a la {to}? La aplicación se reiniciará.",
+    ),
+    (
+        "There are unsaved changes: you can save them before it restarts.",
+        "Hay cambios sin guardar: podrás guardarlos antes de que se reinicie.",
+    ),
+    ("Open page", "Abrir página"),
+    ("Downloading the update...", "Descargando la actualización..."),
+    ("Could not update:", "No se pudo actualizar:"),
+    (
+        "Click here to open the download page.",
+        "Haz clic aquí para abrir la página de descarga.",
+    ),
+    ("Could not restart:", "No se pudo reiniciar:"),
+    (
+        "The new version opens the next time you start the app.",
+        "La nueva versión se abrirá la próxima vez que inicies la aplicación.",
+    ),
+    ("Could not open the page:", "No se pudo abrir la página:"),
+    ("Check for updates", "Buscar actualizaciones"),
     // Tabs and top bar
     ("Insert", "Insertar"),
     ("Invert", "Inverso"),

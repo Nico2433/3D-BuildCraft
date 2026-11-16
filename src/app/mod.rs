@@ -63,6 +63,7 @@ mod thumbs;
 mod tool_bar;
 mod top_bar;
 mod transform;
+mod update_ui;
 mod viewport;
 
 use actions::Action;
@@ -273,6 +274,8 @@ struct Toast {
     text: String,
     until: Instant,
     error: bool,
+    /// Run when the card is clicked.
+    action: Option<Action>,
 }
 
 pub struct App {
@@ -385,6 +388,8 @@ pub struct App {
     actions: Vec<Action>,
     /// `--screenshot`: where to save the window and how many frames to wait first.
     screenshot: Option<(PathBuf, u32)>,
+    /// A newer release and the update in progress.
+    update: update_ui::UpdateState,
 }
 
 /// A slicer's printer profiles, and the chosen printer's processes and filament slots.
@@ -524,6 +529,7 @@ impl App {
             } => {
                 self.queue_import(&path, replace_scene, model, at, batch);
             }
+            jobs::Done::Updated { result, page } => self.update_done(result, page),
         }
     }
 
@@ -615,6 +621,17 @@ impl App {
             text: text.into(),
             until: Instant::now() + Duration::from_secs(if error { 8 } else { 4 }),
             error,
+            action: None,
+        });
+    }
+
+    /// An error notice that runs `action` when clicked; it stays a little longer.
+    fn toast_action(&mut self, text: impl Into<String>, action: Action) {
+        self.toasts.push(Toast {
+            text: text.into(),
+            until: Instant::now() + Duration::from_secs(20),
+            error: true,
+            action: Some(action),
         });
     }
 
@@ -927,6 +944,7 @@ impl eframe::App for App {
                 .unwrap_or(Vec3::ZERO);
             self.open_dropped(dropped, at, ctx);
         }
+        self.update_step(ctx);
         let jobs_before = self.jobs.len();
         self.collect_jobs();
         self.smooth_step(ctx);

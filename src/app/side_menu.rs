@@ -256,6 +256,15 @@ impl App {
             .response
             .on_disabled_hover_text(tr(lang, SOON));
         });
+        heading(ui, tr(lang, "Check for updates"));
+        ui.horizontal(|ui| {
+            style::switch(
+                ui,
+                &mut self.settings.check_updates,
+                tr(lang, "On"),
+                tr(lang, "Off"),
+            );
+        });
         ui.add_space(30.0);
         let text = |ui: &mut egui::Ui, t: &str| {
             ui.label(
