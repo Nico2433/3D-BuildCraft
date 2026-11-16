@@ -25,4 +25,5 @@ pub mod solid;
 pub mod texture;
 pub mod texture_gen;
 pub mod thumbnail;
+pub mod update;
 pub mod webcam;
