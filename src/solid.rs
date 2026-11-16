@@ -81,6 +81,7 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
             texs.push(mesh.face_tex(i).unwrap_or_default());
         }
     }
+    center_fans(&mut pos, &mut tris, &mut colors, &mut texs);
     let bottom = pos.iter().map(|p| p.z).fold(f32::INFINITY, f32::min);
     for _ in 0..levels {
         (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, edges);
@@ -97,6 +98,119 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
         out.tex = texs;
     }
     Ok(out)
+}
+
+/// Rebuilds flat fans from their centre. A cap triangulated as a fan from one rim point
+/// (a cylinder's) gives that point a hundred neighbours, and subdivision would pinch a
+/// crease from it; triangulated from its centre it rounds evenly, as the original's
+/// shapes do. Only flat, single-colour, untextured patches shaped like a disc with a
+/// point touching more than eight of their faces change, and only when every new face
+/// still faces the same way, so the shape and the paint stay as they are.
+fn center_fans(
+    pos: &mut Vec<Vec3>,
+    tris: &mut Vec<[u32; 3]>,
+    colors: &mut Vec<[u8; 4]>,
+    texs: &mut Vec<FaceTex>,
+) {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let normal = |pos: &[Vec3], t: &[u32; 3]| {
+        let [a, b, c] = t.map(|v| pos[v as usize]);
+        (b - a).cross(c - a).normalize_or_zero()
+    };
+    let mut faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (i, t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            faces.entry(key(t[k], t[(k + 1) % 3])).or_default().push(i);
+        }
+    }
+    // Flat patches: faces joined across edges with the same normal and paint.
+    let mut patch = Dsu::new(tris.len());
+    for f in faces.values() {
+        if let &[f1, f2] = f.as_slice() {
+            if colors[f1] == colors[f2]
+                && texs[f1].layer == 0
+                && texs[f2].layer == 0
+                && normal(pos, &tris[f1]).dot(normal(pos, &tris[f2])) > 0.99999
+            {
+                patch.union(f1, f2);
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..tris.len() {
+        groups.entry(patch.find(i)).or_default().push(i);
+    }
+    let mut drop = vec![false; tris.len()];
+    let mut added: Vec<([u32; 3], [u8; 4])> = Vec::new();
+    for members in groups.values().filter(|m| m.len() > 8) {
+        let mut uses: HashMap<u32, usize> = HashMap::new();
+        for &f in members {
+            tris[f]
+                .iter()
+                .for_each(|&v| *uses.entry(v).or_default() += 1);
+        }
+        if uses.values().all(|&n| n <= 8) {
+            continue;
+        }
+        // The patch's rim, as directed edges a → b of its faces.
+        let inside: std::collections::HashSet<usize> = members.iter().copied().collect();
+        let mut next: HashMap<u32, u32> = HashMap::new();
+        let mut simple = true;
+        for &f in members {
+            let t = tris[f];
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                let shared = faces[&key(a, b)]
+                    .iter()
+                    .any(|&g| g != f && inside.contains(&g));
+                if !shared && next.insert(a, b).is_some() {
+                    simple = false;
+                }
+            }
+        }
+        // One loop through every rim point, and a disc: V - E + F = 1.
+        let Some(&start) = next.keys().next() else {
+            continue;
+        };
+        let mut ring = vec![start];
+        while let Some(&n) = next.get(ring.last().unwrap()) {
+            if n == start || ring.len() > next.len() {
+                break;
+            }
+            ring.push(n);
+        }
+        let edges = (members.len() * 3 + ring.len()) / 2;
+        if !simple || ring.len() != next.len() || uses.len() + members.len() != edges + 1 {
+            continue;
+        }
+        let up = normal(pos, &tris[members[0]]);
+        let center = ring.iter().map(|&v| pos[v as usize]).sum::<Vec3>() / ring.len() as f32;
+        let fan: Vec<[u32; 3]> = (0..ring.len())
+            .map(|k| [ring[k], ring[(k + 1) % ring.len()], pos.len() as u32])
+            .collect();
+        let mut probe = pos.clone();
+        probe.push(center);
+        if fan.iter().any(|t| normal(&probe, t).dot(up) < 0.999) {
+            continue;
+        }
+        pos.push(center);
+        members.iter().for_each(|&f| drop[f] = true);
+        added.extend(fan.into_iter().map(|t| (t, colors[members[0]])));
+    }
+    if added.is_empty() {
+        return;
+    }
+    let mut k = drop.iter();
+    tris.retain(|_| !*k.next().unwrap());
+    let mut k = drop.iter();
+    colors.retain(|_| !*k.next().unwrap());
+    let mut k = drop.iter();
+    texs.retain(|_| !*k.next().unwrap());
+    for (t, c) in added {
+        tris.push(t);
+        colors.push(c);
+        texs.push(FaceTex::default());
+    }
 }
 
 /// Points, triangles and their colours and textures.
@@ -558,6 +672,36 @@ mod tests {
         assert!(volume(&round) < volume(&kept));
         assert_eq!(round.aabb().min.z, cube.aabb().min.z);
         assert_eq!(kept.aabb().min.z, cube.aabb().min.z);
+    }
+
+    #[test]
+    fn flat_fans_are_rebuilt_from_their_centre() {
+        let cylinder = Primitive::Cylinder.build().welded();
+        let (mut pos, mut tris) = (cylinder.positions.clone(), cylinder.triangles.clone());
+        let n = tris.len();
+        let (mut colors, mut texs) = (vec![[0; 4]; n], vec![FaceTex::default(); n]);
+        let most = |tris: &[[u32; 3]], points: usize| {
+            let mut count = vec![0; points];
+            tris.iter().flatten().for_each(|&v| count[v as usize] += 1);
+            count
+        };
+        assert!(most(&tris, pos.len()).into_iter().max().unwrap() > 60);
+        center_fans(&mut pos, &mut tris, &mut colors, &mut texs);
+        // Two new centre points carry the caps; no rim point keeps a fan.
+        assert_eq!(pos.len(), cylinder.positions.len() + 2);
+        let count = most(&tris, pos.len());
+        assert!(count[..cylinder.positions.len()].iter().all(|&c| c <= 8));
+        let rebuilt = Mesh::new(pos, tris);
+        assert!(rebuilt.stats().is_closed_manifold());
+        let volume = cylinder.stats().volume;
+        assert!((rebuilt.stats().volume - volume).abs() < 1e-3 * volume);
+        // A cube's faces are two triangles each: left alone.
+        let cube = Primitive::Cube.build().welded();
+        let (mut p, mut t) = (cube.positions.clone(), cube.triangles.clone());
+        let mut c = vec![[0; 4]; t.len()];
+        let mut x = vec![FaceTex::default(); t.len()];
+        center_fans(&mut p, &mut t, &mut c, &mut x);
+        assert_eq!(t, cube.triangles);
     }
 
     #[test]
