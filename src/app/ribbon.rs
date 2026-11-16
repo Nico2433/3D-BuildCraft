@@ -309,7 +309,23 @@ impl App {
             return;
         };
         let lang = self.settings.lang();
-        let size = Vec2::new(236.0, 355.0);
+        // As wide as its longest line needs, with the same margin on both sides.
+        const MARGIN: f32 = 20.0;
+        let widest = ctx.fonts(|f| {
+            [tr(lang, "Grid mode"), tr(lang, "Show grid labels")]
+                .iter()
+                .map(|t| {
+                    f.layout_no_wrap(
+                        (*t).to_owned(),
+                        egui::FontId::proportional(14.0),
+                        style::TEXT,
+                    )
+                    .size()
+                    .x
+                })
+                .fold(0.0_f32, f32::max)
+        });
+        let size = Vec2::new(236.0_f32.max(widest + 2.0 * MARGIN).ceil(), 355.0);
         let shown =
             super::flyout::Flyout::new("grid_flyout", at - Vec2::new(size.x / 2.0, 0.0), size.x)
                 .show(ctx, just_opened, |m| {
