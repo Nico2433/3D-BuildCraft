@@ -19,18 +19,34 @@ fn main() {
         ),
     )
     .expect("write icon resource script");
-    run(Command::new("llvm-rc").arg("/fo").arg(&res).arg(&rc));
+    // Without LLVM's resource tools (as on some CI runners) the exe just has no icon.
+    let (Some(llvm_rc), Some(llvm_cvtres)) = (tool("llvm-rc"), tool("llvm-cvtres")) else {
+        println!("cargo:warning=llvm-rc/llvm-cvtres not found; the exe gets no icon");
+        return;
+    };
+    run(Command::new(llvm_rc).arg("/fo").arg(&res).arg(&rc));
     let machine = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => "/machine:x64",
         Ok("aarch64") => "/machine:arm64",
         Ok("x86") => "/machine:x86",
         _ => panic!("unsupported Windows resource architecture"),
     };
-    run(Command::new("llvm-cvtres")
+    run(Command::new(llvm_cvtres)
         .arg(machine)
         .arg(format!("/out:{}", obj.display()))
         .arg(&res));
     println!("cargo:rustc-link-arg-bin=buildcraft3d={}", obj.display());
+}
+
+/// `name` on the PATH, or in LLVM's usual Windows install folder.
+fn tool(name: &str) -> Option<PathBuf> {
+    let on_path = Command::new(name).arg("/?").output().is_ok();
+    if on_path {
+        return Some(PathBuf::from(name));
+    }
+    let program_files = env::var_os("ProgramFiles").map(PathBuf::from)?;
+    let path = program_files.join("LLVM/bin").join(format!("{name}.exe"));
+    path.is_file().then_some(path)
 }
 
 fn run(command: &mut Command) {
