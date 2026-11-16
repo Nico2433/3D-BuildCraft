@@ -140,3 +140,30 @@ fn closed_app_still_lists_tools_and_returns_a_tool_error() {
         buildcraft3d::mcp::NOT_OPEN
     );
 }
+
+#[test]
+fn list_fonts_filters_and_find_font_suggests() {
+    use buildcraft3d::mcp::{find_font, list_fonts};
+    let all: Vec<String> = [
+        "DejaVu Sans",
+        "DejaVu Serif",
+        "Noto Sans Mono",
+        "Liberation Serif",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let v = list_fonts(&all, Some("dejavu"));
+    assert_eq!(v["count"], 2);
+    assert_eq!(list_fonts(&all, None)["count"], 4);
+    assert!(tools().iter().any(|t| t["name"] == "list_fonts"));
+    assert_eq!(find_font(&all, " dejavu serif ").unwrap(), "DejaVu Serif");
+    let err = find_font(&all, "Noto Serif").unwrap_err();
+    assert!(
+        err.contains("similar: DejaVu Serif, Noto Sans Mono, Liberation Serif"),
+        "{err}"
+    );
+    assert!(err.contains("list_fonts"));
+    let err = find_font(&all, "Comic").unwrap_err();
+    assert!(!err.contains("similar"), "{err}");
+}

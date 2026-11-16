@@ -123,6 +123,10 @@ impl App {
         if tool == "measure" {
             return Ok(vec![mcp::text(&mcp::measure(&self.scene, a)?.to_string())]);
         }
+        if tool == "list_fonts" {
+            let fonts = mcp::list_fonts(&crate::emboss::font_families(), a["filter"].as_str());
+            return Ok(vec![mcp::text(&fonts.to_string())]);
+        }
         // These leave the user's open tool alone.
         if matches!(
             tool,

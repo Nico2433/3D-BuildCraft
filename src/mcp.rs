@@ -382,6 +382,11 @@ fn print_tools() -> Vec<Value> {
             } }),
         ),
         tool(
+            "list_fonts",
+            "Read-only: the installed font families that emboss_text accepts in font. Without font, emboss_text uses the bundled font.",
+            json!({ "type": "object", "properties": { "filter": field("only families whose name contains this text, ignoring case") } }),
+        ),
+        tool(
             "printer_status",
             "Read-only: the printers connected in the slicer and what they are doing (state, progress, file, nozzle and bed temperatures in °C). Offline means it did not answer within two seconds.",
             none.clone(),
@@ -539,6 +544,43 @@ pub fn call_app(file: &std::path::Path, name: &str, args: Value) -> Reply {
             .clone()))
     };
     forward().unwrap_or_else(|_| Err(NOT_OPEN.into()))
+}
+
+/// The font families from `all` whose names contain `filter`, ignoring case.
+pub fn list_fonts(all: &[String], filter: Option<&str>) -> Value {
+    let filter = filter.map(|f| f.trim().to_lowercase()).unwrap_or_default();
+    let fonts: Vec<&String> = all
+        .iter()
+        .filter(|n| n.to_lowercase().contains(&filter))
+        .collect();
+    json!({ "count": fonts.len(), "fonts": fonts })
+}
+
+/// The installed family named `name`, ignoring case; the error names up to
+/// five families that contain or share a word with it.
+pub fn find_font(all: &[String], name: &str) -> Result<String, String> {
+    let wanted = name.trim().to_lowercase();
+    if let Some(n) = all.iter().find(|n| n.to_lowercase() == wanted) {
+        return Ok(n.clone());
+    }
+    let words: Vec<&str> = wanted.split_whitespace().filter(|w| w.len() > 2).collect();
+    let similar: Vec<&str> = all
+        .iter()
+        .filter(|n| {
+            let n = n.to_lowercase();
+            (!wanted.is_empty() && n.contains(&wanted)) || words.iter().any(|w| n.contains(w))
+        })
+        .take(5)
+        .map(String::as_str)
+        .collect();
+    let hint = if similar.is_empty() {
+        String::new()
+    } else {
+        format!("; similar: {}", similar.join(", "))
+    };
+    Err(format!(
+        "font {name} is not installed{hint}; call list_fonts for the installed fonts"
+    ))
 }
 
 /// Computes measurements without modifying the scene.

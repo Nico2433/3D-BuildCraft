@@ -249,12 +249,7 @@ impl App {
             ],
         )?;
         if let Some(f) = a["font"].as_str() {
-            params.font = Some(
-                crate::emboss::font_families()
-                    .into_iter()
-                    .find(|n| n.eq_ignore_ascii_case(f.trim()))
-                    .ok_or_else(|| format!("font {f} is not installed"))?,
-            );
+            params.font = Some(crate::mcp::find_font(&crate::emboss::font_families(), f)?);
         }
         params.top_color = color(a, "top_color")?;
         params.side_color = color(a, "side_color")?;
