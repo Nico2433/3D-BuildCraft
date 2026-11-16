@@ -288,17 +288,20 @@ mod tests {
 
     #[test]
     fn a_uri_list_or_paths_give_the_supported_files() {
-        let text = "# from a file manager\r\nfile:///home/a/My%20Part.STL\n\
-                    file://localhost/home/a/photo.jpg\nfile:///home/a/notes.txt\n\
-                    https://example.com/x.stl\n/home/a/plain.3mf\nrelative.obj\n\n";
+        // A plain absolute path, as the platform writes one.
+        let plain = if cfg!(windows) {
+            r"C:\a\plain.3mf"
+        } else {
+            "/home/a/plain.3mf"
+        };
+        let text = format!(
+            "# from a file manager\r\nfile:///home/a/My%20Part.STL\n\
+             file://localhost/home/a/photo.jpg\nfile:///home/a/notes.txt\n\
+             https://example.com/x.stl\n{plain}\nrelative.obj\n\n"
+        );
         assert_eq!(
-            parse_file_list(text),
-            [
-                "/home/a/My Part.STL",
-                "/home/a/photo.jpg",
-                "/home/a/plain.3mf"
-            ]
-            .map(PathBuf::from)
+            parse_file_list(&text),
+            ["/home/a/My Part.STL", "/home/a/photo.jpg", plain].map(PathBuf::from)
         );
         // GNOME's list starts with the operation.
         assert_eq!(
