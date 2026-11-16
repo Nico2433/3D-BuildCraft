@@ -262,9 +262,9 @@ impl App {
                 if !self.scene.selection.is_empty() {
                     self.tool = Some(Tool::Smooth {
                         amount: 0.0,
-                        edges: true,
+                        edges: false,
                         before: self.checkpoint(),
-                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, true)),
+                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, false)),
                     });
                 }
             }
