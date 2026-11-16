@@ -258,8 +258,12 @@ impl App {
             .and_then(|t| t.strip_prefix("smooth"))
         {
             self.apply(Action::StartSmooth, ctx);
-            if let Some(Tool::Smooth { amount, .. }) = &mut self.tool {
-                *amount = t.trim_start_matches('-').parse().unwrap_or(0.0);
+            // `smooth-0.5`, or `smooth-0.5-edges` with Smooth edges on.
+            if let Some(Tool::Smooth { amount, edges, .. }) = &mut self.tool {
+                let t = t.trim_start_matches('-');
+                let (value, on) = t.strip_suffix("-edges").map_or((t, false), |v| (v, true));
+                *amount = value.parse().unwrap_or(0.0);
+                *edges = on;
             }
         }
         if let Some(spec) = launch.measure {

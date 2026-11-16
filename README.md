@@ -108,7 +108,7 @@ cargo run --release -- model.3mf --select-all --lang en --size 1920x1080 --zoom 
 Options that open a given state:
 
 - `--tab insert|object|edit|paint|view`, `--mode move|rotate|scale`, `--menu`, `--select-all`
-- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth`, `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
+- `--tool` with a tool: `add`, `custom`, `camera`, `cut`, `simplify`, `smooth` (`smooth-0.5` sets the slider, `smooth-0.5-edges` also turns Smooth edges on), `hollow`, `extrude-outline`, `emboss`, `measure`, `settle`, `paint`, `paint-colors`, `paint-more`, `material`, `material-type`, `texture`, `texture-menu`, `texture-sticker`, `texture-edit`, `texture-brush`
 - `--tool` with a page or dialog: `print-printer`, `print-material`, `print-design`, `print-status`, `print-about`, `settings`, `about`, `ai`, `chat`, `unsaved`, `recover`, `repairing`, `grid`, `bar-edit`, `start`, `update`
 - `--image <file>` opens Load image, `--library <folder>` a 3D library
 - `--fake-update 0.1.14` shows that version as available without asking GitHub (`--tool update` opens its question); `BUILDCRAFT3D_FAKE_VERSION=0.1.0` makes a normal run believe it is that version, to test a real check
