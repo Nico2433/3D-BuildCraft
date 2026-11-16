@@ -664,6 +664,7 @@ name = "buildcraft3d"
 version = "0.1.13"
 dependencies = [
  "anyhow",
+ "arboard",
  "ashpd",
  "bytemuck",
  "clipper2-rust",

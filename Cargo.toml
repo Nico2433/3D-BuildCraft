@@ -40,6 +40,9 @@ ureq = { version = "3", features = ["json"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 nokhwa = { version = "0.10", features = ["input-native"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Ctrl+V of a picture or of copied files; eframe already pulls it in for text. On Linux
+# the window runs through XWayland (see winit below), so its X11 clipboard is enough.
+arboard = "3.7"
 qrcode = { version = "0.14", default-features = false }
 # SVG import: parses and resolves the drawing (transforms, shapes, styles, units).
 usvg = { version = "0.45", default-features = false }

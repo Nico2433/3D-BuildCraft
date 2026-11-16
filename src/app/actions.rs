@@ -18,7 +18,8 @@ pub(super) enum Action {
     Duplicate,
     Copy,
     Cut,
-    Paste,
+    /// Ctrl+V or the Paste button, with the clipboard's text when the window read it.
+    Paste(Option<String>),
     Delete,
     Settle,
     SettleInstant,
@@ -154,16 +155,13 @@ impl App {
             Action::Duplicate => self.edit(Scene::duplicate_selected),
             action @ (Action::Copy | Action::Cut) => {
                 self.clipboard = self.scene.selected().cloned().collect();
-                // The window only reports Ctrl+V when the system clipboard holds text.
+                // Ctrl+V then knows these objects are the latest thing copied.
                 ctx.copy_text(CLIP_TEXT.into());
                 if matches!(action, Action::Cut) {
                     self.edit(Scene::delete_selected);
                 }
             }
-            Action::Paste => {
-                let clip = self.clipboard.clone();
-                self.edit(|s| s.paste(&clip));
-            }
+            Action::Paste(text) => self.paste(text, ctx),
             Action::Delete => {
                 self.edit(Scene::delete_selected);
                 self.refresh_invalid();

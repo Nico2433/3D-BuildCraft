@@ -47,6 +47,7 @@ mod material;
 mod outline;
 mod paint_menu;
 mod paper;
+mod paste;
 mod picking;
 mod power;
 mod print;
@@ -289,6 +290,8 @@ pub struct App {
     mode: TransformMode,
     tool: Option<Tool>,
     clipboard: Vec<Object>,
+    /// Ctrl+V tracking and what the system clipboard holds, for Paste.
+    paste: paste::PasteState,
     /// Files waiting for the units dialog; the first one is shown.
     pending_import: Vec<PendingImport>,
     /// Loading and repairing, running on their own threads.
@@ -764,6 +767,13 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // Ctrl+V is followed even in a text field, so a paste there is not taken for ours.
+        let paste = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| self.paste.key.on_event(e))
+                .last()
+        });
         // Delete or Ctrl+Z while editing a number belong to the field, not the scene.
         if ctx.wants_keyboard_input() {
             return;
@@ -791,15 +801,15 @@ impl App {
                     self.actions.push(action);
                 }
             }
-            // Ctrl+C, X and V arrive as clipboard events, not as keys.
+            // Ctrl+C and X arrive as clipboard events, not as keys; V is followed above.
             for e in &i.events {
                 self.actions.extend(match e {
                     egui::Event::Copy => Some(Action::Copy),
                     egui::Event::Cut => Some(Action::Cut),
-                    egui::Event::Paste(_) => Some(Action::Paste),
                     _ => None,
                 });
             }
+            self.actions.extend(paste.map(Action::Paste));
             if i.consume_key(Modifiers::NONE, Key::Delete) {
                 self.actions.push(Action::Delete);
             }

@@ -85,7 +85,10 @@ impl App {
                             }
                         }
                         Tab::Object => {
-                            let paste = !self.clipboard.is_empty();
+                            // Screenshots do not depend on what the clipboard holds.
+                            let paste = !self.clipboard.is_empty()
+                                || self.screenshot.is_none()
+                                    && self.paste.clipboard_has_something();
                             row(
                                 ui,
                                 &[
@@ -97,7 +100,12 @@ impl App {
                                     ),
                                     (Icon::Copy, tr(lang, "Copy"), Some(Action::Copy), has_sel),
                                     (Icon::Cut, tr(lang, "Cut"), Some(Action::Cut), has_sel),
-                                    (Icon::Paste, tr(lang, "Paste"), Some(Action::Paste), paste),
+                                    (
+                                        Icon::Paste,
+                                        tr(lang, "Paste"),
+                                        Some(Action::Paste(None)),
+                                        paste,
+                                    ),
                                     (
                                         Icon::Delete,
                                         tr(lang, "Delete"),

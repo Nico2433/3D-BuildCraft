@@ -60,6 +60,7 @@ impl App {
             mode: TransformMode::Move,
             tool: None,
             clipboard: Vec::new(),
+            paste: Default::default(),
             pending_import: Vec::new(),
             jobs: Vec::new(),
             emboss_drag: None,
