@@ -32,25 +32,19 @@ pub const SMOOTH_LEVELS: u32 = 5;
 /// Past this many triangles the Smooth tool stops subdividing further.
 const SMOOTH_BUDGET: usize = 400_000;
 
-/// The Smooth tool's surface, as the original's: `amount` (0 to 1) sets how many times
-/// every face is split in four (up to [`SMOOTH_LEVELS`], fewer for big meshes), so the
-/// slider changes how fine the surface is, not its shape. Without `edges` the split is
-/// interpolating (butterfly): the original points stay and the shape keeps its size, its
-/// edges rounded between them. With `edges` (the original's "UseSubdivision") it is
+/// The Smooth tool's surface, as the original's: `amount` (0 to 1) sets how fine the
+/// surface becomes, a triangle size from about a quarter of the object's diagonal down
+/// to a sixteenth of that. Every face is split in four as often as it takes the typical
+/// edge to reach it (up to [`SMOOTH_LEVELS`] times, fewer past a few hundred thousand
+/// triangles), so the slider changes how fine the surface is, not its shape, and a model
+/// that is already that fine (a detailed scan) stays as it is. Without `edges` the split
+/// is interpolating (butterfly): the original points stay and the shape keeps its size,
+/// its edges rounded between them. With `edges` (the original's "UseSubdivision") it is
 /// approximating (Loop): every point moves to its average, so edges and corners melt
-/// into a rounder, smaller shape. The bottom stays at its height. Points on open or non-manifold edges stay put. Face
-/// colours and textures follow their faces.
+/// into a rounder, smaller shape. The bottom stays at its height. Points on open or
+/// non-manifold edges stay put. Face colours and textures follow their faces.
 pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
-    if mesh.triangles.len() > SMOOTH_MAX_TRIANGLES {
-        bail!(
-            "Too many triangles to smooth ({}); simplify the model first",
-            mesh.triangles.len()
-        );
-    }
-    let mut levels = (amount.clamp(0.0, 1.0) * SMOOTH_LEVELS as f32).round() as u32;
-    while levels > 1 && mesh.triangles.len() * 4usize.pow(levels) > SMOOTH_BUDGET {
-        levels -= 1;
-    }
+    let levels = smooth_levels(mesh, amount);
     if levels == 0 {
         return Ok(mesh.clone());
     }
@@ -211,6 +205,30 @@ fn center_fans(
         colors.push(c);
         texs.push(FaceTex::default());
     }
+}
+
+/// How many times [`smooth_by`] splits the faces of `mesh` for `amount`.
+pub fn smooth_levels(mesh: &Mesh, amount: f32) -> u32 {
+    let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.0 || mesh.triangles.is_empty() {
+        return 0;
+    }
+    let bounds = mesh.aabb();
+    let target = 0.286 * (bounds.max - bounds.min).length() * 16f32.powf(-amount);
+    let mut lengths: Vec<f32> = mesh
+        .triangle_positions()
+        .flat_map(|[a, b, c]| [a.distance(b), b.distance(c), c.distance(a)])
+        .collect();
+    let middle = lengths.len() / 2;
+    let typical = *lengths.select_nth_unstable_by(middle, f32::total_cmp).1;
+    let mut levels = (typical / target.max(1e-9))
+        .log2()
+        .round()
+        .clamp(0.0, SMOOTH_LEVELS as f32) as u32;
+    while levels > 0 && mesh.triangles.len() * 4usize.pow(levels) > SMOOTH_BUDGET {
+        levels -= 1;
+    }
+    levels
 }
 
 /// Points, triangles and their colours and textures.
@@ -705,11 +723,36 @@ mod tests {
     }
 
     #[test]
+    fn fine_models_are_left_as_they_are() {
+        // A sphere's edges are already finer than half the slider asks for.
+        let ball = Primitive::Sphere.build();
+        assert_eq!(smooth_levels(&ball, 0.5), 0);
+        assert_eq!(smooth_by(&ball, 0.5, false).unwrap(), ball);
+        assert!(smooth_levels(&ball, 1.0) > 0);
+        // A big mesh is never refused, only split less.
+        let cube = Primitive::Cube.build().welded();
+        let n = cube.triangles.len();
+        let mut split = (
+            cube.positions.clone(),
+            cube.triangles.clone(),
+            vec![[0; 4]; n],
+            vec![FaceTex::default(); n],
+        );
+        for _ in 0..7 {
+            split = subdivide(&split.0, &split.1, &split.2, &split.3, false);
+        }
+        let big = Mesh::new(split.0, split.1);
+        assert!(big.triangles.len() > SMOOTH_BUDGET / 4);
+        assert_eq!(smooth_by(&big, 1.0, true).unwrap(), big);
+        assert_eq!(smooth_levels(&big, 1.0), 0);
+    }
+
+    #[test]
     fn smooth_carries_face_colors() {
         let mut ball = Primitive::Sphere.build();
         let palette = [[255, 0, 0, 255], [0, 255, 0, 255]];
         ball.colors = (0..ball.triangles.len()).map(|i| palette[i % 2]).collect();
-        let smooth = smooth_by(&ball, 0.2, true).unwrap();
+        let smooth = smooth_by(&ball, 1.0, true).unwrap();
         assert_eq!(smooth.colors.len(), smooth.triangles.len());
         assert!(smooth.colors.iter().all(|c| palette.contains(c)));
         assert!(palette.iter().all(|p| smooth.colors.contains(p)));
