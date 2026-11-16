@@ -64,6 +64,8 @@ The same tools are served over MCP for agents outside the app. Turn on "External
 claude mcp add -s user --transport http buildcraft3d http://127.0.0.1:47833/mcp/<token>
 ```
 
+An agent that runs where the app cannot read its files (a sandbox, a container, another machine) sends the file itself: `open`, `import`, `load_image`, `emboss_text` and `apply_texture` take `file_name` with `file_text` (SVG, OBJ, ASCII STL or PLY) or `file_base64` (any format, up to 25 MB) instead of a path. The app writes it to a folder of its own under the system temp folder; folders older than a day are removed.
+
 The token is made once and kept in the config folder (readable by you only), so the URL stays the same between runs; the port is `mcp_port` under `[ai]` in the settings file. Registrations from older versions (the `--mcp` command) show as outdated; turning the switch on replaces them.
 
 `buildcraft3d --mcp` still serves MCP on stdio, for custom commands and clients without HTTP: with the app open it attaches to that window through a local port (127.0.0.1, with a token in a file only you can read); otherwise it opens a window of its own.

@@ -167,3 +167,60 @@ fn list_fonts_filters_and_find_font_suggests() {
     let err = find_font(&all, "Comic").unwrap_err();
     assert!(!err.contains("similar"), "{err}");
 }
+
+#[test]
+fn inline_files_land_in_their_own_folder() {
+    use buildcraft3d::mcp::inline_file;
+    let dir = tempfile::tempdir().unwrap();
+    // No inline file: the arguments are used as they are.
+    assert!(inline_file(&json!({"path": "/x.svg"}), "path", dir.path())
+        .unwrap()
+        .is_none());
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'/>";
+    let a = inline_file(
+        &json!({"file_name": "../../shield.svg", "file_text": svg, "units": "mm"}),
+        "path",
+        dir.path(),
+    )
+    .unwrap()
+    .unwrap();
+    let path = std::path::PathBuf::from(a["path"].as_str().unwrap());
+    assert!(path.starts_with(dir.path()));
+    assert_eq!(path.file_name().unwrap(), "shield.svg");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), svg);
+    assert_eq!(a["units"], "mm");
+    // base64 for binary files, into a new folder each time.
+    let b = inline_file(
+        &json!({"file_name": "shield.svg", "file_base64": "/+7dzA=="}),
+        "image",
+        dir.path(),
+    )
+    .unwrap()
+    .unwrap();
+    let second = std::path::PathBuf::from(b["image"].as_str().unwrap());
+    assert_ne!(second, path);
+    assert_eq!(std::fs::read(&second).unwrap(), [0xFF, 0xEE, 0xDD, 0xCC]);
+    for bad in [
+        json!({"file_text": "x"}),
+        json!({"file_name": "noext", "file_text": "x"}),
+        json!({"file_name": "a.png", "file_base64": "*"}),
+        json!({"file_name": "a.svg", "file_text": "x", "file_base64": "eA=="}),
+        json!({"file_name": "a.svg", "file_text": "x", "path": "/a.svg"}),
+    ] {
+        assert!(inline_file(&bad, "path", dir.path()).is_err(), "{bad}");
+    }
+    for name in [
+        "open",
+        "import",
+        "load_image",
+        "emboss_text",
+        "apply_texture",
+    ] {
+        let t = tools().into_iter().find(|t| t["name"] == name).unwrap();
+        assert!(
+            t["inputSchema"]["properties"]["file_base64"].is_object(),
+            "{name}"
+        );
+        assert!(t["inputSchema"]["required"].is_null(), "{name}");
+    }
+}

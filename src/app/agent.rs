@@ -104,6 +104,19 @@ impl App {
     }
 
     fn agent_call(&mut self, tool: &str, a: &Value, ctx: &egui::Context) -> Reply {
+        let key = match tool {
+            "emboss_text" | "apply_texture" => "image",
+            _ => "path",
+        };
+        let inline = if matches!(
+            tool,
+            "open" | "import" | "load_image" | "emboss_text" | "apply_texture"
+        ) {
+            mcp::inline_file(a, key, &mcp::inline_dir())?
+        } else {
+            None
+        };
+        let a = inline.as_ref().unwrap_or(a);
         let selection_needed = matches!(
             tool,
             "transform"

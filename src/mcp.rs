@@ -153,6 +153,28 @@ transform size [50, 50, 30], position [0, 0, 0], bottom 40. The roof now sits on
 }
 
 /// The tools, with their JSON schemas.
+/// Adds `file_name`, `file_text` and `file_base64` to a tool's schema: an agent
+/// on another machine or in a sandbox sends the file itself instead of `key`.
+fn with_file(mut schema: Value, key: &str) -> Value {
+    let text = |what: String| json!({ "type": "string", "description": what });
+    let props = schema["properties"]
+        .as_object_mut()
+        .expect("an object schema");
+    props.insert("file_name".into(), text(format!("instead of {key}, when the agent runs where the app cannot read its files: the file name with extension, e.g. logo.svg, sent with file_text or file_base64")));
+    props.insert(
+        "file_text".into(),
+        text("the whole file as text (SVG, OBJ, ASCII STL or PLY)".into()),
+    );
+    props.insert(
+        "file_base64".into(),
+        text(format!(
+            "the whole file in base64 (3MF, binary STL, GLB, PNG, JPEG), up to {} MB",
+            INLINE_MAX >> 20
+        )),
+    );
+    schema
+}
+
 pub fn tools() -> Vec<Value> {
     let vec3 = |what: &str| json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": what });
     let none = json!({ "type": "object", "properties": {} });
@@ -197,7 +219,7 @@ pub fn tools() -> Vec<Value> {
         tool(
             "open",
             "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
-            json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }, "required": ["path"] }),
+            with_file(json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } } }), "path"),
         ),
         tool(
             "save",
@@ -266,7 +288,7 @@ fn model_tools() -> Vec<Value> {
         tool(
             "emboss_text",
             "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the original's shapes (named in pattern), or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
-            json!({ "type": "object", "properties": {
+            with_file(json!({ "type": "object", "properties": {
                 "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text("the text, for pattern text"),
                 "image": text("PNG or JPEG path, for pattern image"),
@@ -282,7 +304,7 @@ fn model_tools() -> Vec<Value> {
                 "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face there, facing out"),
                 "top_color": color("colour of the top layer"),
                 "side_color": color("colour of the sides of a raised pattern"),
-            } }),
+            } }), "image"),
         ),
         tool(
             "paint_area",
@@ -305,7 +327,7 @@ fn model_tools() -> Vec<Value> {
         tool(
             "apply_texture",
             "Put a built-in texture or a picture on the selection, as Paint → Texture. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker projects it once at point, facing out of the surface. One undo step.",
-            json!({ "type": "object", "properties": {
+            with_file(json!({ "type": "object", "properties": {
                 "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes)"),
                 "image": text("PNG or JPEG path, instead of texture"),
                 "mode": one_of(&["brush", "sticker"], "default brush"),
@@ -314,15 +336,15 @@ fn model_tools() -> Vec<Value> {
                 "id": int("a selected object to use; default the selected object nearest to point"),
                 "size": num("sticker width, mm; default 40% of the object's longest side"),
                 "angle": num("sticker turn about the surface normal, degrees"),
-            } }),
+            } }), "image"),
         ),
         tool(
             "import",
             "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
-            json!({ "type": "object", "properties": {
+            with_file(json!({ "type": "object", "properties": {
                 "path": text("model file path"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
-            }, "required": ["path"] }),
+            } }), "path"),
         ),
         tool(
             "extrude_outline",
@@ -339,7 +361,7 @@ fn model_tools() -> Vec<Value> {
         tool(
             "load_image",
             "Turn a picture into a solid, as Load image, added on the floor at the centre and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert. One undo step.",
-            json!({ "type": "object", "properties": {
+            with_file(json!({ "type": "object", "properties": {
                 "path": text("PNG or JPEG path"),
                 "method": one_of(&["contour", "height_map", "edge", "stamp"], "default contour"),
                 "size": num("mm along the longer side (the height for edge), default 80"),
@@ -348,7 +370,7 @@ fn model_tools() -> Vec<Value> {
                 "smooth": num("blur before sampling, 0..1, default 1"),
                 "invert": flag("light is high instead of dark"),
                 "textures": flag("colour the top with the picture, default true"),
-            }, "required": ["path"] }),
+            } }), "path"),
         ),
     ]
 }
@@ -544,6 +566,108 @@ pub fn call_app(file: &std::path::Path, name: &str, args: Value) -> Reply {
             .clone()))
     };
     forward().unwrap_or_else(|_| Err(NOT_OPEN.into()))
+}
+
+/// The largest file an agent may send inline.
+pub const INLINE_MAX: usize = 25 << 20;
+
+/// Decodes standard base64 (padding optional, whitespace ignored).
+fn unbase64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut n, mut bits) = (0u32, 0);
+    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        n = n << 6 | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((n >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// When `args` carry a file inline (`file_name` with `file_text` or
+/// `file_base64`), writes it to a new folder inside `dir` and returns the
+/// arguments with `key` set to its path. Only the base name is kept, so the
+/// agent never chooses where the file goes.
+pub fn inline_file(
+    args: &Value,
+    key: &str,
+    dir: &std::path::Path,
+) -> Result<Option<Value>, String> {
+    let (text, data) = (args["file_text"].as_str(), args["file_base64"].as_str());
+    if text.is_none() && data.is_none() {
+        return Ok(None);
+    }
+    if !args[key].is_null() {
+        return Err(format!("send either {key} or the file inline, not both"));
+    }
+    let bytes = match (text, data) {
+        (Some(t), None) => t.as_bytes().to_vec(),
+        (None, Some(d)) => unbase64(d).ok_or("file_base64 is not valid base64")?,
+        _ => return Err("send file_text or file_base64, not both".into()),
+    };
+    if bytes.len() > INLINE_MAX {
+        return Err(format!("the file is over {} MB", INLINE_MAX >> 20));
+    }
+    let name: String = args["file_name"]
+        .as_str()
+        .ok_or("file_name is missing (the name with extension, e.g. logo.svg)")?
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
+        .collect();
+    let name = name.trim().trim_start_matches('.');
+    if !name.contains('.') {
+        return Err("file_name needs an extension, e.g. logo.svg".into());
+    }
+    // A folder per file: an earlier one may still be in use (an emboss picture).
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let folder = loop {
+        let folder = dir.join(NEXT.fetch_add(1, Ordering::Relaxed).to_string());
+        if !folder.exists() {
+            break folder;
+        }
+    };
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let path = folder.join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let mut args = args.clone();
+    args[key] = json!(path.to_string_lossy());
+    Ok(Some(args))
+}
+
+/// Where files sent inline land: a folder of this run under the system temp
+/// folder. Folders left by runs over a day old are removed the first time.
+pub fn inline_dir() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let root = std::env::temp_dir().join("buildcraft3d-agent-files");
+        let day = std::time::Duration::from_secs(24 * 3600);
+        for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > day);
+            if old {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+        root.join(std::process::id().to_string())
+    })
+    .clone()
 }
 
 /// The font families from `all` whose names contain `filter`, ignoring case.
