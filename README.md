@@ -22,7 +22,7 @@ macOS builds are planned but not published yet.
 ## What it does
 
 **Files**
-- Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window. Unitless formats (STL, OBJ, PLY) ask for the units.
+- Open and save 3MF, STL, OBJ (+MTL), PLY, glTF and GLB; drag files onto the window (several models dropped together are previewed side by side and imported with one confirm and one units choice). Unitless formats (STL, OBJ, PLY) ask for the units.
 - Import SVG drawings: filled areas (with their holes) and stroked lines become 3 mm solids, one object per colour, at the drawing's real size.
 - Undo/redo, autosave with recovery after a crash, recent files, start screen.
 - About the model: title, designer, copyright, license terms and description, kept in the 3MF metadata. The window title follows the model title.

@@ -58,20 +58,20 @@ impl App {
                 },
             );
         }
-        // A file waiting for its units shows where it will land, at the chosen size.
-        // First, so the see-through scene blends over it instead of hiding it.
-        if let Some(p) = self.pending_import.first() {
-            items.splice(
-                0..0,
-                p.placed().map(|(mesh, model, color)| DrawItem {
-                    mesh,
-                    model,
-                    color,
-                    selected: false,
-                    material: Material::None,
-                }),
-            );
-        }
+        // Files waiting for their units show where they will land, at the chosen size.
+        // First, so the see-through scene blends over them instead of hiding them.
+        let waiting: Vec<DrawItem> = self
+            .shown_imports()
+            .flat_map(|p| p.placed())
+            .map(|(mesh, model, color)| DrawItem {
+                mesh,
+                model,
+                color,
+                selected: false,
+                material: Material::None,
+            })
+            .collect();
+        items.splice(0..0, waiting);
         let cb = FrameCallback {
             items,
             decal: preview,

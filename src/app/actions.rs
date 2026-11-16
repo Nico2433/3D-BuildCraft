@@ -459,11 +459,7 @@ impl App {
             }
             Action::SetSize(size) => self.scene.resize_selection(size),
             Action::ImportConfirm => self.finish_import(true),
-            Action::ImportCancel => {
-                if !self.pending_import.is_empty() {
-                    self.pending_import.remove(0);
-                }
-            }
+            Action::ImportCancel => self.cancel_import(),
             Action::Restore(p) => {
                 // A recovery file that fails to load is kept for another try.
                 if self.load_file(&p, true) {

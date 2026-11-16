@@ -39,6 +39,7 @@ mod flyout;
 mod font_preview;
 mod gizmo;
 mod icons;
+mod import;
 mod jobs;
 mod launch;
 mod live;
@@ -64,6 +65,7 @@ mod transform;
 mod viewport;
 
 use actions::Action;
+use import::{BatchSlot, PendingImport};
 pub use launch::Launch;
 
 /// One frame at the 60 fps cap.
@@ -253,49 +255,6 @@ impl Tool {
             preview: Err(String::new()),
             built: None,
         }
-    }
-}
-
-struct PendingImport {
-    path: PathBuf,
-    objects: Vec<ModelObject>,
-    /// The objects' meshes for drawing while the units are chosen.
-    preview: Vec<std::sync::Arc<Mesh>>,
-    units: Units,
-    replace_scene: bool,
-    /// What the file says about the model; kept when it replaces the scene.
-    info: io::ModelInfo,
-    /// Where on the floor it lands: under the pointer for a dropped file, else the centre.
-    at: Vec3,
-}
-
-impl PendingImport {
-    /// Each object's mesh, placement and colour as it will be imported: at the chosen
-    /// units, the whole file moved so its footprint is centred on `at` and it rests on
-    /// the floor; the objects keep their places relative to each other.
-    fn placed(&self) -> impl Iterator<Item = (std::sync::Arc<Mesh>, glam::Mat4, Rgba)> + '_ {
-        let shift = glam::Mat4::from_translation(self.shift());
-        self.objects
-            .iter()
-            .zip(&self.preview)
-            .map(move |(o, mesh)| (mesh.clone(), shift * self.model(o), o.color))
-    }
-
-    /// An object's placement at the chosen units, before the shift.
-    fn model(&self, o: &ModelObject) -> glam::Mat4 {
-        glam::Mat4::from_scale(Vec3::splat(self.units.to_mm())) * o.transform
-    }
-
-    /// The move that puts the whole file on the floor, centred on `at`.
-    fn shift(&self) -> Vec3 {
-        let b = self
-            .objects
-            .iter()
-            .zip(&self.preview)
-            .map(|(o, mesh)| crate::scene::cached_aabb(mesh, &self.model(o)))
-            .fold(Aabb::empty(), Aabb::union);
-        let c = b.center();
-        Vec3::new(self.at.x - c.x, self.at.y - c.y, -b.min.z)
     }
 }
 
@@ -558,19 +517,27 @@ impl App {
                 replace_scene,
                 model,
                 at,
+                batch,
             } => {
-                self.queue_import(&path, replace_scene, model, at);
+                self.queue_import(&path, replace_scene, model, at, batch);
             }
         }
     }
 
     /// Loads the file on a thread; it then goes on as `load_file` does.
     fn load_file_async(&mut self, path: &Path, replace_scene: bool, ctx: &egui::Context) {
-        self.load_file_at(path, replace_scene, Vec3::ZERO, ctx);
+        self.load_file_at(path, replace_scene, Vec3::ZERO, None, ctx);
     }
 
     /// Loads the file on a thread, to land at `at` on the floor.
-    fn load_file_at(&mut self, path: &Path, replace_scene: bool, at: Vec3, ctx: &egui::Context) {
+    fn load_file_at(
+        &mut self,
+        path: &Path,
+        replace_scene: bool,
+        at: Vec3,
+        batch: Option<BatchSlot>,
+        ctx: &egui::Context,
+    ) {
         let path = path.to_path_buf();
         self.jobs.push(jobs::Job::spawn(LOADING, 0, ctx, move |_| {
             let model = io::load(&path);
@@ -579,6 +546,7 @@ impl App {
                 replace_scene,
                 model,
                 at,
+                batch,
             }
         }));
     }
@@ -716,110 +684,7 @@ impl App {
     /// Queues the file for import; formats with units import at once. False on error.
     fn load_file(&mut self, path: &Path, replace_scene: bool) -> bool {
         let model = io::load(path);
-        self.queue_import(path, replace_scene, model, Vec3::ZERO)
-    }
-
-    /// Queues a loaded file for import, or reports why it could not be read. A file added
-    /// to the scene waits for Import model (and its units, when the format has none), as
-    /// in the original; one that replaces the scene with known units opens at once.
-    fn queue_import(
-        &mut self,
-        path: &Path,
-        replace_scene: bool,
-        model: anyhow::Result<io::LoadedModel>,
-        at: Vec3,
-    ) -> bool {
-        let lang = self.settings.lang();
-        match model {
-            Ok(m) => {
-                let p = PendingImport {
-                    path: path.to_path_buf(),
-                    preview: m
-                        .objects
-                        .iter()
-                        .map(|o| std::sync::Arc::new(o.mesh.clone()))
-                        .collect(),
-                    objects: m.objects,
-                    info: m.info,
-                    units: Units::Millimeter,
-                    replace_scene,
-                    at,
-                };
-                if m.units_known && replace_scene {
-                    self.pending_import.insert(0, p);
-                    self.finish_import(false);
-                } else {
-                    let b = p
-                        .placed()
-                        .map(|(mesh, model, _)| crate::scene::cached_aabb(&mesh, &model))
-                        .fold(Aabb::empty(), Aabb::union);
-                    self.glide_to(&b);
-                    self.pending_import.push(p);
-                }
-                true
-            }
-            Err(e) => {
-                self.toast(
-                    format!("{} {e:#}", tr(lang, "Could not open the file:")),
-                    true,
-                );
-                false
-            }
-        }
-    }
-
-    fn finish_import(&mut self, apply_units: bool) {
-        if self.pending_import.is_empty() {
-            return;
-        }
-        let p = self.pending_import.remove(0);
-        let before = self.snapshot();
-        if p.replace_scene {
-            self.scene = Scene::default();
-            self.history.clear();
-            self.scene.name = p
-                .path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string);
-            self.scene.info = p.info.clone();
-            if Format::from_path(&p.path) == Some(Format::ThreeMf) {
-                self.scene.path = Some(p.path.clone());
-            }
-        }
-        // Opening a file keeps its placement; adding one puts it where the preview showed.
-        let k = if apply_units { p.units.to_mm() } else { 1.0 };
-        let keep = !apply_units && p.objects.len() > 1
-            || Format::from_path(&p.path) == Some(Format::ThreeMf);
-        let shift = if p.replace_scene && keep {
-            None
-        } else {
-            Some(p.shift())
-        };
-        let mut new_ids = BTreeSet::new();
-        for mut m in p.objects {
-            if k != 1.0 {
-                m.mesh = m.mesh.transformed(&glam::Mat4::from_scale(Vec3::splat(k)));
-                m.transform.w_axis = (m.transform.w_axis.truncate() * k).extend(1.0);
-            }
-            let stats = m.mesh.stats();
-            let mut obj = Object::from_model(m);
-            obj.translation += shift.unwrap_or(Vec3::ZERO);
-            let id = self.scene.add(obj);
-            if !stats.is_closed_manifold() {
-                self.invalid.insert(id);
-            }
-            new_ids.insert(id);
-        }
-        self.scene.selection = new_ids;
-        if !p.replace_scene {
-            self.history.push(before);
-        } else {
-            self.scene.dirty = false;
-        }
-        self.settings.add_recent(&p.path);
-        let _ = self.settings.save();
-        self.camera.frame(&self.scene.scene_aabb(), self.aspect);
+        self.queue_import(path, replace_scene, model, Vec3::ZERO, None)
     }
 
     fn save(&mut self, choose: bool) {
@@ -1045,21 +910,12 @@ impl eframe::App for App {
                 .collect()
         });
         // Pictures open Load image; models land where the pointer let them go.
-        let at = ctx
-            .input(|i| i.pointer.hover_pos())
-            .and_then(|p| self.floor_point(p))
-            .unwrap_or(Vec3::ZERO);
-        for p in dropped {
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if crate::image3d::EXTENSIONS.contains(&ext.as_str()) {
-                self.tool = Some(Tool::image(p));
-            } else {
-                self.load_file_at(&p, false, at, ctx);
-            }
+        if !dropped.is_empty() {
+            let at = ctx
+                .input(|i| i.pointer.hover_pos())
+                .and_then(|p| self.floor_point(p))
+                .unwrap_or(Vec3::ZERO);
+            self.open_dropped(dropped, at, ctx);
         }
         let jobs_before = self.jobs.len();
         self.collect_jobs();

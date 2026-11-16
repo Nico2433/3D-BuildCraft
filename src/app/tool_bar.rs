@@ -185,12 +185,13 @@ impl App {
     fn tool_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.lang();
         let units = self.settings.units;
-        if let Some(p) = self.pending_import.first_mut() {
+        // One choice applies to every file shown, as files dropped together share it.
+        if let Some(chosen) = self.import_units() {
             style::label(ui, tr(lang, "File units"));
             ui.add_space(12.0);
             for u in Units::ALL {
-                if unit_choice(ui, tr(lang, u.label()), p.units == u).clicked() {
-                    p.units = u;
+                if unit_choice(ui, tr(lang, u.label()), chosen == u).clicked() {
+                    self.set_import_units(u);
                 }
             }
             return;

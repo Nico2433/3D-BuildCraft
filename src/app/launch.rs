@@ -28,6 +28,8 @@ pub struct Launch {
     pub drag: Option<String>,
     /// Measure points `x,y,z;x,y,z`; an entry starting with `~` is the hover point.
     pub measure: Option<String>,
+    /// Files dropped onto the window together, as `--drop a.stl,b.stl`.
+    pub drop: Vec<PathBuf>,
 }
 
 impl App {
@@ -126,6 +128,9 @@ impl App {
     fn open_launch(&mut self, launch: Launch, ctx: &egui::Context) {
         if let Some(p) = launch.file {
             self.load_file(&p, true);
+        }
+        if !launch.drop.is_empty() {
+            self.open_dropped(launch.drop, Vec3::ZERO, ctx);
         }
         let tab = launch.tab.as_deref().unwrap_or("insert");
         self.tab = match tab {

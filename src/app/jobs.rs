@@ -31,6 +31,8 @@ pub(super) enum Done {
         model: anyhow::Result<LoadedModel>,
         /// Where on the floor it lands.
         at: glam::Vec3,
+        /// Set when it was dropped together with other files.
+        batch: Option<super::BatchSlot>,
     },
 }
 
