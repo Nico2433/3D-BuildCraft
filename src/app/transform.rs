@@ -1,5 +1,5 @@
 //! Bottom bar: move, rotate or size the selection, three mode buttons then X, Y and Z with
-//! the unit. While splitting, the same bar holds the cut plane's offset and angles.
+//! the unit. While splitting, the same bar holds the cut plane's offset, angles and size.
 
 use super::icons::Icon;
 use super::style;
@@ -156,7 +156,8 @@ impl App {
     }
 
     /// The split plane: move sets its offset along its normal, rotate its roll, pitch and
-    /// yaw, as in the original.
+    /// yaw, as in the original, and size its width and length, "Full" (infinite) unless
+    /// typed: an empty field or 0 makes it full again, as does the button after them.
     fn cut_bar(&mut self, ctx: &egui::Context) {
         let lang = self.settings.lang();
         let units = self.settings.units;
@@ -173,6 +174,7 @@ impl App {
             for (m, icon, tip) in [
                 (TransformMode::Move, Icon::Move, tr(lang, "Offset")),
                 (TransformMode::Rotate, Icon::Rotate, tr(lang, "Rotate")),
+                (TransformMode::Scale, Icon::Scale, tr(lang, "Size")),
             ] {
                 if mode_button(ui, icon, *mode == m)
                     .on_hover_text(tip)
@@ -181,16 +183,36 @@ impl App {
                     *mode = m;
                 }
             }
-            if *mode == TransformMode::Rotate {
-                let names = ["Roll", "Pitch", "Yaw"].map(|n| tr(lang, n));
-                xyz_fields(ui, names, &mut plane.rotation, &mut f);
-                unit_label(ui, tr(lang, "deg."));
-            } else {
-                let mut v = plane.offset / units.to_mm();
-                if field(ui, &mut f, 0, "", &mut v) {
-                    plane.offset = v * units.to_mm();
+            let k = units.to_mm();
+            match mode {
+                TransformMode::Rotate => {
+                    let names = ["Roll", "Pitch", "Yaw"].map(|n| tr(lang, n));
+                    xyz_fields(ui, names, &mut plane.rotation, &mut f);
+                    unit_label(ui, tr(lang, "deg."));
                 }
-                unit_label(ui, tr(lang, units.label()));
+                TransformMode::Move => {
+                    let mut v = plane.offset / k;
+                    if field(ui, &mut f, 0, "", &mut v) {
+                        plane.offset = v * k;
+                    }
+                    unit_label(ui, tr(lang, units.label()));
+                }
+                TransformMode::Scale => {
+                    for (axis, name) in ["Width", "Length"].into_iter().enumerate() {
+                        let mut v = plane.extent(axis).map(|e| e / k);
+                        if extent_field(ui, &mut f, axis, tr(lang, name), &mut v, tr(lang, "Full"))
+                        {
+                            plane.set_extent(axis, v.map(|e| e * k));
+                        }
+                    }
+                    unit_label(ui, tr(lang, units.label()));
+                    let full = mode_button(ui, Icon::Maximize, plane.size.is_none())
+                        .on_hover_text(tr(lang, "Full size"))
+                        .clicked();
+                    if full {
+                        plane.size = None;
+                    }
+                }
             }
         });
     }
@@ -369,21 +391,70 @@ struct Fields<'a> {
     lang: Lang,
 }
 
-/// One value: the axis letter above, the number, and a coloured strip at the bottom
-/// (green on the current field, blue-grey on the others). A click makes it current; a
-/// click on the current one opens the editor above the bar, as in the original. Returns
-/// true when a value was set.
+/// One value: the number, editable; true when a value was set.
 fn field(ui: &mut egui::Ui, f: &mut Fields, index: usize, axis: &str, v: &mut f32) -> bool {
-    let label_w = ui
-        .painter()
-        .layout_no_wrap(
-            axis.to_owned(),
-            egui::FontId::proportional(9.5),
-            style::TEXT,
-        )
-        .size()
-        .x;
-    let width = (label_w + 12.0).max(48.0);
+    let shown = short_number(*v as f64);
+    let typed = field_text(ui, f, index, axis, &shown, false, || {
+        short_number_exact(*v as f64)
+    });
+    match typed.as_deref().and_then(parse_number) {
+        Some(n) if n != *v => {
+            *v = n;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A length that can be full (`None`), shown dimmed as `full`; it edits as an empty text,
+/// and an empty one, 0 or less sets full again. True when it changed.
+fn extent_field(
+    ui: &mut egui::Ui,
+    f: &mut Fields,
+    index: usize,
+    axis: &str,
+    v: &mut Option<f32>,
+    full: &str,
+) -> bool {
+    let shown = v.map_or(full.to_owned(), |x| short_number(x as f64));
+    let exact = || v.map_or(String::new(), |x| short_number_exact(x as f64));
+    let Some(typed) = field_text(ui, f, index, axis, &shown, v.is_none(), exact) else {
+        return false;
+    };
+    let new = match typed.trim() {
+        "" => None,
+        t => match parse_number(t) {
+            Some(n) => Some(n).filter(|n| *n > 0.0),
+            None => return false,
+        },
+    };
+    let changed = new != *v;
+    *v = new;
+    changed
+}
+
+/// One field: the axis letter above, `shown`, and a coloured strip at the bottom (green on
+/// the current field, blue-grey on the others), `shown` dimmed when `dim`. A click makes it
+/// current; a click on the current one opens the editor above the bar with `exact`, as in
+/// the original. Returns the text accepted there.
+fn field_text(
+    ui: &mut egui::Ui,
+    f: &mut Fields,
+    index: usize,
+    axis: &str,
+    shown: &str,
+    dim: bool,
+    exact: impl FnOnce() -> String,
+) -> Option<String> {
+    let text_w = |text: &str, size: f32| {
+        let font = egui::FontId::proportional(size);
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font, style::TEXT)
+            .size()
+            .x
+    };
+    // Wide enough for the label and for a word such as "Full".
+    let width = (text_w(axis, 9.5).max(text_w(shown, style::LABEL_FONT + 1.3)) + 12.0).max(48.0);
     // The bar's top left, for the editor; the bar has a 4 point margin.
     let bar = ui.max_rect().left_top() - Vec2::splat(4.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 48.0), Sense::click());
@@ -423,45 +494,33 @@ fn field(ui: &mut egui::Ui, f: &mut Fields, index: usize, axis: &str, v: &mut f3
     p.text(
         egui::pos2(rect.center().x, rect.center().y + 4.0),
         Align2::CENTER_CENTER,
-        short_number(*v as f64),
+        shown,
         egui::FontId::proportional(style::LABEL_FONT + 1.3),
-        style::TEXT,
+        if dim { style::TEXT_DIM } else { style::TEXT },
     );
     if resp.clicked() {
         if current {
-            *f.edit = Some(short_number_exact(*v as f64));
+            *f.edit = Some(exact());
         } else {
             *f.current = index;
             *f.edit = None;
         }
     }
-    let Some(text) = f.edit.as_mut().filter(|_| current) else {
-        return false;
-    };
-    match editor(ui.ctx(), f.lang, bar, text, resp.clicked()) {
-        Some(typed) => {
-            *f.edit = None;
-            match typed {
-                Some(n) if n != *v => {
-                    *v = n;
-                    true
-                }
-                _ => false,
-            }
-        }
-        None => false,
-    }
+    let text = f.edit.as_mut().filter(|_| current)?;
+    let typed = editor(ui.ctx(), f.lang, bar, text, resp.clicked())?;
+    *f.edit = None;
+    typed
 }
 
 /// The editor above the bar: a white box with the value selected, a clear cross and
-/// Accept. None while open; then the typed number (None if cancelled or not a number).
+/// Accept. None while open; then the typed text (None if cancelled).
 fn editor(
     ctx: &egui::Context,
     lang: Lang,
     bar: Pos2,
     text: &mut String,
     just_opened: bool,
-) -> Option<Option<f32>> {
+) -> Option<Option<String>> {
     let size = Vec2::new(261.0, 55.0);
     let mut done = None;
     let area = egui::Area::new(egui::Id::new("bar_editor"))
@@ -548,7 +607,7 @@ fn editor(
             );
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if a.clicked() || enter {
-                done = Some(parse_number(text));
+                done = Some(Some(text.clone()));
             } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 done = Some(None);
             }

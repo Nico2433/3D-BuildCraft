@@ -14,6 +14,9 @@ pub enum Keep {
     Both,
 }
 
+/// The smallest width or length a drag leaves the plane, mm.
+const MIN_EXTENT: f32 = 1.0;
+
 /// The cutting plane of the Split tool: through `center`, moved `offset` along its normal,
 /// turned by `rotation` degrees (roll about X, pitch about Y, yaw about Z, as an object's).
 /// Unturned, the normal is +Z.
@@ -22,6 +25,9 @@ pub struct CutPlane {
     pub center: Vec3,
     pub offset: f32,
     pub rotation: Vec3,
+    /// Width and length along the plane's own X and Y, mm; `None` is infinite. An
+    /// infinite component leaves the plane full along that direction only.
+    pub size: Option<Vec2>,
 }
 
 impl CutPlane {
@@ -31,6 +37,7 @@ impl CutPlane {
             center: Vec3::new(0.0, 0.0, z),
             offset: 0.0,
             rotation: Vec3::ZERO,
+            size: None,
         }
     }
 
@@ -43,6 +50,7 @@ impl CutPlane {
             center: point,
             offset: 0.0,
             rotation: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+            size: None,
         })
     }
 
@@ -58,6 +66,42 @@ impl CutPlane {
     /// The plane's middle.
     pub fn point(&self) -> Vec3 {
         self.center + self.normal() * self.offset
+    }
+
+    /// The plane's own X and Y directions, along which its width and length run.
+    pub fn axes(&self) -> (Vec3, Vec3) {
+        let q = self.quat();
+        (q * Vec3::X, q * Vec3::Y)
+    }
+
+    /// The width (`axis` 0) or length (1) in mm; `None` when full along it.
+    pub fn extent(&self, axis: usize) -> Option<f32> {
+        self.size.map(|s| s[axis]).filter(|e| e.is_finite())
+    }
+
+    /// Sets the width (`axis` 0) or length (1); `None`, 0 or less makes it full again,
+    /// and a plane full both ways is infinite.
+    pub fn set_extent(&mut self, axis: usize, extent: Option<f32>) {
+        let mut size = self.size.unwrap_or(Vec2::INFINITY);
+        size[axis] = extent.filter(|e| *e > 0.0).unwrap_or(f32::INFINITY);
+        self.size = (size != Vec2::INFINITY).then_some(size);
+    }
+
+    /// Half the width and length; infinite when full along that direction.
+    pub fn half_size(&self) -> Vec2 {
+        self.size.unwrap_or(Vec2::INFINITY) * 0.5
+    }
+
+    /// Grows the width (`axis` 0) or length (1) by `by` mm, both edges moving so the
+    /// middle stays. A full direction counts as `full` mm wide: growing leaves it full,
+    /// shrinking makes it finite from there. It never goes below [`MIN_EXTENT`].
+    pub fn grow_extent(&mut self, axis: usize, by: f32, full: f32) {
+        let now = match self.extent(axis) {
+            Some(e) => e,
+            None if by >= 0.0 => return,
+            None => full,
+        };
+        self.set_extent(axis, Some((now + by).max(MIN_EXTENT)));
     }
 
     /// Turns the plane by `q` (world space) about its middle `point()`. The centre stays
@@ -84,6 +128,60 @@ pub fn cut_plane(mesh: &Mesh, plane: &CutPlane) -> (Mesh, Mesh) {
         top.transformed(&back).welded(),
         bottom.transformed(&back).welded(),
     )
+}
+
+/// The pieces of `mesh` (world coordinates) that "Split" keeps, empty ones left out. An
+/// infinite plane cuts exactly with `cut_plane`. A finite one only cuts inside the prism
+/// its rectangle sweeps along the normal: Top removes the part of the prism below the
+/// plane, Bottom the part above, and Both gives that part below and the rest. That runs
+/// as booleans, so the mesh must be closed and manifold.
+pub fn split(mesh: &Mesh, plane: &CutPlane, keep: Keep) -> anyhow::Result<Vec<Mesh>> {
+    use crate::boolean::{apply, Op};
+    let pieces = if plane.size.is_none() {
+        let (top, bottom) = cut_plane(mesh, plane);
+        match keep {
+            Keep::Top => vec![top],
+            Keep::Bottom => vec![bottom],
+            Keep::Both => vec![top, bottom],
+        }
+    } else if mesh.is_empty() {
+        vec![]
+    } else {
+        let below = || prism(mesh, plane, false);
+        match keep {
+            Keep::Top => vec![apply(Op::Subtract, &[mesh.clone(), below()])?],
+            Keep::Bottom => vec![apply(
+                Op::Subtract,
+                &[mesh.clone(), prism(mesh, plane, true)],
+            )?],
+            Keep::Both => {
+                let below = below();
+                vec![
+                    apply(Op::Subtract, &[mesh.clone(), below.clone()])?,
+                    apply(Op::Intersect, &[mesh.clone(), below])?,
+                ]
+            }
+        }
+    };
+    Ok(pieces.into_iter().filter(|m| !m.is_empty()).collect())
+}
+
+/// The box over the plane's rectangle, on the side the normal points to when `above`,
+/// reaching past `mesh` along the normal and along any full direction.
+fn prism(mesh: &Mesh, plane: &CutPlane, above: bool) -> Mesh {
+    let p = plane.point();
+    let reach = mesh
+        .positions
+        .iter()
+        .map(|v| v.distance(p))
+        .fold(0.0, f32::max)
+        + 1.0;
+    let half = plane.half_size().min(Vec2::splat(reach));
+    let size = Vec3::new(half.x * 2.0, half.y * 2.0, reach);
+    // The box stands on its base, so the one below starts `reach` under the plane.
+    let base = if above { p } else { p - plane.normal() * reach };
+    let place = Mat4::from_rotation_translation(plane.quat(), base);
+    crate::primitives::box_mesh(size).transformed(&place)
 }
 
 /// Splits `mesh` (world coordinates) at height `z`. Returns (above, below); either can be
@@ -292,6 +390,21 @@ mod tests {
     }
 
     #[test]
+    fn growing_an_extent_keeps_full_until_shrunk_and_a_minimum() {
+        let mut plane = CutPlane::at_height(0.0);
+        // Growing a full direction leaves it full; shrinking starts from the drawn size.
+        plane.grow_extent(0, 10.0, 80.0);
+        assert_eq!(plane.size, None);
+        plane.grow_extent(0, -20.0, 80.0);
+        assert_eq!(plane.extent(0), Some(60.0));
+        assert_eq!(plane.extent(1), None);
+        plane.grow_extent(0, 5.0, 80.0);
+        assert_eq!(plane.extent(0), Some(65.0));
+        plane.grow_extent(0, -1000.0, 80.0);
+        assert_eq!(plane.extent(0), Some(MIN_EXTENT));
+    }
+
+    #[test]
     fn cube_halves_are_closed_with_the_right_volumes() {
         let (top, bottom) = cut(&primitives::cube(10.0), 4.0);
         assert!((closed_volume(&top) - 600.0).abs() < 1e-3);
@@ -389,5 +502,74 @@ mod tests {
         let (top, bottom) = cut(&m, 50.0);
         assert!(top.is_empty());
         assert_eq!(bottom.stats(), m.welded().stats());
+    }
+
+    #[test]
+    fn finite_plane_cuts_only_inside_its_prism() {
+        // A 20 mm cube on the floor and a 10 x 10 plane through its middle.
+        let cube = primitives::cube(20.0);
+        let mut plane = CutPlane::at_height(10.0);
+        plane.size = Some(Vec2::splat(10.0));
+        let volumes = |plane: &CutPlane, keep| -> Vec<f64> {
+            let pieces = split(&cube, plane, keep).unwrap();
+            pieces.iter().map(closed_volume).collect()
+        };
+        let near = |a: Vec<f64>, b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-2)
+        };
+        assert!(near(volumes(&plane, Keep::Top), &[7000.0]));
+        assert!(near(volumes(&plane, Keep::Bottom), &[7000.0]));
+        assert!(near(volumes(&plane, Keep::Both), &[7000.0, 1000.0]));
+        // Full along its length: a 10 mm wide slot across the whole cube.
+        plane.size = None;
+        plane.set_extent(0, Some(10.0));
+        assert!(near(volumes(&plane, Keep::Top), &[6000.0]));
+        // A turned plane: a 45 degree yawed square removes the same volume.
+        plane.set_extent(1, Some(10.0));
+        plane.rotation.z = 45.0;
+        assert!(near(volumes(&plane, Keep::Bottom), &[7000.0]));
+    }
+
+    #[test]
+    fn infinite_plane_splits_as_before() {
+        // The exact cut fills its caps in hash order, so meshes are compared by their
+        // points, triangle count and volume, not triangle by triangle.
+        fn shape(m: &Mesh) -> (Vec<[u32; 3]>, usize, i64) {
+            let mut points: Vec<[u32; 3]> = m
+                .positions
+                .iter()
+                .map(|p| p.to_array().map(f32::to_bits))
+                .collect();
+            points.sort();
+            let volume = (closed_volume(m) * 10.0).round() as i64;
+            (points, m.triangles.len(), volume)
+        }
+        let m = Primitive::Sphere.build();
+        let plane = CutPlane::through(Vec3::new(1.0, 2.0, 7.0), Vec3::new(1.0, 0.5, 2.0)).unwrap();
+        let (top, bottom) = cut_plane(&m, &plane);
+        for (keep, expected) in [
+            (Keep::Top, vec![&top]),
+            (Keep::Bottom, vec![&bottom]),
+            (Keep::Both, vec![&top, &bottom]),
+        ] {
+            let pieces = split(&m, &plane, keep).unwrap();
+            assert_eq!(pieces.len(), expected.len(), "{keep:?}");
+            for (got, want) in pieces.iter().zip(expected) {
+                assert_eq!(shape(got), shape(want), "{keep:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn zero_or_cleared_extent_is_full_again() {
+        let mut plane = CutPlane::at_height(0.0);
+        plane.set_extent(0, Some(30.0));
+        assert_eq!(plane.extent(0), Some(30.0));
+        assert_eq!(plane.extent(1), None);
+        plane.set_extent(1, Some(20.0));
+        plane.set_extent(0, Some(0.0));
+        assert_eq!(plane.size, Some(Vec2::new(f32::INFINITY, 20.0)));
+        plane.set_extent(1, None);
+        assert_eq!(plane.size, None);
     }
 }

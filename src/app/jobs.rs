@@ -20,6 +20,11 @@ pub(super) enum Done {
         gen: u64,
         result: Result<Vec<(u64, Mesh)>, String>,
     },
+    /// The Simplify tool's preview, as `Smoothed`.
+    Reduced {
+        gen: u64,
+        result: Result<Vec<(u64, Mesh)>, String>,
+    },
     /// Extrude outline's preview, as `Smoothed`.
     Outlined {
         gen: u64,

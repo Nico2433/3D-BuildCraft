@@ -24,7 +24,7 @@ pub struct Launch {
     pub mcp: bool,
     /// Transform mode to open in: move, rotate or scale.
     pub mode: Option<String>,
-    /// A handle drag in progress, for screenshots: `x:60` or `rot-z:45`.
+    /// A handle drag in progress, for screenshots: `x:60`, `rot-z:45` or `size-x:-10`.
     pub drag: Option<String>,
     /// Measure points `x,y,z;x,y,z`; an entry starting with `~` is the hover point.
     pub measure: Option<String>,
@@ -168,16 +168,24 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
-        // A drag in the Split tool moves its plane, so the tool opens first.
-        let cut_now = match launch.tool.as_deref() {
-            Some("cut") => launch.drag.is_some(),
-            tool => tool == Some("cut-bottom"),
+        // A drag in the Split tool moves its plane, so the tool opens first; so does a
+        // bottom side or a plane size.
+        let cut = launch.tool.as_deref().and_then(cut_options);
+        let cut_now = match cut {
+            Some((false, None)) => launch.drag.is_some(),
+            other => other.is_some(),
         };
         if cut_now {
             self.apply(Action::StartCut, ctx);
-            if let Some(Tool::Cut { keep, .. }) = &mut self.tool {
-                if launch.tool.as_deref() == Some("cut-bottom") {
+            if let (Some(Tool::Cut { keep, plane }), Some((bottom, size))) = (&mut self.tool, cut) {
+                if bottom {
                     *keep = Keep::Bottom;
+                }
+                for (axis, extent) in size
+                    .into_iter()
+                    .flat_map(|s| s.to_array().into_iter().enumerate())
+                {
+                    plane.set_extent(axis, Some(extent));
                 }
             }
         }
@@ -258,8 +266,12 @@ impl App {
             .and_then(|t| t.strip_prefix("smooth"))
         {
             self.apply(Action::StartSmooth, ctx);
-            if let Some(Tool::Smooth { amount, .. }) = &mut self.tool {
-                *amount = t.trim_start_matches('-').parse().unwrap_or(0.0);
+            // `smooth-0.5`, or `smooth-0.5-edges` with Smooth edges on.
+            if let Some(Tool::Smooth { amount, edges, .. }) = &mut self.tool {
+                let t = t.trim_start_matches('-');
+                let (value, on) = t.strip_suffix("-edges").map_or((t, false), |v| (v, true));
+                *amount = value.parse().unwrap_or(*amount);
+                *edges = on;
             }
         }
         if let Some(spec) = launch.measure {
@@ -314,4 +326,20 @@ impl App {
             }));
         }
     }
+}
+
+/// The Split tool's `--tool` value: `cut` or `cut-bottom`, optionally ending in a plane
+/// size such as `-60x40` (mm). Some((keeps the bottom, size)), None for other tools.
+fn cut_options(tool: &str) -> Option<(bool, Option<glam::Vec2>)> {
+    let rest = tool.strip_prefix("cut")?;
+    let (bottom, rest) = match rest.strip_prefix("-bottom") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    if rest.is_empty() {
+        return Some((bottom, None));
+    }
+    let (w, l) = rest.strip_prefix('-')?.split_once('x')?;
+    let size = glam::Vec2::new(w.parse().ok()?, l.parse().ok()?);
+    Some((bottom, Some(size)))
 }

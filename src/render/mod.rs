@@ -34,9 +34,14 @@ struct Globals {
     flags2: [f32; 4],
     /// Viewport size in pixels (xy), for the selection outline's width.
     viewport: [f32; 4],
-    /// Plane (normal xyz, distance w): what lies on its positive side is not drawn. A zero
-    /// normal clips nothing.
+    /// Plane (normal xyz, distance w): what lies on its positive side, within the prism
+    /// below, is not drawn. A zero normal clips nothing.
     clip: [f32; 4],
+    /// The clip rectangle's centre (xyz), and its own X and Y (xyz) with half their
+    /// lengths (w): the prism it sweeps along the normal.
+    clip_o: [f32; 4],
+    clip_u: [f32; 4],
+    clip_v: [f32; 4],
     /// World to (u, v, height) of the live sticker preview.
     decal: [[f32; 4]; 4],
     /// Sticker normal (xyz) and how far from its plane it still shows (w).
@@ -132,6 +137,18 @@ pub struct DecalPreview {
     pub layer: u16,
 }
 
+/// The Split preview's clip: what lies past the plane through `point` on the side
+/// `normal` points to, inside the prism over its rectangle, is not drawn. The rectangle
+/// spans `half` along `u` and `v` both ways, infinite where the plane is full.
+#[derive(Clone, Copy, Debug)]
+pub struct Clip {
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub u: Vec3,
+    pub v: Vec3,
+    pub half: glam::Vec2,
+}
+
 pub struct FrameCallback {
     pub items: Vec<DrawItem>,
     pub decal: Option<DecalPreview>,
@@ -140,8 +157,8 @@ pub struct FrameCallback {
     pub flags: ViewFlags,
     /// Size of the viewport in pixels.
     pub viewport: glam::Vec2,
-    /// A plane (normal, distance) whose positive side is cut away, as in the Split preview.
-    pub clip: Option<(Vec3, f32)>,
+    /// What the Split preview cuts away.
+    pub clip: Option<Clip>,
     /// Translucent squares: the Split plane and the floor bands under objects that need
     /// repair. Depth tested, so objects hide them.
     pub slabs: Vec<Slab>,

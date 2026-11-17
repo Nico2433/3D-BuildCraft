@@ -87,8 +87,14 @@ impl App {
             // The Split preview shows only the part that will be kept.
             clip: match &self.tool {
                 Some(Tool::Cut { plane, keep }) if *keep != Keep::Both => {
-                    let n = plane.normal() * if *keep == Keep::Top { -1.0 } else { 1.0 };
-                    Some((n, n.dot(plane.point())))
+                    let (u, v) = plane.axes();
+                    Some(crate::render::Clip {
+                        point: plane.point(),
+                        normal: plane.normal() * if *keep == Keep::Top { -1.0 } else { 1.0 },
+                        u,
+                        v,
+                        half: plane.half_size(),
+                    })
                 }
                 _ => None,
             },
@@ -98,10 +104,15 @@ impl App {
                 // The original shows the object in x-ray while hollowing.
                 xray: r.xray || matches!(self.tool, Some(Tool::Hollow { .. })),
                 colors: r.colors,
+                // The original shows the mesh while smoothing and simplifying.
                 wireframe: r.wireframe
                     || matches!(
                         self.tool,
-                        Some(Tool::Simplify { .. } | Tool::Custom { wire: true, .. })
+                        Some(
+                            Tool::Simplify { .. }
+                                | Tool::Smooth { .. }
+                                | Tool::Custom { wire: true, .. }
+                        )
                     ),
                 floor: r.grid,
                 floor_tone: r.grid_tone,

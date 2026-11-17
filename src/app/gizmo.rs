@@ -234,6 +234,27 @@ pub fn plane_arrow(at: Vec3, normal: Vec3, to_screen: &dyn Fn(Vec3) -> Option<Po
     handles(&[(Kind::Move(0), at, normal)], to_screen)
 }
 
+/// The Split tool's size handles: an object's size chevrons at the middle of each edge of
+/// the plane's rectangle round `middle`, `half` its width and length along its own `axes`
+/// X and Y; [`Kind::Size`] 0 works on the width, 1 on the length.
+pub fn plane_sizes(
+    middle: Vec3,
+    half: glam::Vec2,
+    axes: [Vec3; 2],
+    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
+) -> Gizmo {
+    let list: Vec<_> = (0..2)
+        .flat_map(|axis| {
+            [-1.0, 1.0].map(|side| {
+                let along = axes[axis];
+                let at = middle + along * half[axis] * side;
+                (Kind::Size(axis, side), at, along)
+            })
+        })
+        .collect();
+    handles(&list, to_screen)
+}
+
 /// The smallest a foreshortened handle is drawn, as a fraction of the longest: on
 /// objects, and on [`handles`].
 const FLOOR: f32 = 0.35;
@@ -548,6 +569,24 @@ mod tests {
         assert!((corner.amount(corner.per) - 1.0).abs() < 1e-4);
         assert!(g.grab(corner.at + Vec2::new(3.0, 0.0)).is_some());
         assert!(g.grab(Pos2::new(500.0, 500.0)).is_none());
+    }
+
+    #[test]
+    fn plane_sizes_sit_on_the_edge_middles_and_measure_in_mm() {
+        let g = plane_sizes(
+            Vec3::ZERO,
+            glam::Vec2::new(20.0, 10.0),
+            [Vec3::X, Vec3::Y],
+            &screen,
+        );
+        assert_eq!(g.handles.len(), 4);
+        assert!(g.handles.iter().all(|h| h.kind != Kind::Uniform));
+        let right = g.grab(screen(Vec3::X * 20.0).unwrap()).unwrap();
+        assert_eq!(right.kind, Kind::Size(0, 1.0));
+        let back = g.grab(screen(-Vec3::Y * 10.0).unwrap()).unwrap();
+        assert_eq!(back.kind, Kind::Size(1, -1.0));
+        assert!((right.amount(right.per * 3.0) - 3.0).abs() < 1e-4);
+        assert!(g.frame.is_none());
     }
 
     #[test]

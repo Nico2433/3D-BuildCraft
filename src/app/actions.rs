@@ -242,41 +242,42 @@ impl App {
                     plane,
                     keep: Keep::Top,
                 });
-                // The plane has no size mode.
-                if self.mode == TransformMode::Scale {
-                    self.mode = TransformMode::Move;
+            }
+            Action::StartSimplify => {
+                if !self.scene.selection.is_empty() {
+                    // The original starts at half, and shows it at once.
+                    self.tool = Some(Tool::Simplify {
+                        level: 0.5,
+                        before: self.checkpoint(),
+                        run: simplify::Run::new(self.scene.selected_ids(), 0.0),
+                    });
                 }
             }
-            Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
-            Action::ApplySimplify => {
-                if let Some(Tool::Simplify { level }) = self.tool.take() {
-                    self.start_simplify(1.0 - level, ctx);
-                }
-            }
+            Action::ApplySimplify | Action::ApplySmooth | Action::ApplyOutline => self.apply_live(),
             Action::ApplyCut => {
                 if let Some(Tool::Cut { plane, keep }) = self.tool.take() {
-                    self.edit(|s| s.cut_selected(&plane, keep));
+                    self.split_selection(&plane, keep);
                 }
             }
             Action::StartSmooth => {
                 if !self.scene.selection.is_empty() {
+                    // The original starts at 3 of its 6 passes.
                     self.tool = Some(Tool::Smooth {
-                        amount: 0.0,
-                        edges: true,
+                        amount: 0.5,
+                        edges: false,
                         before: self.checkpoint(),
-                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, true)),
+                        run: smooth::Run::new(self.scene.selected_ids(), (0.0, false)),
                     });
                 }
             }
-            Action::ApplySmooth => self.apply_smooth(),
             Action::Smooth => {
-                self.modify_selected(crate::solid::smooth);
+                // The Smooth tool's default: 3 of 6 passes, edges kept.
+                self.modify_selected(|m| crate::solid::smooth_by(m, 0.5, false));
             }
             Action::ExtrudeDown => {
                 self.modify_selected(|m| crate::solid::extrude_down(m, 0.0));
             }
             Action::StartOutline => self.start_outline(),
-            Action::ApplyOutline => self.apply_outline(),
             Action::StartHollow => self.tool = Some(Tool::Hollow { wall: 1.0 }),
             Action::ApplyHollow => {
                 // The panel stays open when it fails, so the wall can be changed.
@@ -492,7 +493,7 @@ impl App {
 
     /// Simplify runs on a thread behind a progress card: large meshes take seconds.
     /// Every selected object is reduced or none is.
-    fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
+    pub(super) fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
         let meshes: Vec<(u64, std::sync::Arc<Mesh>)> = self
             .scene
             .selected()
@@ -568,6 +569,15 @@ impl App {
         self.refresh_invalid();
     }
 
+    /// Split: the selection becomes the pieces kept, as one undo step; a failure (a
+    /// finite plane on a mesh that needs repair) leaves it as it was and says why.
+    pub(super) fn split_selection(&mut self, plane: &CutPlane, keep: Keep) {
+        match self.scene.cut_pieces(plane, keep) {
+            Ok(pieces) => self.edit(|s| s.replace_selected(pieces)),
+            Err(e) => self.toast(format!("{e:#}"), true),
+        }
+    }
+
     fn cancel_tool(&mut self) {
         // Cancelling an interactive edit restores the scene and undo depth.
         let before = match self.tool.take() {
@@ -575,6 +585,7 @@ impl App {
                 Tool::Paint { before, .. }
                 | Tool::Settle { before, .. }
                 | Tool::Smooth { before, .. }
+                | Tool::Simplify { before, .. }
                 | Tool::Outline { before, .. }
                 | Tool::Material { before, .. },
             ) => Some(*before),

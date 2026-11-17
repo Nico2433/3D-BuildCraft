@@ -49,7 +49,6 @@ fn solid_edits_reject_an_open_mesh() {
     let mut open = primitives::cube(40.0);
     open.triangles.pop();
 
-    assert!(solid::smooth(&open).is_err());
     assert!(solid::hollow(&open, 2.0).is_err());
     assert!(solid::extrude_down(&open, 0.0).is_err());
 }
@@ -89,35 +88,6 @@ fn extrude_down_fills_below_a_rotated_lifted_torus() {
     assert_closed(&extruded);
     assert_close(extruded.aabb().min.z as f64, 0.0, 1e-3);
     assert!(extruded.stats().volume > torus.stats().volume);
-}
-
-#[test]
-fn smooth_cube_subdivides_every_face_without_changing_its_volume() {
-    let cube = primitives::cube(40.0);
-    let smoothed = solid::smooth(&cube).unwrap();
-
-    assert_closed(&smoothed);
-    assert_eq!(smoothed.triangles.len(), 4 * cube.triangles.len());
-    assert_close(smoothed.stats().volume, 40.0_f64.powi(3), 640.0);
-}
-
-#[test]
-fn smooth_sphere_preserves_volume() {
-    let sphere = primitives::sphere(20.0, 32, 16);
-    let smoothed = solid::smooth(&sphere).unwrap();
-    let ratio = smoothed.stats().volume / sphere.stats().volume;
-
-    assert_closed(&smoothed);
-    assert!((0.97..=1.03).contains(&ratio), "volume ratio: {ratio}");
-}
-
-#[test]
-fn smooth_rejects_more_than_the_triangle_limit_before_geometry_validation() {
-    let oversized = Mesh::new(
-        vec![Vec3::ZERO],
-        vec![[0, 0, 0]; solid::SMOOTH_MAX_TRIANGLES + 1],
-    );
-    assert!(solid::smooth(&oversized).is_err());
 }
 
 #[test]

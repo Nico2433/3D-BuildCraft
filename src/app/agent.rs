@@ -104,6 +104,19 @@ impl App {
     }
 
     fn agent_call(&mut self, tool: &str, a: &Value, ctx: &egui::Context) -> Reply {
+        let key = match tool {
+            "emboss_text" | "apply_texture" => "image",
+            _ => "path",
+        };
+        let inline = if matches!(
+            tool,
+            "open" | "import" | "load_image" | "emboss_text" | "apply_texture"
+        ) {
+            mcp::inline_file(a, key, &mcp::inline_dir())?
+        } else {
+            None
+        };
+        let a = inline.as_ref().unwrap_or(a);
         let selection_needed = matches!(
             tool,
             "transform"
@@ -122,6 +135,10 @@ impl App {
         // A tool left open by the user would catch the edit; the agent's call wins.
         if tool == "measure" {
             return Ok(vec![mcp::text(&mcp::measure(&self.scene, a)?.to_string())]);
+        }
+        if tool == "list_fonts" {
+            let fonts = mcp::list_fonts(&crate::emboss::font_families(), a["filter"].as_str());
+            return Ok(vec![mcp::text(&fonts.to_string())]);
         }
         // These leave the user's open tool alone.
         if matches!(
@@ -223,6 +240,20 @@ impl App {
                 let c = c.ok_or("color must look like #RRGGBB")?;
                 self.apply(Action::SetColor(c), ctx);
             }
+            "smooth" => {
+                let passes = match &a["passes"] {
+                    Value::Null => 3,
+                    v => v
+                        .as_u64()
+                        .filter(|p| *p <= crate::solid::SMOOTH_STEPS as u64)
+                        .ok_or("passes must be a whole number from 0 to 6")?,
+                };
+                let amount = passes as f32 / crate::solid::SMOOTH_STEPS as f32;
+                let edges = a["edges"].as_bool().unwrap_or(false);
+                if !self.modify_selected(|m| crate::solid::smooth_by(m, amount, edges)) {
+                    return Err("nothing selected, or smoothing failed".into());
+                }
+            }
             "hollow" => {
                 let wall = positive(&a["wall"], "wall")?;
                 self.tool = Some(Tool::Hollow { wall });
@@ -233,8 +264,7 @@ impl App {
                 if !(0.0..=1.0).contains(&level) {
                     return Err("remove must be between 0 and 1".into());
                 }
-                self.tool = Some(Tool::Simplify { level });
-                self.apply(Action::ApplySimplify, ctx);
+                self.start_simplify(1.0 - level, ctx);
                 self.wait_jobs();
             }
             "split" => self.agent_split(a, ctx)?,

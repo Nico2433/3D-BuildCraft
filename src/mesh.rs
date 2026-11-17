@@ -445,14 +445,16 @@ impl Mesh {
         out
     }
 
-    /// Reduces the triangle count to about `keep` (0..1) of the current one with
-    /// meshoptimizer's edge-collapse simplifier ("Simplify").
-    pub fn simplify_target(&self, keep: f32) -> usize {
+    /// The triangles [`Self::try_simplified`] aims for: `keep` (0..1) of the current ones,
+    /// at least 4 unless it has fewer.
+    fn simplify_target(&self, keep: f32) -> usize {
         ((self.triangles.len() as f32 * keep.clamp(0.0, 1.0)) as usize)
             .max(4)
             .min(self.triangles.len())
     }
 
+    /// Reduces the triangle count to about `keep` (0..1) of the current one with
+    /// meshoptimizer's edge-collapse simplifier ("Simplify"); unchanged when that fails.
     pub fn simplified(&self, keep: f32) -> Mesh {
         self.try_simplified(keep).unwrap_or_else(|_| self.clone())
     }

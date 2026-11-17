@@ -55,6 +55,7 @@ mod ribbon;
 mod selection;
 mod settle;
 mod side_menu;
+mod simplify;
 mod smooth;
 mod start;
 mod style;
@@ -137,9 +138,12 @@ enum Tool {
         before: Box<Checkpoint>,
         run: outline::Run,
     },
-    /// Fraction of faces to remove, 0..1.
+    /// Fraction of faces to remove, 0..1, previewed in the scene.
     Simplify {
         level: f32,
+        /// The scene, undo depth and unsaved flag before simplifying, for Cancel.
+        before: Box<Checkpoint>,
+        run: simplify::Run,
     },
     /// Minimum wall thickness, mm.
     Hollow {
@@ -519,6 +523,7 @@ impl App {
                 self.toast(tr(lang, "Simplification produced an invalid solid"), true)
             }
             jobs::Done::Smoothed { gen, result } => self.smooth_done(gen, result),
+            jobs::Done::Reduced { gen, result } => self.simplify_done(gen, result),
             jobs::Done::Outlined { gen, result } => self.outline_done(gen, result),
             jobs::Done::Loaded {
                 path,
@@ -845,14 +850,7 @@ impl App {
 impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
-        // A live preview that is still waiting to start.
-        let previewing = match &self.tool {
-            Some(Tool::Smooth {
-                amount, edges, run, ..
-            }) => !run.is_shown((*amount, *edges)),
-            Some(Tool::Outline { opts, run, .. }) => !run.is_shown(*opts),
-            _ => false,
-        };
+        let previewing = self.live_pending();
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };
@@ -948,6 +946,7 @@ impl eframe::App for App {
         let jobs_before = self.jobs.len();
         self.collect_jobs();
         self.smooth_step(ctx);
+        self.simplify_step(ctx);
         self.outline_step(ctx);
         self.material_step();
         self.reclaim_after_work(ctx, picking_ready || self.jobs.len() != jobs_before);

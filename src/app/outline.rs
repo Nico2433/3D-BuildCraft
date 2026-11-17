@@ -96,22 +96,6 @@ impl App {
         }
     }
 
-    /// Whether Apply can take the preview: it shows the settings now on the bar.
-    pub(super) fn outline_ready(&self) -> bool {
-        matches!(&self.tool, Some(Tool::Outline { opts, run, .. }) if run.ready(*opts))
-    }
-
-    pub(super) fn apply_outline(&mut self) {
-        if !self.outline_ready() {
-            return;
-        }
-        if let Some(Tool::Outline { before, .. }) = self.tool.take() {
-            self.commit(*before);
-            self.scene.dirty = true;
-            self.refresh_invalid();
-        }
-    }
-
     /// The border at once, for the agent: one undo step.
     pub(super) fn outline_now(&mut self, opts: Options) -> Result<(), String> {
         let ids = self.scene.selected_ids();

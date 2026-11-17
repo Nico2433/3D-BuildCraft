@@ -1,7 +1,7 @@
 //! WGSL for every viewport pass: meshes, floor, shadows, slab and the selection outline.
 
 pub(super) const SHADER: &str = r#"
-struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32>, clip: vec4<f32>, decal: mat4x4<f32>, decal_n: vec4<f32>, decal_p: vec4<f32> };
+struct Globals { view_proj: mat4x4<f32>, eye: vec4<f32>, light: vec4<f32>, flags: vec4<f32>, flags2: vec4<f32>, viewport: vec4<f32>, clip: vec4<f32>, clip_o: vec4<f32>, clip_u: vec4<f32>, clip_v: vec4<f32>, decal: mat4x4<f32>, decal_n: vec4<f32>, decal_p: vec4<f32> };
 struct Obj { model: mat4x4<f32>, normal: mat4x4<f32>, color: vec4<f32>, extra: vec4<f32> };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> o: Obj;
@@ -22,8 +22,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     return out;
 }
 
-@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
-    if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
+// The Split preview hides what lies past its plane inside the prism over its rectangle.
+fn clipped(p: vec3<f32>) -> bool {
+    let r = p - g.clip_o.xyz;
+    return dot(p, g.clip.xyz) > g.clip.w
+        && abs(dot(r, g.clip_u.xyz)) <= g.clip_u.w
+        && abs(dot(r, g.clip_v.xyz)) <= g.clip_v.w;
+}
+
+@fragment fn fs(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if (clipped(in.wpos)) { discard; }
     // Both pictures are sampled here, in uniform control flow, so they get mip levels.
     let layer = i32(in.tx & 0xFFFFu) - 1;
     let sticker_face = (in.tx & 0x10000u) != 0u;
@@ -39,6 +47,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     if (g.flags.y < 0.5) { n = flat_n; }
     let v = normalize(g.eye.xyz - in.wpos);
     if (dot(n, v) < 0.0) { n = -n; }
+    // Through the Split preview's cut the inside of the far walls shows; lit as the cut
+    // face, it reads as the solid wall the cut leaves.
+    if (!front && dot(g.clip.xyz, g.clip.xyz) > 0.5) { n = g.clip.xyz; }
     var base = o.color.rgb;
     // See-through items (the scene behind Custom or an import) keep their one colour.
     if (in.c.a > 0.001 && o.color.a > 0.99) { base = in.c.rgb; }
@@ -88,7 +99,7 @@ struct MaskOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>
     return MaskOut(g.view_proj * w, w.xyz);
 }
 @fragment fn fs_mask(in: MaskOut) -> @location(0) vec4<f32> {
-    if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
+    if (clipped(in.wpos)) { discard; }
     return vec4<f32>(1.0);
 }
 
@@ -139,13 +150,17 @@ struct SOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     return vec4<f32>(0.0, 0.0, 0.0, 0.2 * (1.0 - smoothstep(0.0, 1.0, d)));
 }
 
-@vertex fn vs_wire(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> @builtin(position) vec4<f32> {
-    var pos = g.view_proj * (o.model * vec4<f32>(p, 1.0));
+// The wire is cut by the same plane as the surface (Split hides one side).
+struct WireOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32> };
+@vertex fn vs_wire(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> WireOut {
+    let w = o.model * vec4<f32>(p, 1.0);
+    var pos = g.view_proj * w;
     pos.z = pos.z - 0.00002 * pos.w;
-    return pos;
+    return WireOut(pos, w.xyz);
 }
 
-@fragment fn fs_wire() -> @location(0) vec4<f32> {
+@fragment fn fs_wire(in: WireOut) -> @location(0) vec4<f32> {
+    if (clipped(in.wpos)) { discard; }
     return vec4<f32>(0.05, 0.08, 0.12, 0.85);
 }
 

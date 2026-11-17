@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "buildcraft3d"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "anyhow",
  "arboard",

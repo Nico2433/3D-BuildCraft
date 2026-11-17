@@ -1,5 +1,6 @@
-//! Solid edits through manifold-rust: smooth, hollow and extrude down. Inputs must be
-//! closed and manifold, like for booleans.
+//! Solid edits: smooth (subdivision and HC smoothing of the mesh itself), and through
+//! manifold-rust round, hollow and extrude down, whose inputs must be closed and
+//! manifold, like for booleans.
 
 use crate::boolean::{from_manifold, to_manifold};
 use crate::mesh::{Dsu, Mesh};
@@ -9,36 +10,28 @@ use glam::Vec3;
 use manifold_rust::linalg::Vec3 as MVec3;
 use manifold_rust::manifold::Manifold;
 use manifold_rust::types::Box as MBox;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-/// Above this, smoothing (which makes 4× the triangles) takes too long.
-pub const SMOOTH_MAX_TRIANGLES: usize = 250_000;
+/// Most passes the Smooth slider reaches, as the original's (its default is 3, half).
+pub const SMOOTH_STEPS: u32 = 6;
+/// The original splits faces without Smooth edges only below this many points.
+const SPLIT_BELOW_POINTS: usize = 4096;
+/// Past this many triangles Loop subdivision stops (the original has no limit and runs
+/// out of memory on scans).
+const SMOOTH_BUDGET: usize = 400_000;
 
-/// Rounds the surface: edges sharper than 60° stay sharp, every face is split in four.
-pub fn smooth(mesh: &Mesh) -> Result<Mesh> {
-    if mesh.triangles.len() > SMOOTH_MAX_TRIANGLES {
-        bail!(
-            "Too many triangles to smooth ({}); simplify the model first",
-            mesh.triangles.len()
-        );
-    }
-    Ok(from_manifold(
-        &to_manifold(mesh)?.smooth_out(60.0, 0.0).refine(2),
-    ))
-}
-
-/// The Smooth tool's surface: the faces are subdivided and then relaxed by Taubin
-/// (shrink-free) Laplacian smoothing, `amount` 0 to 1 setting how long. With `edges` off,
-/// edges sharper than 40° (and open or non-manifold ones) stay where they are. Face colours
-/// follow their faces.
+/// The Smooth tool's surface, as the original's (read from its code): `amount` (0 to 1)
+/// is a number of passes, 0 to [`SMOOTH_STEPS`]. With `edges` each pass is one step of
+/// Loop subdivision, so edges and corners melt into a rounder, smaller shape. Without
+/// it each pass splits every face in four while the mesh has fewer than 4096 points,
+/// then relaxes it with ten rounds of HC Laplacian smoothing, which keeps the volume:
+/// a box turns into a pillow of about its size, and a detailed scan keeps its triangle
+/// count while its mesh evens out. Colours and textures follow their faces. Beyond the
+/// original: points on open or non-manifold edges stay put, flat fans are rebuilt from
+/// their centre first, and the bottom keeps its height so a model stays on the floor.
 pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
-    if mesh.triangles.len() > SMOOTH_MAX_TRIANGLES {
-        bail!(
-            "Too many triangles to smooth ({}); simplify the model first",
-            mesh.triangles.len()
-        );
-    }
-    if amount <= 0.0 {
+    let steps = (amount.clamp(0.0, 1.0) * SMOOTH_STEPS as f32).round() as u32;
+    if steps == 0 || mesh.triangles.is_empty() {
         return Ok(mesh.clone());
     }
     // Weld points at the same place, so seams do not open.
@@ -68,103 +61,25 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
             texs.push(mesh.face_tex(i).unwrap_or_default());
         }
     }
-    let key = |a: u32, b: u32| (a.min(b), a.max(b));
-    // Edges that must not move.
-    let mut sharp: HashSet<(u32, u32)> = HashSet::new();
-    if !edges {
-        let mut faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-        for (i, t) in tris.iter().enumerate() {
-            for k in 0..3 {
-                faces.entry(key(t[k], t[(k + 1) % 3])).or_default().push(i);
+    center_fans(&mut pos, &mut tris, &mut colors, &mut texs);
+    let bottom = pos.iter().map(|p| p.z).fold(f32::INFINITY, f32::min);
+    for _ in 0..steps {
+        if edges {
+            if tris.len() * 4 > SMOOTH_BUDGET {
+                break;
             }
-        }
-        let normal = |t: &[u32; 3]| {
-            let [a, b, c] = t.map(|v| pos[v as usize]);
-            (b - a).cross(c - a).normalize_or_zero()
-        };
-        for (e, f) in faces {
-            if f.len() != 2
-                || normal(&tris[f[0]]).dot(normal(&tris[f[1]])) < 40f32.to_radians().cos()
-            {
-                sharp.insert(e);
+            (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, true);
+        } else {
+            if pos.len() < SPLIT_BELOW_POINTS {
+                (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, false);
             }
+            hc_smooth(&mut pos, &tris, 10);
         }
     }
-    // Uniform subdivision, as often as the triangle budget allows.
-    let mut levels = 0;
-    while levels < 3 && tris.len() * 4usize.pow(levels + 1) <= 300_000 {
-        levels += 1;
-    }
-    for _ in 0..levels {
-        let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut mid = |a: u32, b: u32, pos: &mut Vec<Vec3>| {
-            *mids.entry(key(a, b)).or_insert_with(|| {
-                pos.push((pos[a as usize] + pos[b as usize]) * 0.5);
-                pos.len() as u32 - 1
-            })
-        };
-        let mut next = Vec::with_capacity(tris.len() * 4);
-        let mut next_colors = Vec::with_capacity(tris.len() * 4);
-        let mut next_texs = Vec::with_capacity(tris.len() * 4);
-        for ((t, c), tex) in tris.iter().zip(&colors).zip(&texs) {
-            let [a, b, c3] = *t;
-            let (ab, bc, ca) = (
-                mid(a, b, &mut pos),
-                mid(b, c3, &mut pos),
-                mid(c3, a, &mut pos),
-            );
-            next.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c3], [ab, bc, ca]]);
-            next_colors.extend([*c; 4]);
-            let [ua, ub, uc] = tex.uv;
-            let half = |p: [f32; 2], q: [f32; 2]| [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
-            let (uab, ubc, uca) = (half(ua, ub), half(ub, uc), half(uc, ua));
-            next_texs.extend(
-                [
-                    [ua, uab, uca],
-                    [uab, ub, ubc],
-                    [uca, ubc, uc],
-                    [uab, ubc, uca],
-                ]
-                .map(|uv| FaceTex { uv, ..*tex }),
-            );
-        }
-        sharp = sharp
-            .iter()
-            .flat_map(|&(a, b)| {
-                let m = mids[&(a, b)];
-                [key(a, m), key(m, b)]
-            })
-            .collect();
-        (tris, colors, texs) = (next, next_colors, next_texs);
-    }
-    let fixed: HashSet<u32> = sharp.iter().flat_map(|&(a, b)| [a, b]).collect();
-    let mut near: Vec<Vec<u32>> = vec![Vec::new(); pos.len()];
-    for t in &tris {
-        for k in 0..3 {
-            near[t[k] as usize].push(t[(k + 1) % 3]);
-            near[t[k] as usize].push(t[(k + 2) % 3]);
-        }
-    }
-    for n in &mut near {
-        n.sort_unstable();
-        n.dedup();
-    }
-    // Taubin: a shrinking step, then an inflating one.
-    for _ in 0..(amount.min(1.0) * 30.0).round() as usize {
-        for factor in [0.5_f32, -0.53] {
-            let moved: Vec<Vec3> = (0..pos.len())
-                .map(|i| {
-                    if near[i].is_empty() || fixed.contains(&(i as u32)) {
-                        return pos[i];
-                    }
-                    let mean = near[i].iter().map(|&j| pos[j as usize]).sum::<Vec3>()
-                        / near[i].len() as f32;
-                    pos[i] + (mean - pos[i]) * factor
-                })
-                .collect();
-            pos = moved;
-        }
-    }
+    // Rounding lifts the bottom (or bulges it below); keep it where it was, so a
+    // model on the floor stays there.
+    let lift = bottom - pos.iter().map(|p| p.z).fold(f32::INFINITY, f32::min);
+    pos.iter_mut().for_each(|p| p.z += lift);
     let mut out = Mesh::new(pos, tris);
     if colors.iter().any(|c| c[3] != 0) {
         out.colors = colors;
@@ -173,6 +88,302 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
         out.tex = texs;
     }
     Ok(out)
+}
+
+/// Rebuilds flat fans from their centre. A cap triangulated as a fan from one rim point
+/// (a cylinder's) gives that point a hundred neighbours, and subdivision would pinch a
+/// crease from it; triangulated from its centre it rounds evenly, as the original's
+/// shapes do. Only flat, single-colour, untextured patches shaped like a disc with a
+/// point touching more than eight of their faces change, and only when every new face
+/// still faces the same way, so the shape and the paint stay as they are.
+fn center_fans(
+    pos: &mut Vec<Vec3>,
+    tris: &mut Vec<[u32; 3]>,
+    colors: &mut Vec<[u8; 4]>,
+    texs: &mut Vec<FaceTex>,
+) {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let normal = |pos: &[Vec3], t: &[u32; 3]| {
+        let [a, b, c] = t.map(|v| pos[v as usize]);
+        (b - a).cross(c - a).normalize_or_zero()
+    };
+    let mut faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (i, t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            faces.entry(key(t[k], t[(k + 1) % 3])).or_default().push(i);
+        }
+    }
+    // Flat patches: faces joined across edges with the same normal and paint.
+    let mut patch = Dsu::new(tris.len());
+    for f in faces.values() {
+        if let &[f1, f2] = f.as_slice() {
+            if colors[f1] == colors[f2]
+                && texs[f1].layer == 0
+                && texs[f2].layer == 0
+                && normal(pos, &tris[f1]).dot(normal(pos, &tris[f2])) > 0.99999
+            {
+                patch.union(f1, f2);
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..tris.len() {
+        groups.entry(patch.find(i)).or_default().push(i);
+    }
+    let mut drop = vec![false; tris.len()];
+    let mut added: Vec<([u32; 3], [u8; 4])> = Vec::new();
+    for members in groups.values().filter(|m| m.len() > 8) {
+        let mut uses: HashMap<u32, usize> = HashMap::new();
+        for &f in members {
+            tris[f]
+                .iter()
+                .for_each(|&v| *uses.entry(v).or_default() += 1);
+        }
+        if uses.values().all(|&n| n <= 8) {
+            continue;
+        }
+        // The patch's rim, as directed edges a → b of its faces.
+        let inside: std::collections::HashSet<usize> = members.iter().copied().collect();
+        let mut next: HashMap<u32, u32> = HashMap::new();
+        let mut simple = true;
+        for &f in members {
+            let t = tris[f];
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                let shared = faces[&key(a, b)]
+                    .iter()
+                    .any(|&g| g != f && inside.contains(&g));
+                if !shared && next.insert(a, b).is_some() {
+                    simple = false;
+                }
+            }
+        }
+        // One loop through every rim point, and a disc: V - E + F = 1.
+        let Some(&start) = next.keys().next() else {
+            continue;
+        };
+        let mut ring = vec![start];
+        while let Some(&n) = next.get(ring.last().unwrap()) {
+            if n == start || ring.len() > next.len() {
+                break;
+            }
+            ring.push(n);
+        }
+        let edges = (members.len() * 3 + ring.len()) / 2;
+        if !simple || ring.len() != next.len() || uses.len() + members.len() != edges + 1 {
+            continue;
+        }
+        let up = normal(pos, &tris[members[0]]);
+        let center = ring.iter().map(|&v| pos[v as usize]).sum::<Vec3>() / ring.len() as f32;
+        let fan: Vec<[u32; 3]> = (0..ring.len())
+            .map(|k| [ring[k], ring[(k + 1) % ring.len()], pos.len() as u32])
+            .collect();
+        let mut probe = pos.clone();
+        probe.push(center);
+        if fan.iter().any(|t| normal(&probe, t).dot(up) < 0.999) {
+            continue;
+        }
+        pos.push(center);
+        members.iter().for_each(|&f| drop[f] = true);
+        added.extend(fan.into_iter().map(|t| (t, colors[members[0]])));
+    }
+    if added.is_empty() {
+        return;
+    }
+    let mut k = drop.iter();
+    tris.retain(|_| !*k.next().unwrap());
+    let mut k = drop.iter();
+    colors.retain(|_| !*k.next().unwrap());
+    let mut k = drop.iter();
+    texs.retain(|_| !*k.next().unwrap());
+    for (t, c) in added {
+        tris.push(t);
+        colors.push(c);
+        texs.push(FaceTex::default());
+    }
+}
+
+/// HC Laplacian smoothing (Vollmer, Mencl and Müller), as the original's: `rounds`
+/// rounds of moving every point to the weighted mean of its neighbours, then pushing it
+/// back towards where it started (α 0.2, β 0.8), so the shape does not shrink. An edge
+/// weighs the mean angle facing it in its triangles, in radians; angles under 0.03 or
+/// over 1.5408 count as nothing. Points on open or non-manifold edges stay put.
+fn hc_smooth(pos: &mut [Vec3], tris: &[[u32; 3]], rounds: usize) {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut index: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    let mut faces: Vec<u32> = Vec::new();
+    // For every triangle, the edge facing each corner.
+    let facing: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| {
+            [0, 1, 2].map(|k| {
+                let e = key(t[(k + 1) % 3], t[(k + 2) % 3]);
+                *index.entry(e).or_insert_with(|| {
+                    edges.push(e);
+                    faces.push(0);
+                    edges.len() - 1
+                })
+            })
+        })
+        .collect();
+    facing.iter().flatten().for_each(|&e| faces[e] += 1);
+    let mut fixed = vec![false; pos.len()];
+    for (e, &(a, b)) in edges.iter().enumerate() {
+        if faces[e] != 2 {
+            fixed[a as usize] = true;
+            fixed[b as usize] = true;
+        }
+    }
+    let start = pos.to_vec();
+    let mut weight = vec![0f32; edges.len()];
+    let mean = |values: &[Vec3], weight: &[f32]| {
+        let mut sum = vec![Vec3::ZERO; values.len()];
+        let mut total = vec![0f32; values.len()];
+        for (&(a, b), &w) in edges.iter().zip(weight) {
+            sum[a as usize] += values[b as usize] * w;
+            sum[b as usize] += values[a as usize] * w;
+            total[a as usize] += w;
+            total[b as usize] += w;
+        }
+        (sum, total)
+    };
+    for _ in 0..rounds {
+        weight.iter_mut().for_each(|w| *w = 0.0);
+        for (t, e) in tris.iter().zip(&facing) {
+            for k in 0..3 {
+                let p = pos[t[k] as usize];
+                let u = (pos[t[(k + 1) % 3] as usize] - p).normalize_or_zero();
+                let v = (pos[t[(k + 2) % 3] as usize] - p).normalize_or_zero();
+                let angle = u.dot(v).clamp(-1.0, 1.0).acos();
+                if (0.03..=1.5408).contains(&angle) {
+                    weight[e[k]] += angle;
+                }
+            }
+        }
+        for (w, &n) in weight.iter_mut().zip(&faces) {
+            *w /= n.max(1) as f32;
+        }
+        let (sum, total) = mean(pos, &weight);
+        let q: Vec<Vec3> = (0..pos.len())
+            .map(|i| {
+                if total[i] > 0.0 && !fixed[i] {
+                    sum[i] / total[i]
+                } else {
+                    pos[i]
+                }
+            })
+            .collect();
+        let pull: Vec<Vec3> = (0..pos.len())
+            .map(|i| q[i] - (start[i] * 0.2 + pos[i] * 0.8))
+            .collect();
+        let (near, total) = mean(&pull, &weight);
+        for i in 0..pos.len() {
+            if fixed[i] || total[i] <= 0.0 {
+                continue;
+            }
+            pos[i] = q[i] - (pull[i] * 0.8 + near[i] / total[i] * 0.2);
+        }
+    }
+}
+
+/// Points, triangles and their colours and textures.
+type Split = (Vec<Vec3>, Vec<[u32; 3]>, Vec<[u8; 4]>, Vec<FaceTex>);
+
+/// One step of [`smooth_by`]: every face split in four, the new points placed by the
+/// Loop rules (`approximate`) or halfway along their edge.
+fn subdivide(
+    pos: &[Vec3],
+    tris: &[[u32; 3]],
+    colors: &[[u8; 4]],
+    texs: &[FaceTex],
+    approximate: bool,
+) -> Split {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    // The corners facing each edge.
+    let mut facing: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for t in tris {
+        for k in 0..3 {
+            facing
+                .entry(key(t[k], t[(k + 1) % 3]))
+                .or_default()
+                .push(t[(k + 2) % 3]);
+        }
+    }
+    let mut near: Vec<Vec<u32>> = vec![Vec::new(); pos.len()];
+    let mut pinned = vec![false; pos.len()];
+    for (&(a, b), f) in &facing {
+        near[a as usize].push(b);
+        near[b as usize].push(a);
+        if f.len() != 2 {
+            pinned[a as usize] = true;
+            pinned[b as usize] = true;
+        }
+    }
+    let mut out: Vec<Vec3> = pos
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| {
+            let n = near[i].len();
+            if !approximate || pinned[i] || n < 3 {
+                return p;
+            }
+            // Loop's vertex rule.
+            let beta = if n == 3 {
+                3.0 / 16.0
+            } else {
+                3.0 / (8.0 * n as f32)
+            };
+            p * (1.0 - n as f32 * beta)
+                + near[i].iter().map(|&j| pos[j as usize]).sum::<Vec3>() * beta
+        })
+        .collect();
+    let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut mid = |a: u32, b: u32, out: &mut Vec<Vec3>| -> u32 {
+        *mids.entry(key(a, b)).or_insert_with(|| {
+            let (pa, pb) = (pos[a as usize], pos[b as usize]);
+            let half = (pa + pb) * 0.5;
+            let p = match facing.get(&key(a, b)).map(Vec::as_slice) {
+                Some(&[c, d]) => {
+                    let (pc, pd) = (pos[c as usize], pos[d as usize]);
+                    if approximate {
+                        (pa + pb) * 0.375 + (pc + pd) * 0.125
+                    } else {
+                        half
+                    }
+                }
+                _ => half,
+            };
+            out.push(p);
+            out.len() as u32 - 1
+        })
+    };
+    let mut next = Vec::with_capacity(tris.len() * 4);
+    let mut next_colors = Vec::with_capacity(tris.len() * 4);
+    let mut next_texs = Vec::with_capacity(tris.len() * 4);
+    for ((t, c), tex) in tris.iter().zip(colors).zip(texs) {
+        let [a, b, c3] = *t;
+        let (ab, bc, ca) = (
+            mid(a, b, &mut out),
+            mid(b, c3, &mut out),
+            mid(c3, a, &mut out),
+        );
+        next.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c3], [ab, bc, ca]]);
+        next_colors.extend([*c; 4]);
+        let [ua, ub, uc] = tex.uv;
+        let half = |p: [f32; 2], q: [f32; 2]| [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
+        let (uab, ubc, uca) = (half(ua, ub), half(ub, uc), half(uc, ua));
+        next_texs.extend(
+            [
+                [ua, uab, uca],
+                [uab, ub, ubc],
+                [uca, ubc, uc],
+                [uab, ubc, uca],
+            ]
+            .map(|uv| FaceTex { uv, ..*tex }),
+        );
+    }
+    (out, next, next_colors, next_texs)
 }
 
 /// Rounds every edge by `amount` (0 sharp .. 1 fully round), for Custom's "Roundness".
@@ -489,19 +700,86 @@ mod tests {
     use crate::primitives::Primitive;
 
     #[test]
-    fn smooth_keeps_the_volume_and_the_sharp_edges() {
+    fn smooth_runs_the_original_passes() {
         let cube = Primitive::Cube.build();
         let volume = |m: &Mesh| m.stats().volume;
+        let size = |m: &Mesh| m.aabb().max - m.aabb().min;
         assert_eq!(smooth_by(&cube, 0.0, true).unwrap(), cube);
-        for amount in [0.2, 0.6, 1.0] {
-            let round = smooth_by(&cube, amount, true).unwrap();
-            assert!(volume(&round) > 0.7 * volume(&cube));
-            assert!(volume(&round) < 1.05 * volume(&cube));
-            assert!(round.stats().is_closed_manifold());
+        // Without Smooth edges: split while under 4096 points (8, 26, 98, 386, 1538,
+        // 6146), relaxed every pass; the pillow keeps about the cube's size and volume.
+        let half = smooth_by(&cube, 0.5, false).unwrap();
+        let full = smooth_by(&cube, 1.0, false).unwrap();
+        assert_eq!(half.triangles.len(), cube.triangles.len() * 4usize.pow(3));
+        assert_eq!(full.triangles.len(), cube.triangles.len() * 4usize.pow(5));
+        assert!(full.stats().is_closed_manifold());
+        assert!(volume(&half) > 0.75 * volume(&cube));
+        assert!((volume(&half) - volume(&full)).abs() < 0.02 * volume(&cube));
+        assert!(size(&half).min_element() > 0.95 * size(&cube).min_element());
+        // With it: one Loop step per pass, which shrinks it into a blob.
+        let round = smooth_by(&cube, 0.5, true).unwrap();
+        assert_eq!(round.triangles.len(), cube.triangles.len() * 4usize.pow(3));
+        assert_eq!(
+            smooth_by(&cube, 1.0, true).unwrap().triangles.len(),
+            cube.triangles.len() * 4usize.pow(6)
+        );
+        assert!(size(&round).max_element() < 0.95 * size(&cube).max_element());
+        assert!(volume(&round) < volume(&half));
+        assert_eq!(round.aabb().min.z, cube.aabb().min.z);
+        assert_eq!(half.aabb().min.z, cube.aabb().min.z);
+    }
+
+    #[test]
+    fn flat_fans_are_rebuilt_from_their_centre() {
+        let cylinder = Primitive::Cylinder.build().welded();
+        let (mut pos, mut tris) = (cylinder.positions.clone(), cylinder.triangles.clone());
+        let n = tris.len();
+        let (mut colors, mut texs) = (vec![[0; 4]; n], vec![FaceTex::default(); n]);
+        let most = |tris: &[[u32; 3]], points: usize| {
+            let mut count = vec![0; points];
+            tris.iter().flatten().for_each(|&v| count[v as usize] += 1);
+            count
+        };
+        assert!(most(&tris, pos.len()).into_iter().max().unwrap() > 60);
+        center_fans(&mut pos, &mut tris, &mut colors, &mut texs);
+        // Two new centre points carry the caps; no rim point keeps a fan.
+        assert_eq!(pos.len(), cylinder.positions.len() + 2);
+        let count = most(&tris, pos.len());
+        assert!(count[..cylinder.positions.len()].iter().all(|&c| c <= 8));
+        let rebuilt = Mesh::new(pos, tris);
+        assert!(rebuilt.stats().is_closed_manifold());
+        let volume = cylinder.stats().volume;
+        assert!((rebuilt.stats().volume - volume).abs() < 1e-3 * volume);
+        // A cube's faces are two triangles each: left alone.
+        let cube = Primitive::Cube.build().welded();
+        let (mut p, mut t) = (cube.positions.clone(), cube.triangles.clone());
+        let mut c = vec![[0; 4]; t.len()];
+        let mut x = vec![FaceTex::default(); t.len()];
+        center_fans(&mut p, &mut t, &mut c, &mut x);
+        assert_eq!(t, cube.triangles);
+    }
+
+    #[test]
+    fn big_models_are_relaxed_without_splitting() {
+        let cube = Primitive::Cube.build().welded();
+        let n = cube.triangles.len();
+        let mut split = (
+            cube.positions.clone(),
+            cube.triangles.clone(),
+            vec![[0; 4]; n],
+            vec![FaceTex::default(); n],
+        );
+        for _ in 0..7 {
+            split = subdivide(&split.0, &split.1, &split.2, &split.3, false);
         }
-        // Every edge of a cube is sharp: nothing moves.
-        let kept = smooth_by(&cube, 1.0, false).unwrap();
-        assert!((volume(&kept) - volume(&cube)).abs() < 1e-3 * volume(&cube));
+        let big = Mesh::new(split.0, split.1);
+        assert!(big.positions.len() > SPLIT_BELOW_POINTS);
+        let relaxed = smooth_by(&big, 0.5, false).unwrap();
+        assert_eq!(relaxed.triangles.len(), big.triangles.len());
+        assert_ne!(relaxed.positions, big.positions);
+        assert!(relaxed.stats().is_closed_manifold());
+        // Loop stops at the triangle budget instead of running out of memory.
+        assert!(big.triangles.len() * 4 > SMOOTH_BUDGET);
+        assert_eq!(smooth_by(&big, 1.0, true).unwrap(), big);
     }
 
     #[test]
@@ -509,7 +787,7 @@ mod tests {
         let mut ball = Primitive::Sphere.build();
         let palette = [[255, 0, 0, 255], [0, 255, 0, 255]];
         ball.colors = (0..ball.triangles.len()).map(|i| palette[i % 2]).collect();
-        let smooth = smooth_by(&ball, 0.5, true).unwrap();
+        let smooth = smooth_by(&ball, 1.0, true).unwrap();
         assert_eq!(smooth.colors.len(), smooth.triangles.len());
         assert!(smooth.colors.iter().all(|c| palette.contains(c)));
         assert!(palette.iter().all(|p| smooth.colors.contains(p)));
