@@ -238,6 +238,9 @@ impl App {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Smoothness"));
                 style::slider(ui, amount, 0.0..=1.0, 250.0, 0);
+                // The original's slider stops at whole passes.
+                let steps = crate::solid::SMOOTH_STEPS as f32;
+                *amount = (*amount * steps).round() / steps;
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::labeled(ui, tr(lang, "Smooth edges"), |ui| {
                     style::switch(ui, edges, tr(lang, "On"), tr(lang, "Off"))

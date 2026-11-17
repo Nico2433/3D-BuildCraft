@@ -262,7 +262,7 @@ impl App {
             if let Some(Tool::Smooth { amount, edges, .. }) = &mut self.tool {
                 let t = t.trim_start_matches('-');
                 let (value, on) = t.strip_suffix("-edges").map_or((t, false), |v| (v, true));
-                *amount = value.parse().unwrap_or(0.0);
+                *amount = value.parse().unwrap_or(*amount);
                 *edges = on;
             }
         }

@@ -260,8 +260,9 @@ impl App {
             }
             Action::StartSmooth => {
                 if !self.scene.selection.is_empty() {
+                    // The original starts at 3 of its 6 passes.
                     self.tool = Some(Tool::Smooth {
-                        amount: 0.0,
+                        amount: 0.5,
                         edges: false,
                         before: self.checkpoint(),
                         run: smooth::Run::new(self.scene.selected_ids(), (0.0, false)),
