@@ -27,25 +27,26 @@ pub fn smooth(mesh: &Mesh) -> Result<Mesh> {
     ))
 }
 
-/// Most subdivision steps the Smooth slider reaches.
-pub const SMOOTH_LEVELS: u32 = 5;
-/// Past this many triangles the Smooth tool stops subdividing further.
+/// Most passes the Smooth slider reaches, as the original's (its default is 3, half).
+pub const SMOOTH_STEPS: u32 = 6;
+/// The original splits faces without Smooth edges only below this many points.
+const SPLIT_BELOW_POINTS: usize = 4096;
+/// Past this many triangles Loop subdivision stops (the original has no limit and runs
+/// out of memory on scans).
 const SMOOTH_BUDGET: usize = 400_000;
 
-/// The Smooth tool's surface, as the original's: `amount` (0 to 1) sets how fine the
-/// surface becomes, a triangle size from about a quarter of the object's diagonal down
-/// to a sixteenth of that. Every face is split in four as often as it takes the typical
-/// edge to reach it (up to [`SMOOTH_LEVELS`] times, fewer past a few hundred thousand
-/// triangles), so the slider changes how fine the surface is, not its shape, and a model
-/// that is already that fine (a detailed scan) stays as it is. Without `edges` the split
-/// is interpolating (butterfly): the original points stay and the shape keeps its size,
-/// its edges rounded between them. With `edges` (the original's "UseSubdivision") it is
-/// approximating (Loop): every point moves to its average, so edges and corners melt
-/// into a rounder, smaller shape. The bottom stays at its height. Points on open or
-/// non-manifold edges stay put. Face colours and textures follow their faces.
+/// The Smooth tool's surface, as the original's (read from its code): `amount` (0 to 1)
+/// is a number of passes, 0 to [`SMOOTH_STEPS`]. With `edges` each pass is one step of
+/// Loop subdivision, so edges and corners melt into a rounder, smaller shape. Without
+/// it each pass splits every face in four while the mesh has fewer than 4096 points,
+/// then relaxes it with ten rounds of HC Laplacian smoothing, which keeps the volume:
+/// a box turns into a pillow of about its size, and a detailed scan keeps its triangle
+/// count while its mesh evens out. Colours and textures follow their faces. Beyond the
+/// original: points on open or non-manifold edges stay put, flat fans are rebuilt from
+/// their centre first, and the bottom keeps its height so a model stays on the floor.
 pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
-    let levels = smooth_levels(mesh, amount);
-    if levels == 0 {
+    let steps = (amount.clamp(0.0, 1.0) * SMOOTH_STEPS as f32).round() as u32;
+    if steps == 0 || mesh.triangles.is_empty() {
         return Ok(mesh.clone());
     }
     // Weld points at the same place, so seams do not open.
@@ -77,8 +78,18 @@ pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
     }
     center_fans(&mut pos, &mut tris, &mut colors, &mut texs);
     let bottom = pos.iter().map(|p| p.z).fold(f32::INFINITY, f32::min);
-    for _ in 0..levels {
-        (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, edges);
+    for _ in 0..steps {
+        if edges {
+            if tris.len() * 4 > SMOOTH_BUDGET {
+                break;
+            }
+            (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, true);
+        } else {
+            if pos.len() < SPLIT_BELOW_POINTS {
+                (pos, tris, colors, texs) = subdivide(&pos, &tris, &colors, &texs, false);
+            }
+            hc_smooth(&mut pos, &tris, 10);
+        }
     }
     // Rounding lifts the bottom (or bulges it below); keep it where it was, so a
     // model on the floor stays there.
@@ -207,35 +218,95 @@ fn center_fans(
     }
 }
 
-/// How many times [`smooth_by`] splits the faces of `mesh` for `amount`.
-pub fn smooth_levels(mesh: &Mesh, amount: f32) -> u32 {
-    let amount = amount.clamp(0.0, 1.0);
-    if amount <= 0.0 || mesh.triangles.is_empty() {
-        return 0;
-    }
-    let bounds = mesh.aabb();
-    let target = 0.286 * (bounds.max - bounds.min).length() * 16f32.powf(-amount);
-    let mut lengths: Vec<f32> = mesh
-        .triangle_positions()
-        .flat_map(|[a, b, c]| [a.distance(b), b.distance(c), c.distance(a)])
+/// HC Laplacian smoothing (Vollmer, Mencl and Müller), as the original's: `rounds`
+/// rounds of moving every point to the weighted mean of its neighbours, then pushing it
+/// back towards where it started (α 0.2, β 0.8), so the shape does not shrink. An edge
+/// weighs the mean angle facing it in its triangles, in radians; angles under 0.03 or
+/// over 1.5408 count as nothing. Points on open or non-manifold edges stay put.
+fn hc_smooth(pos: &mut [Vec3], tris: &[[u32; 3]], rounds: usize) {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut index: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    let mut faces: Vec<u32> = Vec::new();
+    // For every triangle, the edge facing each corner.
+    let facing: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| {
+            [0, 1, 2].map(|k| {
+                let e = key(t[(k + 1) % 3], t[(k + 2) % 3]);
+                *index.entry(e).or_insert_with(|| {
+                    edges.push(e);
+                    faces.push(0);
+                    edges.len() - 1
+                })
+            })
+        })
         .collect();
-    let middle = lengths.len() / 2;
-    let typical = *lengths.select_nth_unstable_by(middle, f32::total_cmp).1;
-    let mut levels = (typical / target.max(1e-9))
-        .log2()
-        .round()
-        .clamp(0.0, SMOOTH_LEVELS as f32) as u32;
-    while levels > 0 && mesh.triangles.len() * 4usize.pow(levels) > SMOOTH_BUDGET {
-        levels -= 1;
+    facing.iter().flatten().for_each(|&e| faces[e] += 1);
+    let mut fixed = vec![false; pos.len()];
+    for (e, &(a, b)) in edges.iter().enumerate() {
+        if faces[e] != 2 {
+            fixed[a as usize] = true;
+            fixed[b as usize] = true;
+        }
     }
-    levels
+    let start = pos.to_vec();
+    let mut weight = vec![0f32; edges.len()];
+    let mean = |values: &[Vec3], weight: &[f32]| {
+        let mut sum = vec![Vec3::ZERO; values.len()];
+        let mut total = vec![0f32; values.len()];
+        for (&(a, b), &w) in edges.iter().zip(weight) {
+            sum[a as usize] += values[b as usize] * w;
+            sum[b as usize] += values[a as usize] * w;
+            total[a as usize] += w;
+            total[b as usize] += w;
+        }
+        (sum, total)
+    };
+    for _ in 0..rounds {
+        weight.iter_mut().for_each(|w| *w = 0.0);
+        for (t, e) in tris.iter().zip(&facing) {
+            for k in 0..3 {
+                let p = pos[t[k] as usize];
+                let u = (pos[t[(k + 1) % 3] as usize] - p).normalize_or_zero();
+                let v = (pos[t[(k + 2) % 3] as usize] - p).normalize_or_zero();
+                let angle = u.dot(v).clamp(-1.0, 1.0).acos();
+                if (0.03..=1.5408).contains(&angle) {
+                    weight[e[k]] += angle;
+                }
+            }
+        }
+        for (w, &n) in weight.iter_mut().zip(&faces) {
+            *w /= n.max(1) as f32;
+        }
+        let (sum, total) = mean(pos, &weight);
+        let q: Vec<Vec3> = (0..pos.len())
+            .map(|i| {
+                if total[i] > 0.0 && !fixed[i] {
+                    sum[i] / total[i]
+                } else {
+                    pos[i]
+                }
+            })
+            .collect();
+        let pull: Vec<Vec3> = (0..pos.len())
+            .map(|i| q[i] - (start[i] * 0.2 + pos[i] * 0.8))
+            .collect();
+        let (near, total) = mean(&pull, &weight);
+        for i in 0..pos.len() {
+            if fixed[i] || total[i] <= 0.0 {
+                continue;
+            }
+            pos[i] = q[i] - (pull[i] * 0.8 + near[i] / total[i] * 0.2);
+        }
+    }
 }
 
 /// Points, triangles and their colours and textures.
 type Split = (Vec<Vec3>, Vec<[u32; 3]>, Vec<[u8; 4]>, Vec<FaceTex>);
 
 /// One step of [`smooth_by`]: every face split in four, the new points placed by the
-/// butterfly rule (`approximate` off) or the Loop rules (on).
+/// Loop rules (`approximate`) or halfway along their edge.
 fn subdivide(
     pos: &[Vec3],
     tris: &[[u32; 3]],
@@ -254,11 +325,6 @@ fn subdivide(
                 .push(t[(k + 2) % 3]);
         }
     }
-    // The corner across edge (a, b) from `not`, when the edge has exactly two faces.
-    let across = |a: u32, b: u32, not: u32| -> Option<u32> {
-        let f = facing.get(&key(a, b))?;
-        (f.len() == 2).then(|| if f[0] == not { f[1] } else { f[0] })
-    };
     let mut near: Vec<Vec<u32>> = vec![Vec::new(); pos.len()];
     let mut pinned = vec![false; pos.len()];
     for (&(a, b), f) in &facing {
@@ -298,25 +364,7 @@ fn subdivide(
                     if approximate {
                         (pa + pb) * 0.375 + (pc + pd) * 0.125
                     } else {
-                        // The eight-point butterfly; a missing wing falls back to the
-                        // plain midpoint.
-                        let wings = [
-                            across(a, c, b),
-                            across(b, c, a),
-                            across(a, d, b),
-                            across(b, d, a),
-                        ];
-                        match wings {
-                            [Some(e), Some(f), Some(g), Some(h)] => {
-                                half + (pc + pd) * 0.125
-                                    - (pos[e as usize]
-                                        + pos[f as usize]
-                                        + pos[g as usize]
-                                        + pos[h as usize])
-                                        * 0.0625
-                            }
-                            _ => half,
-                        }
+                        half
                     }
                 }
                 _ => half,
@@ -667,29 +715,32 @@ mod tests {
     use crate::primitives::Primitive;
 
     #[test]
-    fn smooth_subdivides_and_edges_round_off() {
+    fn smooth_runs_the_original_passes() {
         let cube = Primitive::Cube.build();
         let volume = |m: &Mesh| m.stats().volume;
         let size = |m: &Mesh| m.aabb().max - m.aabb().min;
         assert_eq!(smooth_by(&cube, 0.0, true).unwrap(), cube);
-        for edges in [false, true] {
-            let mid = smooth_by(&cube, 0.5, edges).unwrap();
-            let full = smooth_by(&cube, 1.0, edges).unwrap();
-            // The slider sets how fine the surface is...
-            assert_eq!(mid.triangles.len(), cube.triangles.len() * 4usize.pow(3));
-            assert_eq!(full.triangles.len(), cube.triangles.len() * 4usize.pow(5));
-            assert!(full.stats().is_closed_manifold());
-            // ...not its shape.
-            assert!((volume(&mid) - volume(&full)).abs() < 0.05 * volume(&cube));
-        }
-        // Butterfly goes through the corners, so the size stays; Loop pulls them in.
-        let kept = smooth_by(&cube, 0.5, false).unwrap();
-        assert!(size(&kept).cmpge(size(&cube) - 1e-3).all());
+        // Without Smooth edges: split while under 4096 points (8, 26, 98, 386, 1538,
+        // 6146), relaxed every pass; the pillow keeps about the cube's size and volume.
+        let half = smooth_by(&cube, 0.5, false).unwrap();
+        let full = smooth_by(&cube, 1.0, false).unwrap();
+        assert_eq!(half.triangles.len(), cube.triangles.len() * 4usize.pow(3));
+        assert_eq!(full.triangles.len(), cube.triangles.len() * 4usize.pow(5));
+        assert!(full.stats().is_closed_manifold());
+        assert!(volume(&half) > 0.75 * volume(&cube));
+        assert!((volume(&half) - volume(&full)).abs() < 0.02 * volume(&cube));
+        assert!(size(&half).min_element() > 0.95 * size(&cube).min_element());
+        // With it: one Loop step per pass, which shrinks it into a blob.
         let round = smooth_by(&cube, 0.5, true).unwrap();
+        assert_eq!(round.triangles.len(), cube.triangles.len() * 4usize.pow(3));
+        assert_eq!(
+            smooth_by(&cube, 1.0, true).unwrap().triangles.len(),
+            cube.triangles.len() * 4usize.pow(6)
+        );
         assert!(size(&round).max_element() < 0.95 * size(&cube).max_element());
-        assert!(volume(&round) < volume(&kept));
+        assert!(volume(&round) < volume(&half));
         assert_eq!(round.aabb().min.z, cube.aabb().min.z);
-        assert_eq!(kept.aabb().min.z, cube.aabb().min.z);
+        assert_eq!(half.aabb().min.z, cube.aabb().min.z);
     }
 
     #[test]
@@ -723,13 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn fine_models_are_left_as_they_are() {
-        // A sphere's edges are already finer than half the slider asks for.
-        let ball = Primitive::Sphere.build();
-        assert_eq!(smooth_levels(&ball, 0.5), 0);
-        assert_eq!(smooth_by(&ball, 0.5, false).unwrap(), ball);
-        assert!(smooth_levels(&ball, 1.0) > 0);
-        // A big mesh is never refused, only split less.
+    fn big_models_are_relaxed_without_splitting() {
         let cube = Primitive::Cube.build().welded();
         let n = cube.triangles.len();
         let mut split = (
@@ -742,9 +787,14 @@ mod tests {
             split = subdivide(&split.0, &split.1, &split.2, &split.3, false);
         }
         let big = Mesh::new(split.0, split.1);
-        assert!(big.triangles.len() > SMOOTH_BUDGET / 4);
+        assert!(big.positions.len() > SPLIT_BELOW_POINTS);
+        let relaxed = smooth_by(&big, 0.5, false).unwrap();
+        assert_eq!(relaxed.triangles.len(), big.triangles.len());
+        assert_ne!(relaxed.positions, big.positions);
+        assert!(relaxed.stats().is_closed_manifold());
+        // Loop stops at the triangle budget instead of running out of memory.
+        assert!(big.triangles.len() * 4 > SMOOTH_BUDGET);
         assert_eq!(smooth_by(&big, 1.0, true).unwrap(), big);
-        assert_eq!(smooth_levels(&big, 1.0), 0);
     }
 
     #[test]

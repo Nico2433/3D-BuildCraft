@@ -40,6 +40,7 @@ impl App {
             .iter()
             .map(|o| (o.id, o.mesh.clone(), o.matrix()))
             .collect();
+        let triangles: usize = work.iter().map(|(_, m, _)| m.triangles.len()).sum();
         let mut job = jobs::Job::spawn(SMOOTHING, 0, ctx, move |_| jobs::Done::Smoothed {
             gen,
             result: work
@@ -51,8 +52,9 @@ impl App {
                 .collect::<anyhow::Result<_>>()
                 .map_err(|e| format!("{e:#}")),
         });
-        // A card for every slider stop would only flicker.
-        job.hidden = true;
+        // A card for every slider stop would only flicker; big models take seconds, and
+        // there the card says something is happening, as the original's does.
+        job.hidden = triangles < 200_000;
         self.jobs.push(job);
     }
 
