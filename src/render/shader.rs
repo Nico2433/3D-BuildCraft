@@ -22,7 +22,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     return out;
 }
 
-@fragment fn fs(in: VOut) -> @location(0) vec4<f32> {
+@fragment fn fs(in: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
     // Both pictures are sampled here, in uniform control flow, so they get mip levels.
     let layer = i32(in.tx & 0xFFFFu) - 1;
@@ -39,6 +39,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32>, @
     if (g.flags.y < 0.5) { n = flat_n; }
     let v = normalize(g.eye.xyz - in.wpos);
     if (dot(n, v) < 0.0) { n = -n; }
+    // Through the Split preview's cut the inside of the far walls shows; lit as the cut
+    // face, it reads as the solid wall the cut leaves.
+    if (!front && dot(g.clip.xyz, g.clip.xyz) > 0.5) { n = g.clip.xyz; }
     var base = o.color.rgb;
     // See-through items (the scene behind Custom or an import) keep their one colour.
     if (in.c.a > 0.001 && o.color.a > 0.99) { base = in.c.rgb; }
