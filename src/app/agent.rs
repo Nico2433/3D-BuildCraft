@@ -250,8 +250,7 @@ impl App {
                 if !(0.0..=1.0).contains(&level) {
                     return Err("remove must be between 0 and 1".into());
                 }
-                self.tool = Some(Tool::Simplify { level });
-                self.apply(Action::ApplySimplify, ctx);
+                self.start_simplify(1.0 - level, ctx);
                 self.wait_jobs();
             }
             "split" => self.agent_split(a, ctx)?,

@@ -98,10 +98,15 @@ impl App {
                 // The original shows the object in x-ray while hollowing.
                 xray: r.xray || matches!(self.tool, Some(Tool::Hollow { .. })),
                 colors: r.colors,
+                // The original shows the mesh while smoothing and simplifying.
                 wireframe: r.wireframe
                     || matches!(
                         self.tool,
-                        Some(Tool::Simplify { .. } | Tool::Custom { wire: true, .. })
+                        Some(
+                            Tool::Simplify { .. }
+                                | Tool::Smooth { .. }
+                                | Tool::Custom { wire: true, .. }
+                        )
                     ),
                 floor: r.grid,
                 floor_tone: r.grid_tone,

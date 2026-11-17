@@ -73,9 +73,11 @@ impl App {
                             Some(Tool::Cut { .. }) => {
                                 Some((tr(lang, "Split"), Action::ApplyCut, true))
                             }
-                            Some(Tool::Simplify { .. }) => {
-                                Some((tr(lang, "Reduce faces"), Action::ApplySimplify, true))
-                            }
+                            Some(Tool::Simplify { .. }) => Some((
+                                tr(lang, "Reduce faces"),
+                                Action::ApplySimplify,
+                                self.simplify_ready(),
+                            )),
                             Some(Tool::Smooth { .. }) => {
                                 Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
                             }
@@ -208,23 +210,18 @@ impl App {
                     }
                 }
             }
-            Some(Tool::Simplify { level }) => {
+            Some(Tool::Simplify { .. }) => {
                 ui.add_space(12.0);
                 style::label(ui, tr(lang, "Reduction level"));
-                let max_level = self
-                    .scene
-                    .selected()
-                    .map(|o| 1.0 - 4.0 / o.mesh.triangles.len().max(4) as f32)
-                    .fold(0.99_f32, f32::min);
-                *level = level.clamp(0.0, max_level);
-                style::slider(ui, level, 0.0..=max_level, 360.0, 0);
+                // The faces shown now (updated when a preview lands) and before.
+                let (kept, faces) = self.simplify_faces().unwrap_or_default();
+                if let Some(Tool::Simplify { level, .. }) = &mut self.tool {
+                    // As the original's: whole percents, reduced on release, at most 99%.
+                    *level = level.clamp(0.0, 0.99);
+                    style::stepped_slider(ui, level, 0.0..=1.0, 100, 360.0);
+                    *level = level.clamp(0.0, 0.99);
+                }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
-                let faces: usize = self.scene.selected().map(|o| o.mesh.triangles.len()).sum();
-                let kept: usize = self
-                    .scene
-                    .selected()
-                    .map(|o| o.mesh.simplify_target(1.0 - *level))
-                    .sum();
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     style::label(ui, &format!("{}   {kept}", tr(lang, "Number of faces")));

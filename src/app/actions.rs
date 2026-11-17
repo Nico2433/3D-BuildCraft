@@ -247,12 +247,17 @@ impl App {
                     self.mode = TransformMode::Move;
                 }
             }
-            Action::StartSimplify => self.tool = Some(Tool::Simplify { level: 0.5 }),
-            Action::ApplySimplify => {
-                if let Some(Tool::Simplify { level }) = self.tool.take() {
-                    self.start_simplify(1.0 - level, ctx);
+            Action::StartSimplify => {
+                if !self.scene.selection.is_empty() {
+                    // The original starts at half, and shows it at once.
+                    self.tool = Some(Tool::Simplify {
+                        level: 0.5,
+                        before: self.checkpoint(),
+                        run: simplify::Run::new(self.scene.selected_ids(), 0.0),
+                    });
                 }
             }
+            Action::ApplySimplify => self.apply_simplify(),
             Action::ApplyCut => {
                 if let Some(Tool::Cut { plane, keep }) = self.tool.take() {
                     self.edit(|s| s.cut_selected(&plane, keep));
@@ -493,7 +498,7 @@ impl App {
 
     /// Simplify runs on a thread behind a progress card: large meshes take seconds.
     /// Every selected object is reduced or none is.
-    fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
+    pub(super) fn start_simplify(&mut self, keep: f32, ctx: &egui::Context) {
         let meshes: Vec<(u64, std::sync::Arc<Mesh>)> = self
             .scene
             .selected()
@@ -576,6 +581,7 @@ impl App {
                 Tool::Paint { before, .. }
                 | Tool::Settle { before, .. }
                 | Tool::Smooth { before, .. }
+                | Tool::Simplify { before, .. }
                 | Tool::Outline { before, .. }
                 | Tool::Material { before, .. },
             ) => Some(*before),
