@@ -34,7 +34,20 @@ impl CallbackTrait for FrameCallback {
                 0.0,
             ],
             viewport: [self.viewport.x, self.viewport.y, 0.0, 0.0],
-            clip: self.clip.map_or([0.0; 4], |(n, d)| [n.x, n.y, n.z, d]),
+            clip: self.clip.map_or([0.0; 4], |c| {
+                c.normal.extend(c.normal.dot(c.point)).to_array()
+            }),
+            clip_o: self
+                .clip
+                .map_or([0.0; 4], |c| c.point.extend(0.0).to_array()),
+            // Full directions get a huge finite half size; infinities are not portable
+            // in shaders.
+            clip_u: self
+                .clip
+                .map_or([0.0; 4], |c| c.u.extend(c.half.x.min(1e30)).to_array()),
+            clip_v: self
+                .clip
+                .map_or([0.0; 4], |c| c.v.extend(c.half.y.min(1e30)).to_array()),
             decal: mat(self.decal.map_or(Mat4::ZERO, |d| d.decal.shader_matrix())),
             decal_n: self.decal.map_or([0.0; 4], |d| {
                 d.decal.normal.extend(d.decal.reach()).to_array()

@@ -168,16 +168,24 @@ impl App {
             Some("scale") => TransformMode::Scale,
             _ => TransformMode::Move,
         };
-        // A drag in the Split tool moves its plane, so the tool opens first.
-        let cut_now = match launch.tool.as_deref() {
-            Some("cut") => launch.drag.is_some(),
-            tool => tool == Some("cut-bottom"),
+        // A drag in the Split tool moves its plane, so the tool opens first; so does a
+        // bottom side or a plane size.
+        let cut = launch.tool.as_deref().and_then(cut_options);
+        let cut_now = match cut {
+            Some((false, None)) => launch.drag.is_some(),
+            other => other.is_some(),
         };
         if cut_now {
             self.apply(Action::StartCut, ctx);
-            if let Some(Tool::Cut { keep, .. }) = &mut self.tool {
-                if launch.tool.as_deref() == Some("cut-bottom") {
+            if let (Some(Tool::Cut { keep, plane }), Some((bottom, size))) = (&mut self.tool, cut) {
+                if bottom {
                     *keep = Keep::Bottom;
+                }
+                for (axis, extent) in size
+                    .into_iter()
+                    .flat_map(|s| s.to_array().into_iter().enumerate())
+                {
+                    plane.set_extent(axis, Some(extent));
                 }
             }
         }
@@ -318,4 +326,20 @@ impl App {
             }));
         }
     }
+}
+
+/// The Split tool's `--tool` value: `cut` or `cut-bottom`, optionally ending in a plane
+/// size such as `-60x40` (mm). Some((keeps the bottom, size)), None for other tools.
+fn cut_options(tool: &str) -> Option<(bool, Option<glam::Vec2>)> {
+    let rest = tool.strip_prefix("cut")?;
+    let (bottom, rest) = match rest.strip_prefix("-bottom") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    if rest.is_empty() {
+        return Some((bottom, None));
+    }
+    let (w, l) = rest.strip_prefix('-')?.split_once('x')?;
+    let size = glam::Vec2::new(w.parse().ok()?, l.parse().ok()?);
+    Some((bottom, Some(size)))
 }

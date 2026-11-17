@@ -100,10 +100,13 @@ impl App {
         true
     }
 
-    /// The corners of the square slab drawn for the Split plane, as wide as the rings.
+    /// The corners of the slab drawn for the Split plane: its set size, or as wide as the
+    /// rings along a full direction.
     pub(super) fn cut_slab(&self, plane: &CutPlane) -> [Vec3; 4] {
-        let (q, r) = (plane.quat(), self.scene.selection_radius());
-        let (u, v, p) = (q * Vec3::X * r, q * Vec3::Y * r, plane.point());
+        let r = self.scene.selection_radius();
+        let half = plane.half_size().map(|h| if h.is_finite() { h } else { r });
+        let (x, y) = plane.axes();
+        let (u, v, p) = (x * half.x, y * half.y, plane.point());
         [p - u - v, p + u - v, p + u + v, p - u + v]
     }
 

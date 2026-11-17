@@ -242,10 +242,6 @@ impl App {
                     plane,
                     keep: Keep::Top,
                 });
-                // The plane has no size mode.
-                if self.mode == TransformMode::Scale {
-                    self.mode = TransformMode::Move;
-                }
             }
             Action::StartSimplify => {
                 if !self.scene.selection.is_empty() {
@@ -260,7 +256,7 @@ impl App {
             Action::ApplySimplify => self.apply_simplify(),
             Action::ApplyCut => {
                 if let Some(Tool::Cut { plane, keep }) = self.tool.take() {
-                    self.edit(|s| s.cut_selected(&plane, keep));
+                    self.split_selection(&plane, keep);
                 }
             }
             Action::StartSmooth => {
@@ -572,6 +568,15 @@ impl App {
             Err(e) => self.toast(format!("{e:#}"), true),
         }
         self.refresh_invalid();
+    }
+
+    /// Split: the selection becomes the pieces kept, as one undo step; a failure (a
+    /// finite plane on a mesh that needs repair) leaves it as it was and says why.
+    pub(super) fn split_selection(&mut self, plane: &CutPlane, keep: Keep) {
+        match self.scene.cut_pieces(plane, keep) {
+            Ok(pieces) => self.edit(|s| s.replace_selected(pieces)),
+            Err(e) => self.toast(format!("{e:#}"), true),
+        }
     }
 
     fn cancel_tool(&mut self) {

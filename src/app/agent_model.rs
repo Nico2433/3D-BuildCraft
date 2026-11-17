@@ -191,14 +191,18 @@ impl App {
         if let Some(z) = z {
             centre.z = z;
         }
-        let plane = match normal {
+        let mut plane = match normal {
             Some(n) => CutPlane::through(centre, n).ok_or("normal must not be zero")?,
             None => CutPlane {
                 center: centre,
                 offset: 0.0,
                 rotation: rotation.unwrap_or(Vec3::ZERO),
+                size: None,
             },
         };
+        // 0 (the default) leaves that direction full, as an empty field in the panel.
+        plane.set_extent(0, Some(number(a, "width", 0.0, 0.0..=1e6)?));
+        plane.set_extent(1, Some(number(a, "length", 0.0, 0.0..=1e6)?));
         let keep = choice(
             a,
             "keep",

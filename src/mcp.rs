@@ -276,13 +276,15 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "split",
-            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). The kept pieces stay in place and become the selection.",
+            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). width and length give the plane a finite size (along its own X and Y); then only the part of the object inside the box that rectangle sweeps along the normal is cut (needs a closed, manifold object). The kept pieces stay in place and become the selection.",
             json!({ "type": "object", "properties": {
                 "z": num("height of a horizontal plane, mm"),
                 "point": vec3("a point the plane passes through, mm"),
                 "normal": vec3("direction the plane faces (its top side), any length > 0"),
                 "rotation": vec3("the Split tool's plane angles in degrees about X, Y, Z (as an object's rotation); [0, 0, 0] is level"),
-                "keep": one_of(&["top", "bottom", "both"], "default top"),
+                "keep": one_of(&["top", "bottom", "both"], "default top; with a finite plane, both gives the part inside the box below the plane and the rest"),
+                "width": num("plane width along its own X, mm; default 0, the whole object"),
+                "length": num("plane length along its own Y, mm; default 0, the whole object"),
             } }),
         ),
         tool(

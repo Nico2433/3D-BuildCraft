@@ -112,7 +112,7 @@ impl App {
         if matches!(preset, Preset::Split) {
             let z = self.scene.selection_aabb().center().z;
             let plane = crate::cut::CutPlane::at_height(z);
-            self.edit(|s| s.cut_selected(&plane, crate::cut::Keep::Top));
+            self.split_selection(&plane, crate::cut::Keep::Top);
             return;
         }
         self.tool = Some(Tool::Texture(t));
