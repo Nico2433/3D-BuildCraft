@@ -139,13 +139,17 @@ struct SOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     return vec4<f32>(0.0, 0.0, 0.0, 0.2 * (1.0 - smoothstep(0.0, 1.0, d)));
 }
 
-@vertex fn vs_wire(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> @builtin(position) vec4<f32> {
-    var pos = g.view_proj * (o.model * vec4<f32>(p, 1.0));
+// The wire is cut by the same plane as the surface (Split hides one side).
+struct WireOut { @builtin(position) pos: vec4<f32>, @location(0) wpos: vec3<f32> };
+@vertex fn vs_wire(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> WireOut {
+    let w = o.model * vec4<f32>(p, 1.0);
+    var pos = g.view_proj * w;
     pos.z = pos.z - 0.00002 * pos.w;
-    return pos;
+    return WireOut(pos, w.xyz);
 }
 
-@fragment fn fs_wire() -> @location(0) vec4<f32> {
+@fragment fn fs_wire(in: WireOut) -> @location(0) vec4<f32> {
+    if (dot(in.wpos, g.clip.xyz) > g.clip.w) { discard; }
     return vec4<f32>(0.05, 0.08, 0.12, 0.85);
 }
 

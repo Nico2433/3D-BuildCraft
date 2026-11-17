@@ -900,6 +900,45 @@ pub fn slider(
     *v != before
 }
 
+/// A slider with `steps` stops between the ends of `range`, as the original's stepped
+/// sliders: the knob jumps from stop to stop while dragged, and `v` changes (true is
+/// returned) only when the drag ends or a click lands, so the work behind it runs once.
+pub fn stepped_slider(
+    ui: &mut Ui,
+    v: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    steps: usize,
+    width: f32,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click_and_drag());
+    let (lo, hi) = (*range.start(), *range.end());
+    let line = rect.shrink2(Vec2::new(4.0, 0.0));
+    let steps = steps.max(1) as f32;
+    let snap = |t: f32| (t.clamp(0.0, 1.0) * steps).round() / steps;
+    let mut t = snap((*v - lo) / (hi - lo));
+    if let Some(p) = resp.interact_pointer_pos() {
+        t = snap((p.x - line.left()) / line.width());
+    }
+    let mut changed = false;
+    if resp.drag_stopped() || resp.clicked() {
+        let next = lo + t * (hi - lo);
+        changed = (next - *v).abs() > f32::EPSILON;
+        *v = next;
+    }
+    let p = ui.painter();
+    let y = rect.center().y;
+    p.line_segment(
+        [egui::pos2(line.left(), y), egui::pos2(line.right(), y)],
+        Stroke::new(2.0_f32, TEXT),
+    );
+    let knob = Rect::from_center_size(
+        egui::pos2(line.left() + t * line.width(), y),
+        Vec2::new(6.0, 22.0),
+    );
+    p.rect_filled(knob, CornerRadius::same(3), TEXT);
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
