@@ -31,6 +31,16 @@ impl App {
             // Where the plane started the drag, so the handles do not follow it.
             let at_start = self.handle.as_ref().and_then(|h| h.cut).unwrap_or(*plane);
             angles = at_start.rotation.to_array();
+            if self.mode == TransformMode::Scale {
+                // Size chevrons on the slab's edges instead of the objects' box and dots.
+                let (x, y) = plane.axes();
+                return Some(gizmo::plane_sizes(
+                    plane.point(),
+                    self.cut_half(plane),
+                    [x, y],
+                    &to_screen,
+                ));
+            }
             if self.mode == TransformMode::Move {
                 // The arrow sits on the plane's edge nearest the bottom of the screen.
                 let slab = self.cut_slab(plane);
@@ -103,11 +113,17 @@ impl App {
     /// The corners of the slab drawn for the Split plane: its set size, or as wide as the
     /// rings along a full direction.
     pub(super) fn cut_slab(&self, plane: &CutPlane) -> [Vec3; 4] {
-        let r = self.scene.selection_radius();
-        let half = plane.half_size().map(|h| if h.is_finite() { h } else { r });
+        let half = self.cut_half(plane);
         let (x, y) = plane.axes();
         let (u, v, p) = (x * half.x, y * half.y, plane.point());
         [p - u - v, p + u - v, p + u + v, p - u + v]
+    }
+
+    /// Half the drawn width and length of the Split plane: its set size, or the rings'
+    /// radius along a full direction.
+    fn cut_half(&self, plane: &CutPlane) -> GVec2 {
+        let r = self.scene.selection_radius();
+        plane.half_size().map(|h| if h.is_finite() { h } else { r })
     }
 
     /// A point of the scene on screen in the view `rect`, if it is in front of the camera.
@@ -203,7 +219,9 @@ impl App {
     }
 
     /// Starts a handle drag already `amount` along (`--drag`, for screenshots): `x`, `y`, `z`
-    /// move along an axis, `rot-x`, `rot-y`, `rot-z` turn about it.
+    /// move along an axis, `rot-x`, `rot-y`, `rot-z` turn about it, `size-x`, `size-y`,
+    /// `size-z` pull the size handle on that axis's far side (the Split plane's width and
+    /// length for X and Y).
     pub(in crate::app) fn simulate_drag(&mut self, spec: &str) {
         use gizmo::Kind;
         let Some((name, amount)) = spec
@@ -213,11 +231,15 @@ impl App {
             return;
         };
         let axis = |c: &str| ["x", "y", "z"].iter().position(|a| *a == c);
-        let kind = match name.strip_prefix("rot-") {
-            Some(a) => axis(a).map(Kind::Turn),
-            None => axis(name).map(Kind::Move),
+        let kind = if let Some(a) = name.strip_prefix("rot-") {
+            axis(a).map(Kind::Turn)
+        } else if let Some(a) = name.strip_prefix("size-") {
+            axis(a).map(|a| Kind::Size(a, 1.0))
+        } else {
+            axis(name).map(Kind::Move)
         };
         let Some(kind) = kind else { return };
+        self.pick_handle(kind);
         let (start, b0) = (self.scene.objects.clone(), self.scene.selection_aabb());
         self.handle = Some(HandleDrag {
             handle: Some(gizmo::Handle {
@@ -266,7 +288,13 @@ impl App {
                     };
                     moved.turn(glam::Quat::from_axis_angle(along, deg.to_radians()));
                 }
-                _ => {}
+                Kind::Size(axis, side) => {
+                    // Both edges move, so the plane keeps its middle.
+                    let grow = 2.0 * amount * side;
+                    let full = 2.0 * self.scene.selection_radius();
+                    moved.grow_extent(axis, if snap { grow.round() } else { grow }, full);
+                }
+                Kind::Uniform => {}
             }
             *plane = moved;
             // Clamp before this frame paints the plane, or each drag frame shows it past
@@ -399,7 +427,8 @@ impl App {
             if let (Some(handle), Some(from)) = (grabbed, at) {
                 self.pick_handle(handle.kind);
                 let before = self.snapshot();
-                if matches!(handle.kind, gizmo::Kind::Size(..) | gizmo::Kind::Uniform) {
+                let resizing = matches!(handle.kind, gizmo::Kind::Size(..) | gizmo::Kind::Uniform);
+                if resizing && self.tool.is_none() {
                     // Resizing works on the box as it is, so turned objects are
                     // baked first (resize_selection would bake them on every frame).
                     for id in self.scene.selected_ids() {

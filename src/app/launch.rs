@@ -24,7 +24,7 @@ pub struct Launch {
     pub mcp: bool,
     /// Transform mode to open in: move, rotate or scale.
     pub mode: Option<String>,
-    /// A handle drag in progress, for screenshots: `x:60` or `rot-z:45`.
+    /// A handle drag in progress, for screenshots: `x:60`, `rot-z:45` or `size-x:-10`.
     pub drag: Option<String>,
     /// Measure points `x,y,z;x,y,z`; an entry starting with `~` is the hover point.
     pub measure: Option<String>,

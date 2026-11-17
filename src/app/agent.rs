@@ -240,6 +240,20 @@ impl App {
                 let c = c.ok_or("color must look like #RRGGBB")?;
                 self.apply(Action::SetColor(c), ctx);
             }
+            "smooth" => {
+                let passes = match &a["passes"] {
+                    Value::Null => 3,
+                    v => v
+                        .as_u64()
+                        .filter(|p| *p <= crate::solid::SMOOTH_STEPS as u64)
+                        .ok_or("passes must be a whole number from 0 to 6")?,
+                };
+                let amount = passes as f32 / crate::solid::SMOOTH_STEPS as f32;
+                let edges = a["edges"].as_bool().unwrap_or(false);
+                if !self.modify_selected(|m| crate::solid::smooth_by(m, amount, edges)) {
+                    return Err("nothing selected, or smoothing failed".into());
+                }
+            }
             "hollow" => {
                 let wall = positive(&a["wall"], "wall")?;
                 self.tool = Some(Tool::Hollow { wall });

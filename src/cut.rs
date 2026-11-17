@@ -14,6 +14,9 @@ pub enum Keep {
     Both,
 }
 
+/// The smallest width or length a drag leaves the plane, mm.
+pub const MIN_EXTENT: f32 = 1.0;
+
 /// The cutting plane of the Split tool: through `center`, moved `offset` along its normal,
 /// turned by `rotation` degrees (roll about X, pitch about Y, yaw about Z, as an object's).
 /// Unturned, the normal is +Z.
@@ -87,6 +90,18 @@ impl CutPlane {
     /// Half the width and length; infinite when full along that direction.
     pub fn half_size(&self) -> Vec2 {
         self.size.unwrap_or(Vec2::INFINITY) * 0.5
+    }
+
+    /// Grows the width (`axis` 0) or length (1) by `by` mm, both edges moving so the
+    /// middle stays. A full direction counts as `full` mm wide: growing leaves it full,
+    /// shrinking makes it finite from there. It never goes below [`MIN_EXTENT`].
+    pub fn grow_extent(&mut self, axis: usize, by: f32, full: f32) {
+        let now = match self.extent(axis) {
+            Some(e) => e,
+            None if by >= 0.0 => return,
+            None => full,
+        };
+        self.set_extent(axis, Some((now + by).max(MIN_EXTENT)));
     }
 
     /// Turns the plane by `q` (world space) about its middle `point()`. The centre stays
@@ -372,6 +387,21 @@ mod tests {
         let s = m.stats();
         assert!(s.is_closed_manifold(), "{s:?}");
         s.volume
+    }
+
+    #[test]
+    fn growing_an_extent_keeps_full_until_shrunk_and_a_minimum() {
+        let mut plane = CutPlane::at_height(0.0);
+        // Growing a full direction leaves it full; shrinking starts from the drawn size.
+        plane.grow_extent(0, 10.0, 80.0);
+        assert_eq!(plane.size, None);
+        plane.grow_extent(0, -20.0, 80.0);
+        assert_eq!(plane.extent(0), Some(60.0));
+        assert_eq!(plane.extent(1), None);
+        plane.grow_extent(0, 5.0, 80.0);
+        assert_eq!(plane.extent(0), Some(65.0));
+        plane.grow_extent(0, -1000.0, 80.0);
+        assert_eq!(plane.extent(0), Some(MIN_EXTENT));
     }
 
     #[test]

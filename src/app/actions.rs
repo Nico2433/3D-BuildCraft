@@ -272,7 +272,8 @@ impl App {
             }
             Action::ApplySmooth => self.apply_smooth(),
             Action::Smooth => {
-                self.modify_selected(crate::solid::smooth);
+                // The Smooth tool's default: 3 of 6 passes, edges kept.
+                self.modify_selected(|m| crate::solid::smooth_by(m, 0.5, false));
             }
             Action::ExtrudeDown => {
                 self.modify_selected(|m| crate::solid::extrude_down(m, 0.0));

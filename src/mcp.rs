@@ -212,9 +212,17 @@ pub fn tools() -> Vec<Value> {
             json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "mm, > 0" } }, "required": ["wall"] }),
         ),
         tool(
+            "smooth",
+            "Smooth the selection, as the Smooth tool: passes 0..6 (default 3, the tool's default). Without edges each pass splits faces while the model is small and relaxes the surface, keeping its size; with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
+            json!({ "type": "object", "properties": {
+                "passes": { "type": "integer", "description": "0..6, default 3" },
+                "edges": { "type": "boolean", "description": "smooth sharp edges too, default false" }
+            } }),
+        ),
+        tool(
             "simplify",
             "Reduce the faces of the selection.",
-            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of faces to remove, 0..1" } }, "required": ["remove"] }),
+            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of faces to remove, 0..1 (the Simplify tool goes in whole percents, at most 0.99)" } }, "required": ["remove"] }),
         ),
         tool(
             "open",
