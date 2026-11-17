@@ -15,7 +15,7 @@ pub enum Keep {
 }
 
 /// The smallest width or length a drag leaves the plane, mm.
-pub const MIN_EXTENT: f32 = 1.0;
+const MIN_EXTENT: f32 = 1.0;
 
 /// The cutting plane of the Split tool: through `center`, moved `offset` along its normal,
 /// turned by `rotation` degrees (roll about X, pitch about Y, yaw about Z, as an object's).

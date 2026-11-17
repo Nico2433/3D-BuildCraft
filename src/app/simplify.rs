@@ -15,22 +15,14 @@ impl App {
         let Some((gen, level)) = run.next(*level, ctx) else {
             return;
         };
-        let originals: Vec<&Object> = before
-            .0
-            .objects
-            .iter()
-            .filter(|o| run.ids.contains(&o.id))
-            .collect();
         if level <= 0.0 {
-            for o in originals {
-                if let Some(slot) = self.scene.get_mut(o.id) {
-                    *slot = o.clone();
-                }
-            }
+            live::restore_all(&mut self.scene, before, &run.ids);
             run.shown_now();
             return;
         }
-        let work: Vec<_> = originals.iter().map(|o| (o.id, o.mesh.clone())).collect();
+        let work: Vec<_> = live::originals(before, &run.ids)
+            .map(|o| (o.id, o.mesh.clone()))
+            .collect();
         let triangles: usize = work.iter().map(|(_, m)| m.triangles.len()).sum();
         let mut job = jobs::Job::spawn(SIMPLIFYING, 0, ctx, move |_| jobs::Done::Reduced {
             gen,
@@ -40,8 +32,7 @@ impl App {
                 .collect::<anyhow::Result<_>>()
                 .map_err(|e| format!("{e:#}")),
         });
-        // Small models answer at once; a card for them would only flicker.
-        job.hidden = triangles < 200_000;
+        job.hidden = triangles < live::CARD_FROM;
         self.jobs.push(job);
     }
 
@@ -54,15 +45,10 @@ impl App {
             return;
         }
         match result {
-            Ok(meshes) => {
-                for (id, mesh) in meshes {
-                    let original = before.0.objects.iter().find(|o| o.id == id);
-                    if let (Some(o), Some(slot)) = (original, self.scene.get_mut(id)) {
-                        *slot = o.clone();
-                        slot.mesh = std::sync::Arc::new(mesh);
-                    }
-                }
-            }
+            // Simplify keeps the object's placement and changes only its own mesh.
+            Ok(meshes) => live::show_meshes(&mut self.scene, before, meshes, |o, mesh| {
+                o.mesh = std::sync::Arc::new(mesh)
+            }),
             Err(_) => {
                 let lang = self.settings.lang();
                 self.toast(tr(lang, "Simplification produced an invalid solid"), true)
@@ -70,36 +56,20 @@ impl App {
         }
     }
 
-    /// Whether Apply can take the preview: it shows the level now on the bar.
-    pub(super) fn simplify_ready(&self) -> bool {
-        matches!(&self.tool, Some(Tool::Simplify { level, run, .. }) if run.ready(*level))
-    }
-
     /// The faces the scene shows for the tool's objects, and the ones they had before.
     pub(super) fn simplify_faces(&self) -> Option<(usize, usize)> {
         let Some(Tool::Simplify { before, run, .. }) = &self.tool else {
             return None;
         };
-        let count = |objects: &mut dyn Iterator<Item = &Object>| {
-            objects
-                .filter(|o| run.ids.contains(&o.id))
-                .map(|o| o.mesh.triangles.len())
-                .sum()
-        };
+        let faces = |o: &Object| o.mesh.triangles.len();
+        let shown = self
+            .scene
+            .objects
+            .iter()
+            .filter(|o| run.ids.contains(&o.id));
         Some((
-            count(&mut self.scene.objects.iter()),
-            count(&mut before.0.objects.iter()),
+            shown.map(faces).sum(),
+            live::originals(before, &run.ids).map(faces).sum(),
         ))
-    }
-
-    pub(super) fn apply_simplify(&mut self) {
-        if !self.simplify_ready() {
-            return;
-        }
-        if let Some(Tool::Simplify { before, .. }) = self.tool.take() {
-            self.commit(*before);
-            self.scene.dirty = true;
-            self.refresh_invalid();
-        }
     }
 }

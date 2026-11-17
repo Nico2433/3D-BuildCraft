@@ -1,5 +1,6 @@
-//! Solid edits through manifold-rust: smooth, hollow and extrude down. Inputs must be
-//! closed and manifold, like for booleans.
+//! Solid edits: smooth (subdivision and HC smoothing of the mesh itself), and through
+//! manifold-rust round, hollow and extrude down, whose inputs must be closed and
+//! manifold, like for booleans.
 
 use crate::boolean::{from_manifold, to_manifold};
 use crate::mesh::{Dsu, Mesh};
@@ -10,22 +11,6 @@ use manifold_rust::linalg::Vec3 as MVec3;
 use manifold_rust::manifold::Manifold;
 use manifold_rust::types::Box as MBox;
 use std::collections::HashMap;
-
-/// Above this, smoothing (which makes 4× the triangles) takes too long.
-pub const SMOOTH_MAX_TRIANGLES: usize = 250_000;
-
-/// Rounds the surface: edges sharper than 60° stay sharp, every face is split in four.
-pub fn smooth(mesh: &Mesh) -> Result<Mesh> {
-    if mesh.triangles.len() > SMOOTH_MAX_TRIANGLES {
-        bail!(
-            "Too many triangles to smooth ({}); simplify the model first",
-            mesh.triangles.len()
-        );
-    }
-    Ok(from_manifold(
-        &to_manifold(mesh)?.smooth_out(60.0, 0.0).refine(2),
-    ))
-}
 
 /// Most passes the Smooth slider reaches, as the original's (its default is 3, half).
 pub const SMOOTH_STEPS: u32 = 6;

@@ -253,7 +253,7 @@ impl App {
                     });
                 }
             }
-            Action::ApplySimplify => self.apply_simplify(),
+            Action::ApplySimplify | Action::ApplySmooth | Action::ApplyOutline => self.apply_live(),
             Action::ApplyCut => {
                 if let Some(Tool::Cut { plane, keep }) = self.tool.take() {
                     self.split_selection(&plane, keep);
@@ -270,7 +270,6 @@ impl App {
                     });
                 }
             }
-            Action::ApplySmooth => self.apply_smooth(),
             Action::Smooth => {
                 // The Smooth tool's default: 3 of 6 passes, edges kept.
                 self.modify_selected(|m| crate::solid::smooth_by(m, 0.5, false));
@@ -279,7 +278,6 @@ impl App {
                 self.modify_selected(|m| crate::solid::extrude_down(m, 0.0));
             }
             Action::StartOutline => self.start_outline(),
-            Action::ApplyOutline => self.apply_outline(),
             Action::StartHollow => self.tool = Some(Tool::Hollow { wall: 1.0 }),
             Action::ApplyHollow => {
                 // The panel stays open when it fails, so the wall can be changed.

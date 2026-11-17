@@ -850,15 +850,7 @@ impl App {
 impl App {
     /// Saves the window to the `--screenshot` file after a few frames, then quits.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
-        // A live preview that is still waiting to start.
-        let previewing = match &self.tool {
-            Some(Tool::Smooth {
-                amount, edges, run, ..
-            }) => !run.is_shown((*amount, *edges)),
-            Some(Tool::Outline { opts, run, .. }) => !run.is_shown(*opts),
-            Some(Tool::Simplify { level, run, .. }) => !run.is_shown(*level),
-            _ => false,
-        };
+        let previewing = self.live_pending();
         let Some((path, frames)) = &mut self.screenshot else {
             return;
         };

@@ -877,8 +877,13 @@ pub fn slider(
         *v = lo + t * (hi - lo);
     }
     let t = ((*v - lo) / (hi - lo)).clamp(0.0, 1.0);
-    let p = ui.painter();
-    let y = rect.center().y;
+    paint_slider(ui.painter(), line, t, ticks);
+    *v != before
+}
+
+/// A slider's line across `line`, `ticks` evenly spaced marks and the knob at `t` (0..1).
+fn paint_slider(p: &egui::Painter, line: Rect, t: f32, ticks: usize) {
+    let y = line.center().y;
     p.line_segment(
         [egui::pos2(line.left(), y), egui::pos2(line.right(), y)],
         Stroke::new(2.0_f32, TEXT),
@@ -897,7 +902,6 @@ pub fn slider(
         Vec2::new(6.0, 22.0),
     );
     p.rect_filled(knob, CornerRadius::same(3), TEXT);
-    *v != before
 }
 
 /// A slider with `steps` stops between the ends of `range`, as the original's stepped
@@ -925,17 +929,7 @@ pub fn stepped_slider(
         changed = (next - *v).abs() > f32::EPSILON;
         *v = next;
     }
-    let p = ui.painter();
-    let y = rect.center().y;
-    p.line_segment(
-        [egui::pos2(line.left(), y), egui::pos2(line.right(), y)],
-        Stroke::new(2.0_f32, TEXT),
-    );
-    let knob = Rect::from_center_size(
-        egui::pos2(line.left() + t * line.width(), y),
-        Vec2::new(6.0, 22.0),
-    );
-    p.rect_filled(knob, CornerRadius::same(3), TEXT);
+    paint_slider(ui.painter(), line, t, 0);
     changed
 }
 

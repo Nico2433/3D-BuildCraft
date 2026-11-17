@@ -76,15 +76,15 @@ impl App {
                             Some(Tool::Simplify { .. }) => Some((
                                 tr(lang, "Reduce faces"),
                                 Action::ApplySimplify,
-                                self.simplify_ready(),
+                                self.live_ready(),
                             )),
                             Some(Tool::Smooth { .. }) => {
-                                Some((tr(lang, "Smooth"), Action::ApplySmooth, self.smooth_ready()))
+                                Some((tr(lang, "Smooth"), Action::ApplySmooth, self.live_ready()))
                             }
                             Some(Tool::Outline { .. }) => Some((
                                 tr(lang, "Extrude outline"),
                                 Action::ApplyOutline,
-                                self.outline_ready(),
+                                self.live_ready(),
                             )),
                             Some(Tool::Hollow { .. }) => {
                                 Some((tr(lang, "Hollow"), Action::ApplyHollow, true))
