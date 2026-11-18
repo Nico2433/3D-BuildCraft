@@ -40,18 +40,14 @@ impl View {
 
     /// Unit vector from the scene towards the eye, as `OrbitCamera::eye` places it.
     pub fn dir(&self) -> Vec3 {
-        let (sp, cp) = self.pitch.sin_cos();
-        let (sy, cy) = self.yaw.sin_cos();
-        Vec3::new(cp * cy, cp * sy, sp)
+        crate::camera::orbit_dir(self.yaw, self.pitch)
     }
 
     /// The picture's up: the eye's direction turned 90° further up. Same as Z up for an
     /// orbit camera, and still defined straight above or below (top: +Y, bottom: -Y), so
     /// those views keep X to the right as the camera has it just short of them.
     pub fn up(&self) -> Vec3 {
-        let (sp, cp) = self.pitch.sin_cos();
-        let (sy, cy) = self.yaw.sin_cos();
-        Vec3::new(-sp * cy, -sp * sy, cp)
+        crate::camera::orbit_dir(self.yaw, self.pitch + std::f32::consts::FRAC_PI_2)
     }
 }
 

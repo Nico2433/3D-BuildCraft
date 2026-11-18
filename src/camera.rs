@@ -26,11 +26,17 @@ impl Default for OrbitCamera {
     }
 }
 
+/// Unit vector from the target towards an eye at `yaw` (radians around Z from +X) and
+/// `pitch` (radians above the floor plane).
+pub fn orbit_dir(yaw: f32, pitch: f32) -> Vec3 {
+    let (sp, cp) = pitch.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    Vec3::new(cp * cy, cp * sy, sp)
+}
+
 impl OrbitCamera {
     pub fn eye(&self) -> Vec3 {
-        let (sp, cp) = self.pitch.sin_cos();
-        let (sy, cy) = self.yaw.sin_cos();
-        self.target + self.distance * Vec3::new(cp * cy, cp * sy, sp)
+        self.target + self.distance * orbit_dir(self.yaw, self.pitch)
     }
 
     pub fn view(&self) -> Mat4 {

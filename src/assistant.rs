@@ -2,7 +2,7 @@
 //! picked by the preset). It works on the scene through the same tools an external agent
 //! gets over MCP (`crate::mcp`); agents such as Claude Code or Codex attach that way.
 
-use crate::host::{host_command, in_flatpak};
+use crate::host::{home, host_command, in_flatpak};
 use crate::mcp::{self, Reply};
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -192,13 +192,6 @@ pub struct Detected {
 /// The URL agents register: the open app's MCP server on `port`.
 pub fn mcp_url(port: u16) -> Result<String> {
     Ok(mcp::http::url(port, &mcp::http::token()?))
-}
-
-/// The user's home on the host (the sandbox shares it).
-fn home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(Into::into)
 }
 
 /// The settings files that hold an agent's MCP servers, for agents whose `mcp list`

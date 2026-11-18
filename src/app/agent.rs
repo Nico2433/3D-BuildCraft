@@ -66,37 +66,7 @@ impl App {
         let lang = self.settings.lang();
         for r in requests {
             if r.tool == "screenshot" {
-                match Shot::parse(&self.scene, &r.args) {
-                    Err(e) => {
-                        let _ = r.reply.send(Err(e));
-                        continue;
-                    }
-                    // Drawn on its own thread; the meshes are shared, not copied.
-                    Ok(Some(shot)) => {
-                        std::thread::spawn(move || {
-                            let [w, h] = shot.size();
-                            let _ = r.reply.send(png_reply(w, h, shot.render()));
-                        });
-                        continue;
-                    }
-                    Ok(None) => {}
-                }
-            }
-            if r.tool == "screenshot" && self.power.sleeping() {
-                let _ = r
-                    .reply
-                    .send(Err("screenshots are unavailable while minimized".into()));
-                continue;
-            }
-            if r.tool == "screenshot" {
-                if self.agent_shot.is_some() {
-                    let _ = r
-                        .reply
-                        .send(Err("a screenshot is already being taken".into()));
-                } else {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-                    self.agent_shot = Some(r.reply);
-                }
+                self.screenshot(r, ctx);
                 continue;
             }
             if r.tool != "get_scene" {
@@ -401,6 +371,35 @@ pub(super) fn parse_hex(s: &str) -> Option<Rgba> {
     }
     let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
     Some([byte(0)?, byte(2)?, byte(4)?, 0xFF])
+}
+
+impl App {
+    /// An off-screen view when the arguments ask for one, drawn on its own thread (the
+    /// meshes are shared, not copied); otherwise the window as it is.
+    fn screenshot(&mut self, r: Request, ctx: &egui::Context) {
+        let reply = match Shot::parse(&self.scene, &r.args) {
+            Err(e) => Err(e),
+            Ok(Some(shot)) => {
+                std::thread::spawn(move || {
+                    let [w, h] = shot.size();
+                    let _ = r.reply.send(png_reply(w, h, shot.render()));
+                });
+                return;
+            }
+            Ok(None) if self.power.sleeping() => {
+                Err("screenshots are unavailable while minimized".into())
+            }
+            Ok(None) if self.agent_shot.is_some() => {
+                Err("a screenshot is already being taken".into())
+            }
+            Ok(None) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                self.agent_shot = Some(r.reply);
+                return;
+            }
+        };
+        let _ = r.reply.send(reply);
+    }
 }
 
 fn round3(v: Vec3) -> [f32; 3] {
