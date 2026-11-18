@@ -4,6 +4,7 @@
 
 use crate::mesh::Mesh;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 use std::cmp::Reverse;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,8 +57,11 @@ pub fn repair(mesh: &Mesh) -> (Mesh, RepairReport) {
     (m, r)
 }
 
-fn edge_faces(tris: &[[u32; 3]]) -> HashMap<(u32, u32), Vec<usize>> {
-    let mut map: HashMap<(u32, u32), Vec<usize>> =
+/// The faces on each edge; two fit inline, so a manifold mesh allocates nothing per edge.
+type EdgeFaces = HashMap<(u32, u32), SmallVec<[usize; 2]>>;
+
+fn edge_faces(tris: &[[u32; 3]]) -> EdgeFaces {
+    let mut map: EdgeFaces =
         HashMap::with_capacity_and_hasher(tris.len() * 3 / 2, Default::default());
     for (f, t) in tris.iter().enumerate() {
         for (a, b) in edges(t) {
@@ -165,7 +169,7 @@ fn remove_conflicting_faces(m: &mut Mesh) -> usize {
     let mut removed = 0;
     loop {
         let map = edge_faces(&m.triangles);
-        let broken = |e: &(u32, u32), faces: &Vec<usize>| {
+        let broken = |e: &(u32, u32), faces: &[usize]| {
             faces.len() != 2 || allowed(&m.triangles, *e, faces) < 2
         };
         let bad = |f: usize| {
