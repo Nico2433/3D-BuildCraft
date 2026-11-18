@@ -406,6 +406,8 @@ pub struct Measure {
     pub section: Option<SectionPick>,
     /// Whether Section mode may tilt its plane to where the contour is round.
     pub tilt: Tilt,
+    /// The diameter variant last used, restored when switching back from Distance.
+    pub round_mode: Mode,
     /// The face last snapped on, so a moving cursor does not rebuild it.
     face: Option<CachedFace>,
 }
@@ -419,6 +421,11 @@ impl Measure {
             round: None,
             section: None,
             tilt: Tilt::Auto,
+            round_mode: if mode == Mode::Distance {
+                Mode::Section
+            } else {
+                mode
+            },
             face: None,
         }
     }
@@ -479,8 +486,14 @@ impl Measure {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
+        let round_mode = if mode == Mode::Distance {
+            self.round_mode
+        } else {
+            mode
+        };
         *self = Measure {
             tilt: self.tilt,
+            round_mode,
             ..Measure::new(mode)
         };
     }

@@ -296,17 +296,27 @@ impl App {
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
             Some(Tool::Measure(m)) => {
-                let modes = [Mode::Distance, Mode::Surface, Mode::Circle, Mode::Section];
-                let names = [
-                    tr(lang, "Distance"),
-                    tr(lang, "Diameter of a surface"),
-                    tr(lang, "Diameter from 3 points"),
-                    tr(lang, "Section at height"),
-                ];
-                let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
                 ui.add_space(12.0);
-                if style::dropdown(ui, "measure_mode", 200.0, &names, &mut k) {
-                    m.set_mode(modes[k]);
+                let mut kind = usize::from(m.mode != Mode::Distance);
+                if style::segmented(ui, &[tr(lang, "Distance"), tr(lang, "Diameter")], &mut kind) {
+                    m.set_mode(if kind == 0 {
+                        Mode::Distance
+                    } else {
+                        m.round_mode
+                    });
+                }
+                if m.mode != Mode::Distance {
+                    ui.add_space(8.0);
+                    let modes = [Mode::Section, Mode::Surface, Mode::Circle];
+                    let names = [
+                        tr(lang, "Section at height"),
+                        tr(lang, "Curved surface"),
+                        tr(lang, "3 points"),
+                    ];
+                    let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
+                    if style::dropdown(ui, "measure_mode", 215.0, &names, &mut k) {
+                        m.set_mode(modes[k]);
+                    }
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let unit = tr(lang, units.label());
@@ -318,7 +328,7 @@ impl App {
                             ui,
                             &format!(
                                 "{}    {:.2}    {unit}",
-                                names[0],
+                                tr(lang, "Distance"),
                                 m.distance() / units.to_mm()
                             ),
                         );

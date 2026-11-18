@@ -451,6 +451,54 @@ pub fn switch(ui: &mut Ui, on: &mut bool, on_text: &str, off_text: &str) -> Resp
     resp
 }
 
+/// A row of exclusive buttons inside a blue tool bar; the selected one is lit. True when
+/// the selection changed.
+pub fn segmented(ui: &mut Ui, options: &[&str], selected: &mut usize) -> bool {
+    let mut changed = false;
+    let height = 30.0;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    for (i, text) in options.iter().enumerate() {
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*text).to_owned(), font(MENU_FONT), TEXT);
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, height), Sense::click());
+        let fill = if i == *selected {
+            BLUE_ACTIVE
+        } else if resp.hovered() {
+            BLUE_HOVER
+        } else {
+            BLUE_FIELD
+        };
+        let corner = CornerRadius {
+            nw: if i == 0 { 4 } else { 0 },
+            sw: if i == 0 { 4 } else { 0 },
+            ne: if i + 1 == options.len() { 4 } else { 0 },
+            se: if i + 1 == options.len() { 4 } else { 0 },
+        };
+        ui.painter().rect_filled(rect, corner, fill);
+        ui.painter().rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0_f32, BLUE_FIELD_BORDER),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            TEXT,
+        );
+        if resp.clicked() && i != *selected {
+            *selected = i;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Widget colours for fields and combos inside a blue tool bar.
 pub fn blue_fields(ui: &mut Ui) {
     let v = ui.visuals_mut();
