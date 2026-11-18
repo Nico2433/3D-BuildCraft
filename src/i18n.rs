@@ -292,10 +292,6 @@ const ES: &[(&str, &str)] = &[
         "Snaps to vertices, edges and face centres; hold Alt to turn it around",
         "Se ajusta a vértices, bordes y centros de cara; mantén Alt para invertirlo",
     ),
-    ("Vertex", "Vértice"),
-    ("Midpoint", "Punto medio"),
-    ("Face centre", "Centro de la cara"),
-    ("Plane", "Plano"),
     // Edit
     ("Simplify", "Simplificar"),
     ("Split", "Dividir"),

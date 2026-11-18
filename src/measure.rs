@@ -425,8 +425,7 @@ impl Measure {
 
     /// A measurement with its points preset, for screenshots: `[mode:]point;point;…`, mode
     /// `distance`, `surface`, `circle` or `section`; a point is `x,y,z` (mm) with `~` in front for
-    /// the cursor point and `@vertex`, `@midpoint`, `@edge`, `@face` or `@plane` behind it
-    /// for the snap marker. Surface mode fits the face nearest its point; section mode cuts the object nearest to its point at that point's height.
+    /// the cursor point. Surface mode fits the face nearest its point; section mode cuts the object nearest to its point at that point's height.
     pub fn preset(spec: &str, scene: &Scene) -> Self {
         let (mode, rest) = match spec.split_once(':') {
             Some(("surface", rest)) => (Mode::Surface, rest),
@@ -437,8 +436,7 @@ impl Measure {
         };
         let mut m = Measure::new(mode);
         for entry in rest.split(';') {
-            let (coords, kind) = entry.split_once('@').unwrap_or((entry, ""));
-            let v: Vec<f32> = coords
+            let v: Vec<f32> = entry
                 .trim_start_matches('~')
                 .split(',')
                 .filter_map(|n| n.trim().parse().ok())
@@ -446,19 +444,7 @@ impl Measure {
             let Ok::<[f32; 3], _>([x, y, z]) = v.try_into() else {
                 continue;
             };
-            let kind = [
-                SnapKind::Vertex,
-                SnapKind::Midpoint,
-                SnapKind::Edge,
-                SnapKind::Face,
-                SnapKind::Plane,
-            ]
-            .into_iter()
-            .find(|k| k.name().to_lowercase().starts_with(kind) && !kind.is_empty());
-            let spot = Spot {
-                kind,
-                ..Spot::free(Vec3::new(x, y, z))
-            };
+            let spot = Spot::free(Vec3::new(x, y, z));
             if entry.starts_with('~') {
                 m.hover = Some(spot);
             } else {
@@ -626,7 +612,13 @@ impl Measure {
             None => Spot::free(floor?),
         };
         if let (true, Mode::Distance, [first]) = (snap, self.mode, &self.points[..]) {
-            if let Some((p, how)) = align(first.point, first.normal, spot.point, spot.normal) {
+            if let Some((p, how)) = align(
+                first.point,
+                first.normal,
+                spot.point,
+                spot.normal,
+                tolerance,
+            ) {
                 spot.point = p;
                 spot.aligned = Some(how);
             }
@@ -653,6 +645,9 @@ impl Measure {
         }
     }
 }
+
+#[cfg(test)]
+mod sweep;
 
 #[cfg(test)]
 mod tests {
@@ -770,19 +765,22 @@ mod tests {
             .spot(&scene, Some((id, tri, near_corner)), None, 1.0, false)
             .unwrap();
         assert_eq!((free.point, free.kind), (near_corner, None));
-        // The floor under the cube is a plane, so a top-to-floor distance is perpendicular.
+        // The floor under the cube is a plane, so a top-to-floor distance is perpendicular when
+        // the cursor is near the line down from the point; further away it keeps its own point.
         m.click(&scene, s, None);
         let floor = m
             .spot(
                 &scene,
                 None,
-                Some(Vec3::new(corner.x + 3.0, corner.y + 4.0, 0.0)),
+                Some(Vec3::new(corner.x + 0.3, corner.y + 0.4, 0.0)),
                 1.0,
                 true,
             )
             .unwrap();
         assert_eq!(floor.aligned, Some(Alignment::Perpendicular));
         assert!(near(floor.point.x, corner.x, 1e-4));
+        let away = Some(Vec3::new(corner.x + 3.0, corner.y + 4.0, 0.0));
+        assert_eq!(m.spot(&scene, None, away, 1.0, true).unwrap().aligned, None);
         m.hover = Some(floor);
         assert!(near(m.distance(), top, 1e-3));
         m.click(&scene, floor, None);
@@ -819,11 +817,11 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_spec_sets_mode_points_and_the_cursor_marker() {
+    fn a_preset_spec_sets_mode_points_and_the_cursor_point() {
         let scene = Scene::default();
-        let m = Measure::preset("circle:1,2,3;4,5,6;~7,8,9@vertex", &scene);
+        let m = Measure::preset("circle:1,2,3;4,5,6;~7,8,9", &scene);
         assert_eq!((m.mode, m.points.len()), (Mode::Circle, 2));
-        assert_eq!(m.hover.unwrap().kind, Some(SnapKind::Vertex));
+        assert_eq!(m.hover.unwrap().point, Vec3::new(7., 8., 9.));
         let d = Measure::preset("0,0,0;3,4,0", &scene);
         assert_eq!((d.mode, d.distance()), (Mode::Distance, 5.0));
     }

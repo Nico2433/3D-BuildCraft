@@ -45,7 +45,7 @@ pub enum SnapKind {
 }
 
 impl SnapKind {
-    /// English name, shown in the UI through `tr` and returned by the MCP tool.
+    /// English name, returned by the MCP tool.
     pub fn name(self) -> &'static str {
         match self {
             SnapKind::Vertex => "Vertex",
@@ -183,28 +183,37 @@ pub enum Alignment {
 
 /// Line the second point up with the first so the measurement is exact: onto the normal
 /// through the first point when both lie on parallel faces, else onto a world axis the
-/// line is nearly along. `None` when neither applies.
+/// line is nearly along. The aligned point must lie within `reach` of `second`, like any
+/// other snap target: a cursor far from the line keeps its own point instead of jumping
+/// across the face to the line (the hover would otherwise snap to a far corner on the
+/// parallel face, and flicker on the first point's own face where the offset is rounding
+/// noise). `f32::INFINITY` aligns whatever the distance. `None` when neither applies.
 pub fn align(
     first: Vec3,
     first_normal: Option<Vec3>,
     second: Vec3,
     second_normal: Option<Vec3>,
+    reach: f32,
 ) -> Option<(Vec3, Alignment)> {
     let d = second - first;
-    if let Some((n, m)) = first_normal.zip(second_normal) {
+    let perpendicular = first_normal.zip(second_normal).and_then(|(n, m)| {
         let along = d.dot(n);
-        if n.dot(m).abs() >= 0.9995 && along.abs() > 1e-6 {
-            return Some((first + n * along, Alignment::Perpendicular));
-        }
-    }
+        (n.dot(m).abs() >= 0.9995 && along.abs() > 1e-6)
+            .then(|| (first + n * along, Alignment::Perpendicular))
+    });
     let len = d.length();
-    (0..3)
-        .find(|&i| len > 1e-6 && d[i].abs() / len >= 0.9986)
-        .map(|i| {
-            let mut p = first;
-            p[i] = second[i];
-            (p, Alignment::Axis(i))
-        })
+    let on_axis = || {
+        (0..3)
+            .find(|&i| len > 1e-6 && d[i].abs() / len >= 0.9986)
+            .map(|i| {
+                let mut p = first;
+                p[i] = second[i];
+                (p, Alignment::Axis(i))
+            })
+    };
+    perpendicular
+        .filter(|(p, _)| p.distance(second) <= reach)
+        .or_else(|| on_axis().filter(|(p, _)| p.distance(second) <= reach))
 }
 
 #[cfg(test)]
@@ -300,13 +309,36 @@ mod tests {
     #[test]
     fn parallel_faces_give_the_perpendicular_distance() {
         let n = Some(Vec3::Z);
-        let (p, how) = align(Vec3::new(1., 1., 0.), n, Vec3::new(4., 6., 7.), n).unwrap();
+        let (p, how) = align(
+            Vec3::new(1., 1., 0.),
+            n,
+            Vec3::new(4., 6., 7.),
+            n,
+            f32::INFINITY,
+        )
+        .unwrap();
         assert_eq!((p, how), (Vec3::new(1., 1., 7.), Alignment::Perpendicular));
+        // Out of reach of the cursor the point stays where it is.
+        assert!(align(Vec3::new(1., 1., 0.), n, Vec3::new(4., 6., 7.), n, 2.0).is_none());
     }
     #[test]
     fn nearly_axis_aligned_lines_become_exact() {
-        let (p, how) = align(Vec3::ZERO, None, Vec3::new(10., 0.1, -0.1), None).unwrap();
+        let (p, how) = align(
+            Vec3::ZERO,
+            None,
+            Vec3::new(10., 0.1, -0.1),
+            None,
+            f32::INFINITY,
+        )
+        .unwrap();
         assert_eq!((p, how), (Vec3::new(10., 0., 0.), Alignment::Axis(0)));
-        assert!(align(Vec3::ZERO, None, Vec3::new(10., 5., 0.), None).is_none());
+        assert!(align(
+            Vec3::ZERO,
+            None,
+            Vec3::new(10., 5., 0.),
+            None,
+            f32::INFINITY
+        )
+        .is_none());
     }
 }

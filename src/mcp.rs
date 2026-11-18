@@ -1280,7 +1280,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         if snap && flag("align", true) {
             // A facet of a curved wall has no normal to line up along.
             let flat = |h: Option<Snapped>| h.filter(|h| !h.1.curved).map(|h| h.1.normal);
-            if let Some((p, how)) = align(a, flat(ha), b, flat(hb)) {
+            if let Some((p, how)) = align(a, flat(ha), b, flat(hb), f32::INFINITY) {
                 b = p;
                 alignment = Some(match how {
                     Alignment::Perpendicular => "perpendicular".to_string(),

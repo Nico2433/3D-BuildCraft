@@ -14,7 +14,6 @@ use crate::primitives::Primitive;
 use crate::render::{DrawItem, FrameCallback, Renderer, ViewFlags};
 use crate::scene::{Axis, Material, Object, Scene};
 use crate::settings::{Autosave, ColorMode, Settings, Units};
-use crate::snapping::SnapKind;
 use eframe::egui::{
     self, Align2, Color32, Key, KeyboardShortcut, Modifiers, PointerButton, Pos2, Sense, Stroke,
     Vec2,

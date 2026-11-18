@@ -94,26 +94,20 @@ impl App {
         }
         self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
         if let Some(Tool::Measure(m)) = &self.tool {
-            measure_overlay(
-                &painter,
-                m,
-                &to_screen,
-                ui.ctx().pixels_per_point(),
-                self.settings.lang(),
-            );
+            measure_overlay(&painter, m, &to_screen, ui.ctx().pixels_per_point());
         }
     }
 }
 
-/// The measure marks: arrows on the placed points (blue the first, green the others) and
-/// on the live one, the faint line between two of them, the fitted circle or sphere with
-/// its radius line, and the snap indicator with its name beside the live point.
+/// The measure marks: arrows on the placed points (blue the first, green the others), the
+/// faint line between two of them (the second may be the point under the cursor, which gets
+/// no marker of its own: the pointer is there), and the fitted circle or sphere with its
+/// radius line.
 fn measure_overlay(
     painter: &egui::Painter,
     m: &Measure,
     to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
     ppp: f32,
-    lang: Lang,
 ) {
     let faint = |a: Pos2, b: Pos2| {
         painter.line_segment(
@@ -205,71 +199,11 @@ fn measure_overlay(
             loop_line(&c.outline, MEASURE_GREEN);
         }
     }
-    for (p, color) in marks {
+    for (p, color) in marks.into_iter().take(m.points.len()) {
         if let Some(tip) = to_screen(p) {
             measure_arrow(painter, tip, color, ppp);
         }
     }
-    if let Some((at, kind)) = live.and_then(|s| to_screen(s.point).zip(s.kind)) {
-        snap_indicator(painter, at, kind, ppp, lang);
-    }
-}
-
-/// The snap indicator: a square on a vertex, a triangle on an edge middle, a diamond on an
-/// edge, a circle on a face centre, a cross on a plane; the kind's name is beside it.
-fn snap_indicator(painter: &egui::Painter, at: Pos2, kind: SnapKind, ppp: f32, lang: Lang) {
-    let u = 1.0 / ppp;
-    let stroke = Stroke::new(2.0 * u, SNAP_YELLOW);
-    let r = 7.0 * u;
-    let points = |offsets: &[(f32, f32)]| -> Vec<Pos2> {
-        offsets
-            .iter()
-            .map(|(x, y)| Pos2::new(at.x + x * r, at.y + y * r))
-            .collect()
-    };
-    match kind {
-        SnapKind::Vertex => {
-            painter.rect_stroke(
-                egui::Rect::from_center_size(at, egui::vec2(2.0 * r, 2.0 * r)),
-                0.0,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-        }
-        SnapKind::Midpoint => {
-            painter.add(egui::Shape::closed_line(
-                points(&[(0.0, -1.0), (1.0, 0.8), (-1.0, 0.8)]),
-                stroke,
-            ));
-        }
-        SnapKind::Edge => {
-            painter.add(egui::Shape::closed_line(
-                points(&[(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)]),
-                stroke,
-            ));
-        }
-        SnapKind::Face => {
-            painter.circle_stroke(at, r, stroke);
-            painter.circle_filled(at, 2.0 * u, SNAP_YELLOW);
-        }
-        SnapKind::Plane => {
-            painter.line_segment(
-                [points(&[(-1.0, 0.0)])[0], points(&[(1.0, 0.0)])[0]],
-                stroke,
-            );
-            painter.line_segment(
-                [points(&[(0.0, -1.0)])[0], points(&[(0.0, 1.0)])[0]],
-                stroke,
-            );
-        }
-    }
-    painter.text(
-        Pos2::new(at.x + 12.0 * u, at.y + 8.0 * u),
-        egui::Align2::LEFT_TOP,
-        tr(lang, kind.name()),
-        egui::FontId::proportional(13.0 * u),
-        SNAP_YELLOW,
-    );
 }
 
 /// The webcam's live picture, fitted in the view, in place of the scene.

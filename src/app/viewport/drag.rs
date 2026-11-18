@@ -640,7 +640,7 @@ impl App {
         self.emboss_drag = None;
     }
 
-    /// The measure marker takes the place of the cursor.
+    /// Tracks the point a measure click would take under the pointer.
     pub(super) fn measure_hover(
         &mut self,
         ui: &egui::Ui,
@@ -649,7 +649,6 @@ impl App {
         aspect: f32,
     ) {
         if matches!(self.tool, Some(Tool::Measure(_))) {
-            // The marker takes the place of the cursor.
             let alt = ui.input(|i| i.modifiers.alt);
             let spot = resp
                 .hover_pos()
@@ -657,9 +656,6 @@ impl App {
             if let Some(Tool::Measure(m)) = &mut self.tool {
                 if spot.is_some() || ui.ctx().pointer_hover_pos().is_some() {
                     m.hover = spot;
-                }
-                if resp.hovered() && m.points.len() < m.capacity() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                 }
             }
         }
