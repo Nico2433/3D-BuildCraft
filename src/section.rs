@@ -17,7 +17,7 @@
 //! When the plane lies in a flat face (the top or bottom of a cylinder, the base of a cone,
 //! the rim of a hollow cylinder) it cuts no material, so [`section`] slices a hair inside
 //! the solid instead ([`SHIFT`] of the object's size) on the side that has material.
-use crate::measure::{centroid, fit_circle_around, Round};
+use crate::measure::{centroid, fit_circle_around, plane_basis, Round};
 use crate::mesh::Mesh;
 use glam::{Mat4, Vec2, Vec3};
 use rustc_hash::FxHashMap as HashMap;
@@ -395,10 +395,7 @@ impl Cutter<'_> {
     /// `axis` through `circle`) on `point`'s side and 120 degrees either way, and the plane through them moved to `point`. `None` when the
     /// ring has no vertices there or the plane is tilted more than [`MAX_TILT_DEG`].
     fn mouth(&self, point: Vec3, axis: Vec3, circle: Round) -> Option<Vec3> {
-        let (u, v) = (
-            axis.any_orthonormal_vector(),
-            axis.cross(axis.any_orthonormal_vector()),
-        );
+        let (u, v) = plane_basis(axis);
         let at = |p: Vec3| {
             let d = p - circle.center;
             Vec2::new(d.dot(u), d.dot(v))
@@ -489,10 +486,7 @@ fn turned(contour: &Contour, normal: Vec3) -> Option<([Vec3; 2], f64)> {
     if !contour.outline.closed || points.len() < MIN_CLOSED {
         return None;
     }
-    let (u, v) = (
-        normal.any_orthonormal_vector(),
-        normal.cross(normal.any_orthonormal_vector()),
-    );
+    let (u, v) = plane_basis(normal);
     let flat: Vec<(f64, f64)> = points
         .iter()
         .map(|p| {
@@ -618,10 +612,7 @@ fn slice(world: &[Vec3], weld: f32, tris: &[[u32; 3]], plane: Plane) -> Section 
         }
     }
     let chains = join(points.len(), &segments);
-    let (u, v) = (
-        normal.any_orthonormal_vector(),
-        normal.cross(normal.any_orthonormal_vector()),
-    );
+    let (u, v) = plane_basis(normal);
     let flat = |p: Vec3| Vec2::new((p - point).dot(u), (p - point).dot(v));
     let mut contours: Vec<(Vec<Vec3>, bool, Vec<Vec2>, f32)> = chains
         .into_iter()
@@ -859,10 +850,7 @@ fn fit_loop(points: &[Vec3], closed: bool) -> Option<CircleFit> {
     let (mut round, _) = fit_circle_around(points, axis)?;
     round.radius = round.radius.max(f32::MIN_POSITIVE);
     let r = round.radius as f64;
-    let (u, v) = (
-        axis.any_orthonormal_vector(),
-        axis.cross(axis.any_orthonormal_vector()),
-    );
+    let (u, v) = plane_basis(axis);
     let (mut sum, mut max) = (0.0f64, 0.0f64);
     let (mut sweep, mut last) = (0.0f32, None::<f32>);
     for p in points.iter().chain(points.first().filter(|_| closed)) {

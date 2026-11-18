@@ -144,10 +144,7 @@ fn measure_overlay(
             .axis
             .map_or([Vec3::X, Vec3::Y, Vec3::Z].to_vec(), |a| vec![a]);
         for axis in axes {
-            let (u, v) = (
-                axis.any_orthonormal_vector(),
-                axis.cross(axis.any_orthonormal_vector()),
-            );
+            let (u, v) = crate::measure::plane_basis(axis);
             let ring: Vec<Pos2> = (0..=96)
                 .filter_map(|i| {
                     let t = i as f32 / 96.0 * std::f32::consts::TAU;

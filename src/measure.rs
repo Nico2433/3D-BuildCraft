@@ -2,7 +2,7 @@
 //! (a circle through three points, a curved face, a whole object) and the picked points with
 //! their snapping. The Measure tool in `app` and the MCP `measure` tool share it.
 use crate::mesh::Mesh;
-use crate::scene::Scene;
+use crate::scene::{Object, Scene};
 use crate::section::{section_tilted, Outline, Section, Tilt};
 use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap, SnapKind};
 use glam::{Mat4, Vec3};
@@ -10,6 +10,24 @@ use std::sync::Arc;
 
 /// A fit counts as round when its RMS error is under this fraction of the radius.
 const FIT_TOLERANCE: f64 = 0.005;
+/// A single curved face is fitted from few, coarse triangles, so it gets twice the room.
+const SURFACE_FIT_TOLERANCE: f64 = 2.0 * FIT_TOLERANCE;
+/// Two unit normals closer to parallel than this (length of their cross product) do not
+/// say which way a surface curves.
+const MIN_AXIS_LENGTH: f32 = 0.05;
+/// A cylinder's face normals are square to its axis within this (cosine of the angle).
+const SQUARE_TO_AXIS: f32 = 0.05;
+/// Degrees between neighbouring triangles of one curved face.
+const CURVED_FACE_DEG: f32 = 30.0;
+/// A sphere's face normals point away from its centre within this cosine.
+const RADIAL_COS: f32 = 0.98;
+/// A ring of a cone or torus: the vertices at least this fraction of the widest radius.
+const RING_FRACTION: f32 = 0.98;
+/// Angular sectors that vertices must fill to go "all the way round" a circle, how many of
+/// them (a box's corners fill four) and the fewest vertices for that.
+const SECTORS: u32 = 12;
+const MIN_SECTORS: usize = 10;
+const MIN_ROUND_POINTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundKind {
@@ -63,6 +81,12 @@ pub fn circle_through(a: Vec3, b: Vec3, c: Vec3) -> Option<Round> {
     })
 }
 
+/// Two unit vectors that, with the unit vector `axis`, make a right-handed frame.
+pub fn plane_basis(axis: Vec3) -> (Vec3, Vec3) {
+    let u = axis.any_orthonormal_vector();
+    (u, axis.cross(u))
+}
+
 /// Least-squares solution of `rows · x = rhs` by the normal equations.
 fn least_squares<const N: usize>(rows: &[[f64; N]], rhs: &[f64]) -> Option<[f64; N]> {
     let mut m = [[0.0; N]; N];
@@ -114,10 +138,8 @@ pub(crate) fn fit_circle_around(points: &[Vec3], axis: Vec3) -> Option<(Round, f
     if points.len() < 3 {
         return None;
     }
-    let (u, v) = (
-        axis.any_orthonormal_vector(),
-        axis.cross(axis.any_orthonormal_vector()),
-    );
+    let axis = axis.try_normalize()?;
+    let (u, v) = plane_basis(axis);
     let origin = centroid(points);
     let flat: Vec<[f64; 2]> = points
         .iter()
@@ -190,11 +212,11 @@ pub fn fit_surface(points: &[Vec3], normals: &[Vec3]) -> Option<Round> {
         .iter()
         .min_by(|a, b| first.dot(**a).abs().total_cmp(&first.dot(**b).abs()))?;
     let axis = first.cross(*far);
-    if axis.length() < 0.05 {
+    if axis.length() < MIN_AXIS_LENGTH {
         return None;
     }
     let axis = axis.normalize();
-    let fit = if normals.iter().all(|n| n.dot(axis).abs() < 0.05) {
+    let fit = if normals.iter().all(|n| n.dot(axis).abs() < SQUARE_TO_AXIS) {
         fit_circle_around(points, axis).map(|(r, e)| {
             (
                 Round {
@@ -207,14 +229,14 @@ pub fn fit_surface(points: &[Vec3], normals: &[Vec3]) -> Option<Round> {
     } else {
         fit_sphere(points)
     };
-    fit.filter(|(_, e)| *e < FIT_TOLERANCE * 2.0)
+    fit.filter(|(_, e)| *e < SURFACE_FIT_TOLERANCE)
         .map(|(r, _)| r)
 }
 
 /// The curved face around triangle `tri` of `mesh` placed by `model`, fitted (see
-/// [`fit_surface`]). Neighbouring triangles up to 30 degrees apart belong to it.
+/// [`fit_surface`]). Neighbouring triangles up to [`CURVED_FACE_DEG`] apart belong to it.
 pub fn surface_round(mesh: &Mesh, model: &Mat4, tri: usize) -> Option<Round> {
-    let region = mesh.face_region(tri, 30.0);
+    let region = mesh.face_region(tri, CURVED_FACE_DEG);
     let mut points = Vec::new();
     let mut normals = Vec::new();
     for t in region {
@@ -228,18 +250,17 @@ pub fn surface_round(mesh: &Mesh, model: &Mat4, tri: usize) -> Option<Round> {
 /// Whether `points` go all the way round `round`: a box's corners fit a circle but do not
 /// cover it.
 fn goes_round(points: &[Vec3], round: &Round) -> bool {
-    let axis = round.axis.unwrap_or(Vec3::Z);
-    let u = axis.any_orthonormal_vector();
-    let v = axis.cross(u);
+    let (u, v) = plane_basis(round.axis.unwrap_or(Vec3::Z));
     let sectors: std::collections::HashSet<u32> = points
         .iter()
         .map(|p| {
             let d = *p - round.center;
             let angle = d.dot(v).atan2(d.dot(u));
-            ((angle + std::f32::consts::PI) / std::f32::consts::TAU * 12.0) as u32 % 12
+            ((angle + std::f32::consts::PI) / std::f32::consts::TAU * SECTORS as f32) as u32
+                % SECTORS
         })
         .collect();
-    points.len() >= 8 && sectors.len() >= 10
+    points.len() >= MIN_ROUND_POINTS && sectors.len() >= MIN_SECTORS
 }
 
 /// The round shape of a whole object, given its mesh in world space and the world
@@ -254,7 +275,8 @@ pub fn fit_object(world: &Mesh, axes: [Vec3; 3]) -> Option<Round> {
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(r, _)| r)
     };
-    let axes = axes.map(Vec3::normalize);
+    // An axis with no length (an object scaled flat) says nothing.
+    let axes: Vec<Vec3> = axes.iter().filter_map(|a| a.try_normalize()).collect();
     let full =
         |pts: &[Vec3], axis: Vec3| fit_circle_around(pts, axis).filter(|(r, _)| goes_round(pts, r));
     if let Some(r) = best(axes.iter().filter_map(|a| full(points, *a)).collect()) {
@@ -268,7 +290,7 @@ pub fn fit_object(world: &Mesh, axes: [Vec3; 3]) -> Option<Round> {
             let n = Mesh::face_normal(a, b, c);
             n.dot(((a + b + c) / 3.0 - s.center).normalize_or_zero())
                 .abs()
-                > 0.98
+                > RADIAL_COS
         });
         if e < FIT_TOLERANCE && radial {
             return Some(s);
@@ -283,12 +305,25 @@ pub fn fit_object(world: &Mesh, axes: [Vec3; 3]) -> Option<Round> {
         let widest = points.iter().map(radial).fold(0.0, f32::max);
         let ring: Vec<Vec3> = points
             .iter()
-            .filter(|p| radial(p) >= widest * 0.98)
+            .filter(|p| radial(p) >= widest * RING_FRACTION)
             .copied()
             .collect();
         full(&ring, axis)
     });
     best(rings.collect())
+}
+
+/// The object nearest to `p`, with the triangle of its surface and the point on it that is
+/// closest to `p`.
+pub fn nearest_surface(scene: &Scene, p: Vec3) -> Option<(&Object, usize, Vec3)> {
+    scene
+        .objects
+        .iter()
+        .filter_map(|o| {
+            let (tri, q) = o.mesh.closest_triangle(&o.matrix(), p)?;
+            Some((o, tri, q))
+        })
+        .min_by(|a, b| a.2.distance(p).total_cmp(&b.2.distance(p)))
 }
 
 /// Snap `p` to the nearest face feature (vertex, edge middle, edge, face centre) of any
@@ -426,24 +461,20 @@ impl Measure {
             }
         }
         if let (Mode::Section, Some(first)) = (mode, m.points.first()) {
-            let nearest = scene.objects.iter().min_by(|a, b| {
-                let d = |o: &crate::scene::Object| {
-                    o.mesh
-                        .closest_triangle(&o.matrix(), first.point)
-                        .map_or(f32::INFINITY, |(_, q)| q.distance(first.point))
-                };
-                d(a).total_cmp(&d(b))
-            });
-            m.section = nearest.map(|o| m.cut(o, first.point));
+            m.section = nearest_surface(scene, first.point).map(|(o, _, _)| m.cut(o, first.point));
         }
         if let (Mode::Surface, Some(first)) = (mode, m.points.first()) {
-            m.round = scene.objects.iter().find_map(|o| {
-                let model = o.matrix();
-                let (tri, _) = o.mesh.closest_triangle(&model, first.point)?;
-                surface_round(&o.mesh, &model, tri)
-            });
+            m.round = nearest_surface(scene, first.point)
+                .and_then(|(o, tri, _)| surface_round(&o.mesh, &o.matrix(), tri));
         }
         m
+    }
+
+    /// Drops the results of a measurement whose objects may have changed (after an undo or
+    /// redo); the placed points are positions in space and stay.
+    pub fn forget_results(&mut self) {
+        self.round = None;
+        self.section = None;
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
@@ -456,7 +487,7 @@ impl Measure {
     /// The section of `o` through `p`, with the contour passing closest to `p`: horizontal,
     /// or with [`Tilt::Auto`] tilted where the horizontal contour is not round. When `p` is
     /// on a flat face (a rim, a base) the cut goes a hair inside the material.
-    fn cut(&self, o: &crate::scene::Object, p: Vec3) -> SectionPick {
+    fn cut(&self, o: &Object, p: Vec3) -> SectionPick {
         let section = section_tilted(&o.mesh, &o.matrix(), p, Some(p), self.tilt);
         let chosen = section.nearest(p);
         SectionPick {
@@ -896,5 +927,44 @@ mod tests {
         let cube = scene.add(Object::new("box", Primitive::Cube.build(), DEFAULT_COLOR));
         m.click(&scene, Spot::free(Vec3::ZERO), Some((cube, 0)));
         assert!(m.current_round().is_none());
+    }
+
+    #[test]
+    fn degenerate_input_gives_none_not_a_panic() {
+        let cyl = Primitive::Cylinder.build();
+        // An object scaled flat has axes with no length.
+        assert!(fit_object(&cyl, [Vec3::ZERO, Vec3::Y, Vec3::Z]).is_some());
+        assert!(fit_object(&Mesh::default(), [Vec3::X, Vec3::Y, Vec3::Z]).is_none());
+        assert!(fit_circle_around(&[Vec3::ZERO, Vec3::X, Vec3::Y], Vec3::ZERO).is_none());
+        let (u, v) = plane_basis(Vec3::Z);
+        assert!(u.dot(v).abs() < 1e-6 && near(u.cross(v).z, 1.0, 1e-6));
+    }
+
+    #[test]
+    fn a_surface_preset_takes_the_nearest_object_not_the_first() {
+        let mut scene = Scene::default();
+        let mut ball = Object::new("ball", Primitive::Sphere.build(), DEFAULT_COLOR);
+        ball.translation.x = 500.0;
+        scene.add(ball);
+        let can = scene.add(Object::new(
+            "can",
+            Primitive::Cylinder.build(),
+            DEFAULT_COLOR,
+        ));
+        let b = scene.get(can).unwrap().world_aabb();
+        let wall = Vec3::new(b.max.x, b.center().y, b.center().z);
+        let m = Measure::preset(&format!("surface:{},{},{}", wall.x, wall.y, wall.z), &scene);
+        assert_eq!(m.round.map(|r| r.kind), Some(RoundKind::Cylinder));
+        assert_eq!(nearest_surface(&scene, wall).unwrap().0.id, can);
+        assert!(nearest_surface(&Scene::default(), wall).is_none());
+    }
+
+    #[test]
+    fn forgetting_results_keeps_the_points() {
+        let mut m = Measure::new(Mode::Circle);
+        m.click(&Scene::default(), Spot::free(Vec3::X), None);
+        m.round = circle_through(Vec3::X, Vec3::Y, -Vec3::X);
+        m.forget_results();
+        assert!(m.round.is_none() && m.points.len() == 1);
     }
 }

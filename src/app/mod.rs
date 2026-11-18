@@ -395,6 +395,10 @@ impl App {
         self.scene.objects = s.objects;
         self.scene.selection = s.selection;
         self.scene.dirty = true;
+        // A measured section or surface was cut from objects that are gone or changed.
+        if let Some(Tool::Measure(m)) = &mut self.tool {
+            m.forget_results();
+        }
         self.refresh_invalid();
     }
 
