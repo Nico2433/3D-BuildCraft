@@ -132,6 +132,26 @@ fn arguments_are_checked_against_the_tool_schema() {
     )
     .unwrap_err()
     .contains("custom.round"));
+    // The same inside a list of objects and in measure's section.
+    let ok = json!({"filaments": [{"color": "#FF0000", "slot": 1}]});
+    assert!(check_args("print_setup", &ok).is_ok());
+    let e = check_args(
+        "print_setup",
+        &json!({"filaments": [{"color": "#FF0000", "slot": 1}, {"color": "#00FF00", "slot": 2, "slott": 3}]}),
+    )
+    .unwrap_err();
+    assert_eq!(
+        e,
+        "unknown argument filaments[1].slott: print_setup filaments[1] takes color, slot"
+    );
+    let e = check_args("print_setup", &json!({"filaments": [{"color": 5}]})).unwrap_err();
+    assert!(e.starts_with("filaments[0].color must be"), "{e}");
+    let e = check_args(
+        "measure",
+        &json!({"section": {"id": 1, "nearby": [0, 0, 0]}}),
+    )
+    .unwrap_err();
+    assert!(e.starts_with("unknown argument section.nearby"), "{e}");
     assert!(check_args("screenshot", &json!({"focus": "all"})).is_ok());
     assert!(check_args("screenshot", &json!({"focus": [1, 2]})).is_ok());
     assert!(check_args("screenshot", &json!({"focus": 3})).is_err());

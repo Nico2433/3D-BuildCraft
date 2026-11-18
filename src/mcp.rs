@@ -756,8 +756,17 @@ fn check_object(tool: &str, path: &str, schema: &Value, value: &Value) -> Result
             }
         }
         if v.is_null() || fits(prop, v) {
-            if prop["type"] == "object" && !v.is_null() {
-                check_object(tool, &format!("{path}{key}."), prop, v)?;
+            // Objects inside objects and inside lists are as strict as the top level.
+            match (prop["type"].as_str(), v) {
+                (Some("object"), v) if !v.is_null() => {
+                    check_object(tool, &format!("{path}{key}."), prop, v)?;
+                }
+                (Some("array"), Value::Array(items)) if prop["items"]["type"] == "object" => {
+                    for (i, item) in items.iter().enumerate() {
+                        check_object(tool, &format!("{path}{key}[{i}]."), &prop["items"], item)?;
+                    }
+                }
+                _ => {}
             }
             continue;
         }

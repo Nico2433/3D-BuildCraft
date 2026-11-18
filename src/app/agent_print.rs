@@ -3,7 +3,6 @@
 //! "About the model" panel and "Print on paper".
 
 use super::*;
-use crate::io::parse_hex;
 use crate::mcp::{self, args, Reply};
 use serde_json::{json, Value};
 
@@ -118,11 +117,9 @@ impl App {
             }
         };
         let colors = self.scene_colors();
+        // Every choice is checked before any is made, so an error changes no filament.
         if let Some(slot) = setup.filament {
             in_range(slot)?;
-            for &c in &colors {
-                self.apply(Action::ChooseFilament(c, slot), ctx);
-            }
         }
         for &(color, slot) in &setup.filaments {
             in_range(slot)?;
@@ -137,6 +134,13 @@ impl App {
                         .join(", ")
                 ));
             }
+        }
+        if let Some(slot) = setup.filament {
+            for &c in &colors {
+                self.apply(Action::ChooseFilament(c, slot), ctx);
+            }
+        }
+        for &(color, slot) in &setup.filaments {
             self.apply(Action::ChooseFilament(color, slot), ctx);
         }
         Ok(self.print_setup_json())
@@ -268,8 +272,9 @@ fn parse_setup(a: &Value) -> Result<Setup, String> {
         Value::Array(items) => items
             .iter()
             .map(|item| {
-                let color = item["color"].as_str().and_then(parse_hex);
-                let color = color.ok_or("each filaments color must look like #RRGGBB")?;
+                let color = args::color(item, "color")
+                    .map_err(|e| format!("each filaments {e}"))?
+                    .ok_or("each filaments color is missing: #RRGGBB, e.g. #FF8000")?;
                 Ok((color, slot(&item["slot"], "each filaments slot")?))
             })
             .collect::<Result<_, String>>()?,
