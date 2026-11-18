@@ -991,6 +991,9 @@ fn object_arg<'a>(
         .ok_or_else(|| format!("no object with id {id}; get_scene lists the ids"))
 }
 
+/// The most contours `measure`'s `section` lists (`total` says how many there are).
+const MAX_LISTED_CONTOURS: usize = 50;
+
 /// `measure`'s `section`: the contours a plane cuts out of an object, with circle fits.
 fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, String> {
     use crate::section::{section_tilted, Tilt};
@@ -999,9 +1002,9 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
         Some(n) => point_arg(n, "section.normal")?,
         None => glam::Vec3::Z,
     };
-    if normal.length_squared() < 1e-12 || !normal.is_finite() {
+    let Some(normal) = normal.try_normalize() else {
         return Err("section.normal must be a non-zero vector".into());
-    }
+    };
     let near = spec
         .get("near")
         .filter(|n| !n.is_null())
@@ -1025,7 +1028,7 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
             )
         }
     };
-    if horizontal && normal != glam::Vec3::Z {
+    if horizontal && normal.dot(glam::Vec3::Z) < 1.0 - 1e-6 {
         return Err(
             "section.z is a horizontal plane; use point with normal for a slanted one".into(),
         );
@@ -1055,7 +1058,7 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
         .contours
         .iter()
         .enumerate()
-        .take(50)
+        .take(MAX_LISTED_CONTOURS)
         .map(|(i, c)| {
             let l = &c.outline;
             let role = match (l.closed, c.depth % 2) {
@@ -1136,10 +1139,32 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
             .flatten();
         Ok((hit.map_or(p, |h| h.point), hit))
     };
-    if let Some(spec) = args.get("section") {
+    // Null counts as left out, as in `check_args`.
+    let given = |key: &str| args.get(key).filter(|v| !v.is_null());
+    const MODES: [&str; 7] = [
+        "section",
+        "diameter_of",
+        "radius_of",
+        "circle",
+        "from",
+        "to",
+        "ids",
+    ];
+    let used: Vec<&str> = MODES.into_iter().filter(|k| given(k).is_some()).collect();
+    let pair = used.iter().all(|k| matches!(*k, "from" | "to"));
+    let same = used
+        .iter()
+        .all(|k| matches!(*k, "diameter_of" | "radius_of"));
+    if used.len() > 1 && !pair && !same {
+        return Err(format!(
+            "measure takes one kind of measurement at a time, not {}; call it once for each",
+            used.join(" and ")
+        ));
+    }
+    if let Some(spec) = given("section") {
         return section_json(scene, spec);
     }
-    if let Some(id) = args.get("diameter_of").or_else(|| args.get("radius_of")) {
+    if let Some(id) = given("diameter_of").or_else(|| given("radius_of")) {
         let o = object_arg(scene, id)?;
         let m = o.matrix();
         let axes = [m.x_axis, m.y_axis, m.z_axis].map(|a| a.truncate());
@@ -1152,10 +1177,14 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
                 )
             });
     }
-    if let Some(points) = args.get("circle") {
+    if let Some(points) = given("circle") {
         let bad = "circle must be three points [[x, y, z], [x, y, z], [x, y, z]] on the circle, mm";
         let p = points.as_array().filter(|p| p.len() == 3).ok_or(bad)?;
-        let picked = [pick(&p[0], bad)?, pick(&p[1], bad)?, pick(&p[2], bad)?];
+        let picked = [
+            pick(&p[0], "circle's first point")?,
+            pick(&p[1], "circle's second point")?,
+            pick(&p[2], "circle's third point")?,
+        ];
         let round = crate::measure::circle_through(picked[0].0, picked[1].0, picked[2].0)
             .ok_or("the three points lie on a line or coincide, so no circle goes through them")?;
         let mut out = round_json(&round);
@@ -1168,10 +1197,12 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         }
         return Ok(out);
     }
-    if args.get("from").is_some() || args.get("to").is_some() {
-        let both = "from and to must both be points [x, y, z] in mm";
-        let (a, ha) = pick(&args["from"], both)?;
-        let (mut b, hb) = pick(&args["to"], both)?;
+    if given("from").is_some() || given("to").is_some() {
+        if given("from").is_none() || given("to").is_none() {
+            return Err("from and to must both be given, as points [x, y, z] in mm".into());
+        }
+        let (a, ha) = pick(&args["from"], "from")?;
+        let (mut b, hb) = pick(&args["to"], "to")?;
         let mut alignment = None;
         if snap && flag("align", true) {
             if let Some((p, how)) = align(a, ha.map(|h| h.normal), b, hb.map(|h| h.normal)) {
@@ -1192,7 +1223,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         }
         return Ok(out);
     }
-    if let Some(ids) = args.get("ids") {
+    if let Some(ids) = given("ids") {
         let ids = ids
             .as_array()
             .filter(|a| a.len() == 2)
@@ -1406,6 +1437,32 @@ mod tests {
         assert!((c["radius"].as_f64().unwrap() - 5.0).abs() < 1e-4);
         assert!(measure(&cube, &json!({"circle":[[0,0,0],[1,0,0],[2,0,0]]})).is_err());
         assert!(measure(&cube, &json!({"circle":[[0,0,0],[1,0,0]]})).is_err());
+    }
+
+    #[test]
+    fn measure_rejects_conflicting_or_malformed_arguments_with_clear_messages() {
+        let (scene, id) = scene_with(crate::primitives::Primitive::Cylinder);
+        let err = |args: Value| measure(&scene, &args).unwrap_err();
+        let both = err(json!({"from":[0,0,0],"circle":[[0,0,0],[1,0,0],[0,1,0]]}));
+        assert!(both.contains("one kind") && both.contains("from"), "{both}");
+        assert!(err(json!({"diameter_of":id,"section":{"id":id,"z":1}})).contains("one kind"));
+        // Each point is named in its own error, and a lone from or to is explained.
+        let point = err(json!({"from":[0,0,0],"to":[1,2]}));
+        assert!(point.starts_with("to must be a point"), "{point}");
+        assert!(err(json!({"from":[0,0,0]})).contains("both"));
+        let circle = err(json!({"circle":[[0,0,0],[1,0],[0,1,0]]}));
+        assert!(
+            circle.starts_with("circle's second point must be a point"),
+            "{circle}"
+        );
+        // Null is left out; a scaled-up vertical normal is still horizontal.
+        assert!(measure(&scene, &json!({"section":null,"diameter_of":id})).is_ok());
+        let up = json!({"section":{"id":id,"z":1,"normal":[0,0,2]}});
+        assert!(measure(&scene, &up).is_ok());
+        let tilted = json!({"section":{"id":id,"z":1,"normal":[0,0.1,1]}});
+        assert!(measure(&scene, &tilted).is_err());
+        let zero = err(json!({"section":{"id":id,"point":[0,0,1],"normal":[0,0,0]}}));
+        assert!(zero.contains("non-zero"), "{zero}");
     }
 
     #[test]
