@@ -123,7 +123,7 @@ fn base64(bytes: &[u8]) -> String {
 
 const INSTRUCTIONS: &str = concat!(
     "Open 3D BuildCraft and enable external agents to use the tools. Every change shows in the app and can be undone. ",
-    "Call screenshot to see the result.\n",
+    "Call screenshot to see the result; give it a view (front, top, iso...) and focus ids to look from another angle without moving the user's camera.\n",
     crate::rules!()
 );
 
@@ -237,9 +237,20 @@ pub fn tools() -> Vec<Value> {
         tool(
             "print",
             "Only when the user explicitly asks to print: open the scene in the user's chosen slicer, where it is sliced and sent to the printer. The file carries the printer profile, print profile and filaments chosen with print_setup.",
-            none.clone(),
+            none,
         ),
-        tool("screenshot", "A picture of the app window as it is now.", none),
+        tool(
+            "screenshot",
+            "A picture of the app window as it is now. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, scene colours, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
+            json!({ "type": "object", "properties": {
+                "view": { "type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"], "description": "front looks from -Y towards +Y (X to the right), left from -X, right from +X, top down from +Z with the front at the bottom of the picture; iso is from the front right and above. Not with azimuth/elevation" },
+                "azimuth": { "type": "number", "description": "degrees around the vertical, 0 = front, 90 = right, 180 = back, 270 = left; default 45. Not with view" },
+                "elevation": { "type": "number", "description": "degrees above the floor, -90 (from below) to 90 (from above); default 35. Not with view" },
+                "focus": { "description": "what to centre and frame: \"all\" (default), \"selection\", or a list of object ids from get_scene", "oneOf": [{ "type": "string", "enum": ["all", "selection"] }, { "type": "array", "items": { "type": "integer" }, "minItems": 1 }] },
+                "isolate": { "type": "boolean", "description": "draw only the focused objects; default false" },
+                "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, each 64..2048; default [800, 600]" }
+            } }),
+        ),
     ]
     .into_iter()
     .chain(model_tools())

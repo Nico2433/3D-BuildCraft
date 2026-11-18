@@ -2,6 +2,7 @@
 //! and runs each call here, on the UI thread, through the same actions as the UI. So every
 //! change is an undo step and shows on screen as it happens.
 
+use super::agent_shot::Shot;
 use super::*;
 use crate::mcp::{self, Reply};
 use serde_json::{json, Value};
@@ -64,6 +65,23 @@ impl App {
         let processed = !requests.is_empty();
         let lang = self.settings.lang();
         for r in requests {
+            if r.tool == "screenshot" {
+                match Shot::parse(&self.scene, &r.args) {
+                    Err(e) => {
+                        let _ = r.reply.send(Err(e));
+                        continue;
+                    }
+                    // Drawn on its own thread; the meshes are shared, not copied.
+                    Ok(Some(shot)) => {
+                        std::thread::spawn(move || {
+                            let [w, h] = shot.size();
+                            let _ = r.reply.send(png_reply(w, h, shot.render()));
+                        });
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
+            }
             if r.tool == "screenshot" && self.power.sleeping() {
                 let _ = r
                     .reply
@@ -392,7 +410,12 @@ fn round3(v: Vec3) -> [f32; 3] {
 fn encode_png(img: &egui::ColorImage) -> Reply {
     let [w, h] = img.size;
     let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-    let rgba = image::RgbaImage::from_raw(w as u32, h as u32, bytes).ok_or("bad screenshot")?;
+    png_reply(w as u32, h as u32, bytes)
+}
+
+/// RGBA rows, `w`×`h`, as the PNG image a tool replies with.
+fn png_reply(w: u32, h: u32, bytes: Vec<u8>) -> Reply {
+    let rgba = image::RgbaImage::from_raw(w, h, bytes).ok_or("bad screenshot")?;
     let mut png = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut png, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;

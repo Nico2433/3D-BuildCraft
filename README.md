@@ -16,6 +16,7 @@ Build, repair, paint and prepare 3D models for printing. A Rust (egui + wgpu) de
 - **Windows:** `buildcraft3d-windows-x64.msi` is the installer. A newer version upgrades the existing installation; remove it through Settings > Apps. `buildcraft3d-windows-x64.zip` is the portable exe.
 - **Linux, Flatpak:** `flatpak install --user buildcraft3d-linux-x86_64.flatpak` (needs the GNOME 51 runtime from Flathub).
 - **Linux, AppImage:** `buildcraft3d-linux-x86_64.AppImage`, a single file for glibc 2.31 or newer (Ubuntu 20.04 and later). Make it executable with `chmod +x` and run it.
+- **Arch Linux and derivatives:** `sudo pacman -U buildcraft3d-<version>-1-x86_64.pkg.tar.zst`. Updates install the same way; the app opens the release page instead of updating itself.
 
 macOS builds are planned but not published yet.
 
@@ -94,6 +95,7 @@ Packages are built locally with the scripts in `packaging/`:
 - `packaging/windows/build-msi.sh`: Windows exe and MSI from Linux (cargo-zigbuild, zig, Python 3, msitools/wixl).
 - `packaging/flatpak/io.github.nico2433.BuildCraft3D.yml`: Flatpak manifest for `flatpak-builder`.
 - `packaging/appimage/build-appimage.sh`: AppImage linked against glibc 2.31 (cargo-zigbuild, zig, appimagetool).
+- `packaging/arch/build-pkg.sh`: pacman package from the checkout, for generic x86-64 (`base-devel`, `cargo`, `clang`). `packaging/arch/PKGBUILD` builds the same from a release tag with `makepkg -si` (run `updpkgsums` after tagging).
 
 Releases are GitHub pre-releases tagged `vX.Y.Z` (the in-app update reads the release list and takes the highest tag). Keep the asset names `buildcraft3d-linux-x86_64.flatpak`, `buildcraft3d-linux-x86_64.AppImage`, `buildcraft3d-windows-x64.msi` and `buildcraft3d-windows-x64.zip` (with `buildcraft3d.exe` inside): the updater looks for them by name. Also attach a `SHA256SUMS` file (`sha256sum buildcraft3d-* > SHA256SUMS` in `dist/`); when a release has one, every download is checked against it.
 
