@@ -468,6 +468,16 @@ impl Measure {
         self.section = None;
     }
 
+    /// Right click: drops the last placed point and the results that came from it; with no
+    /// point left, drops the section or fitted circle.
+    pub fn cancel(&mut self) {
+        if self.points.pop().is_some() {
+            self.round = None;
+        } else {
+            self.forget_results();
+        }
+    }
+
     pub fn set_mode(&mut self, mode: Mode) {
         *self = Measure {
             tilt: self.tilt,
@@ -648,6 +658,23 @@ impl Measure {
 
 #[cfg(test)]
 mod sweep;
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_drops_points_one_by_one() {
+        let mut m = Measure::new(Mode::Distance);
+        m.points.push(Spot::free(Vec3::ZERO));
+        m.points.push(Spot::free(Vec3::X));
+        m.cancel();
+        assert_eq!(m.points.len(), 1);
+        m.cancel();
+        m.cancel();
+        assert!(m.points.is_empty());
+    }
+}
 
 #[cfg(test)]
 mod tests {

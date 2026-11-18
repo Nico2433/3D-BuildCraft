@@ -657,6 +657,9 @@ impl App {
                 if spot.is_some() || ui.ctx().pointer_hover_pos().is_some() {
                     m.hover = spot;
                 }
+                if resp.secondary_clicked() {
+                    m.cancel();
+                }
                 // The arrow marker takes the place of the system cursor.
                 if resp.hovered() && m.points.len() < m.capacity() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
