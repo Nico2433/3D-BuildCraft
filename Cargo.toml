@@ -38,7 +38,6 @@ smallvec = "1"
 manifold-rust = "0.19"
 # The 2D offsets and fill rules under manifold-rust's CrossSection, for SVG strokes.
 clipper2-rust = "1.2"
-sys-locale = "0.3"
 fontdb = "0.24"
 ureq = { version = "3", features = ["json"] }
 # Checks downloaded updates against the release's SHA256SUMS (already in the lock).
