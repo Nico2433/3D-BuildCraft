@@ -311,6 +311,24 @@ impl Mesh {
         })
     }
 
+    /// For topology only: the index of the welded vertex each vertex belongs to (positions
+    /// equal within a millionth of the size are one) and how many welded vertices there are.
+    /// Vertex and triangle numbering stay as they are.
+    pub fn welded_indices(&self) -> (Vec<u32>, usize) {
+        let tolerance = self.aabb().size().max_element().max(1.0) * 1e-6;
+        let mut vertices = HashMap::default();
+        let welded = self
+            .positions
+            .iter()
+            .map(|p| {
+                let key = (p / tolerance).round().as_ivec3().to_array();
+                let next = vertices.len() as u32;
+                *vertices.entry(key).or_insert(next)
+            })
+            .collect();
+        (welded, vertices.len())
+    }
+
     /// [`Mesh::face_region`], spreading only through triangles `within` accepts; `start`
     /// is always in it.
     pub fn face_region_within(
@@ -329,17 +347,7 @@ impl Mesh {
         };
         let cos = max_deg.clamp(0.0, 180.0).to_radians().cos();
         // Quantize positions for topology only; preserve triangle numbering and colours.
-        let tolerance = self.aabb().size().max_element().max(1.0) * 1e-6;
-        let mut vertices = HashMap::default();
-        let welded: Vec<u32> = self
-            .positions
-            .iter()
-            .map(|p| {
-                let key = (p / tolerance).round().as_ivec3().to_array();
-                let next = vertices.len() as u32;
-                *vertices.entry(key).or_insert(next)
-            })
-            .collect();
+        let (welded, count) = self.welded_indices();
         let triangles: Vec<_> = self
             .triangles
             .iter()
@@ -347,11 +355,11 @@ impl Mesh {
             .collect();
         // Triangles around each welded vertex, as one flat list with offsets; two
         // triangles share an edge when both are around its first vertex and hold the other.
-        let mut first = vec![0u32; vertices.len() + 1];
+        let mut first = vec![0u32; count + 1];
         for &v in triangles.iter().flatten() {
             first[v as usize + 1] += 1;
         }
-        for v in 0..vertices.len() {
+        for v in 0..count {
             first[v + 1] += first[v];
         }
         let mut fill = first.clone();

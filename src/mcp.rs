@@ -235,12 +235,14 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "measure",
-            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. radius_of (an object id): the radius and diameter of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the radius, diameter, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. Without a mode argument it needs a selection.",
+            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. radius_of (an object id): the radius and diameter of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the radius, diameter, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. edge_loop ({id, near}): the circular edge of object id (a pot's rim, a base edge, an inner edge) nearest to the point near [x, y, z]: edges are open boundaries and creases (faces bent more than 40°), followed to a closed loop or an arc, and a circle is fitted to its vertices; the answer has kind circular edge, centre, axis, radius, diameter, fit_error (RMS distance from the circle as a fraction of the radius; under 0.01 counts as circular), fit_error_mm, vertices, closed, sweep_degrees and a start point on the edge; it errors, saying why, when that nearest edge is not circular (a polygon of fewer than 8 vertices such as a square or hexagon, an ellipse, a wavy line) or when the object has no sharp edge, and edge_loops then finds the right point. edge_loops (an object id): every circular edge of the object, largest first (at most 50, total says how many), each like edge_loop's answer, so rims, bases and inner edges can be found without a point. Without a mode argument it needs a selection.",
             json!({"type":"object","properties":{
                 "from":vec3("first point [x, y, z], mm; needs to"),
                 "to":vec3("second point [x, y, z], mm"),
                 "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"},
                 "radius_of":{"type":"integer","description":"object id from get_scene: radius and diameter of a sphere, cylinder, cone or torus"},
+                "edge_loop":{"type":"object","properties":{"id":{"type":"integer","description":"object id from get_scene"},"near":vec3("a point [x, y, z] in mm on or near the edge: the loop nearest to it is measured")},"required":["id","near"],"description":"the circular edge nearest to a point: centre, axis, radius, diameter and fit error"},
+                "edge_loops":{"type":"integer","description":"object id from get_scene: lists every circular edge of the object (rims, bases, inner edges) with centre, axis, radius and diameter"},
                 "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] on a circle, mm: radius and diameter of the circle through them"},
                 "snap":{"type":"boolean","description":"snap from/to/circle points to vertices, edge middles, edges and face centres of the objects (default false)"},
                 "snap_tolerance":{"type":"number","description":"how far, in mm, a point may be from a feature to snap to it (default 1)"},
@@ -979,6 +981,31 @@ fn round_json(r: &crate::measure::Round) -> Value {
     json!({"kind":r.kind.name(),"radius":r.radius,"diameter":r.diameter(),"center":r.center.to_array(),"axis":r.axis.map(|a| a.to_array())})
 }
 
+/// The object an `edge_loop` / `edge_loops` id names.
+fn edge_object<'a>(
+    scene: &'a crate::scene::Scene,
+    id: &Value,
+) -> Result<&'a crate::scene::Object, String> {
+    id.as_u64()
+        .and_then(|id| scene.get(id))
+        .ok_or_else(|| format!("no object with id {id}; get_scene lists the ids"))
+}
+
+/// A circular edge as the `measure` tool answers it.
+fn loop_json(id: u64, l: &crate::edge_loops::EdgeLoop, r: &crate::measure::Round) -> Value {
+    let fit = l.fit.expect("a round edge has a fit");
+    let mut out = round_json(r);
+    out["kind"] = json!("circular edge");
+    out["object"] = json!(id);
+    out["fit_error"] = json!(fit.rms);
+    out["fit_error_mm"] = json!(fit.rms * r.radius);
+    out["vertices"] = json!(l.points.len());
+    out["closed"] = json!(l.closed);
+    out["sweep_degrees"] = json!(fit.sweep);
+    out["start"] = json!(l.points.first().map(|p| p.to_array()));
+    out
+}
+
 /// Computes measurements without modifying the scene.
 pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, String> {
     use crate::snapping::{align, Alignment};
@@ -999,6 +1026,52 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
             .flatten();
         Ok((hit.map_or(p, |h| h.point), hit))
     };
+    if let Some(spec) = args.get("edge_loop") {
+        let (o, near) = (
+            edge_object(scene, &spec["id"])?,
+            point_arg(&spec["near"], "edge_loop.near")?,
+        );
+        let feats = crate::edge_loops::feature_edges(&o.mesh);
+        let model = o.matrix();
+        let (chain, d) = feats
+            .nearest_chain(&model, near, f32::INFINITY)
+            .ok_or_else(|| {
+                format!(
+                    "object {} has no sharp edge or open boundary (a smooth shape such as a sphere); give circle with three points instead",
+                    o.id
+                )
+            })?;
+        let l = feats.edge_loop(chain, &model);
+        return match l.round() {
+            Some(r) => {
+                let mut out = loop_json(o.id, &l, &r);
+                out["distance_to_edge"] = json!(d);
+                Ok(out)
+            }
+            None => Err(format!(
+                "the edge nearest to that point ({d:.2} mm away, {} vertices) is not circular: {}; edge_loops {} lists the circular edges",
+                l.points.len(),
+                l.why_not().unwrap_or_default(),
+                o.id
+            )),
+        };
+    }
+    if let Some(id) = args.get("edge_loops") {
+        let o = edge_object(scene, id)?;
+        let feats = crate::edge_loops::feature_edges(&o.mesh);
+        let mut found: Vec<_> = feats
+            .loops(&o.matrix())
+            .filter_map(|l| l.round().map(|r| (r, l)))
+            .collect();
+        found.sort_by(|a, b| b.0.radius.total_cmp(&a.0.radius));
+        let total = found.len();
+        let list: Vec<Value> = found
+            .iter()
+            .take(50)
+            .map(|(r, l)| loop_json(o.id, l, r))
+            .collect();
+        return Ok(json!({"object":o.id,"total":total,"edges":list}));
+    }
     if let Some(id) = args.get("radius_of") {
         let o = id
             .as_u64()
@@ -1073,7 +1146,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     }
     if scene.selection.is_empty() {
         return Err(format!(
-            "{}; or give from and to, ids, radius_of or circle, to measure without a selection",
+            "{}; or give from and to, ids, radius_of, circle, edge_loop or edge_loops, to measure without a selection",
             nothing_selected("measure")
         ));
     }
@@ -1106,6 +1179,61 @@ mod tests {
         let o = crate::scene::Object::new("shape", shape.build(), crate::scene::DEFAULT_COLOR);
         let id = scene.add(o);
         (scene, id)
+    }
+
+    #[test]
+    fn measure_finds_circular_edges_by_point_or_by_listing() {
+        use crate::primitives::Primitive;
+        let (scene, id) = scene_with(Primitive::Cylinder);
+        let b = scene.get(id).unwrap().world_aabb();
+        let (r, top) = (b.size().x / 2.0, b.max.z);
+        let at = |dz: f32| json!([b.center().x + r, b.center().y, top + dz]);
+        let e = measure(&scene, &json!({"edge_loop":{"id":id,"near":at(-0.5)}})).unwrap();
+        assert_eq!(e["kind"], "circular edge");
+        assert!((e["radius"].as_f64().unwrap() - r as f64).abs() < 0.01);
+        assert!((e["diameter"].as_f64().unwrap() - 2.0 * r as f64).abs() < 0.02);
+        assert!((e["center"][2].as_f64().unwrap() - top as f64).abs() < 0.01);
+        assert!(e["axis"][2].as_f64().unwrap().abs() > 0.99);
+        assert!(e["fit_error"].as_f64().unwrap() < 1e-3);
+        assert_eq!(e["vertices"], 120);
+        assert_eq!(e["closed"], true);
+        let list = measure(&scene, &json!({"edge_loops":id})).unwrap();
+        assert_eq!(list["total"], 2);
+        assert_eq!(list["edges"].as_array().unwrap().len(), 2);
+        // A cube's nearest edge is a square: the error says why and points to the listing.
+        let (cube, cid) = scene_with(Primitive::Cube);
+        let cb = cube.get(cid).unwrap().world_aabb();
+        let err = measure(
+            &cube,
+            &json!({"edge_loop":{"id":cid,"near":cb.max.to_array()}}),
+        )
+        .unwrap_err();
+        assert!(err.contains("not circular") && err.contains("edge_loops"));
+        assert_eq!(
+            measure(&cube, &json!({"edge_loops":cid})).unwrap()["total"],
+            0
+        );
+        // A sphere has no sharp edge at all.
+        let (ball, bid) = scene_with(Primitive::Sphere);
+        let err = measure(&ball, &json!({"edge_loop":{"id":bid,"near":[0,0,0]}})).unwrap_err();
+        assert!(err.contains("no sharp edge"), "{err}");
+        // Bad arguments.
+        assert!(measure(&scene, &json!({"edge_loop":{"id":99,"near":[0,0,0]}})).is_err());
+        assert!(measure(&scene, &json!({"edge_loop":{"id":id,"near":[0,0]}})).is_err());
+        assert!(measure(&scene, &json!({"edge_loops":99})).is_err());
+    }
+
+    #[test]
+    fn measure_edge_arguments_are_checked_against_the_schema() {
+        assert!(check_args("measure", &json!({"edge_loop":{"id":1,"near":[0,0,0]}})).is_ok());
+        assert!(check_args("measure", &json!({"edge_loops":1})).is_ok());
+        let err =
+            check_args("measure", &json!({"edge_loop":{"id":1,"nearby":[0,0,0]}})).unwrap_err();
+        assert!(
+            err.contains("unknown argument") && err.contains("near"),
+            "{err}"
+        );
+        assert!(check_args("measure", &json!({"edge_loops":"one"})).is_err());
     }
 
     #[test]

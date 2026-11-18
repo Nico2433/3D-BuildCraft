@@ -295,11 +295,12 @@ impl App {
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
             Some(Tool::Measure(m)) => {
-                let modes = [Mode::Distance, Mode::Surface, Mode::Circle];
+                let modes = [Mode::Distance, Mode::Surface, Mode::Circle, Mode::Edge];
                 let names = [
                     tr(lang, "Distance"),
                     tr(lang, "Radius of a surface"),
                     tr(lang, "Radius from 3 points"),
+                    tr(lang, "Circular edge"),
                 ];
                 let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
                 ui.add_space(12.0);
@@ -316,13 +317,23 @@ impl App {
                             m.distance() / units.to_mm()
                         )
                     }
-                    (_, Some(r)) => format!(
-                        "{}    {:.2}    {}    {:.2}    {unit}",
-                        tr(lang, "Radius"),
-                        r.radius / units.to_mm(),
-                        tr(lang, "Diameter"),
-                        r.diameter() / units.to_mm()
-                    ),
+                    (_, Some(r)) => {
+                        let c = r.center / units.to_mm();
+                        format!(
+                            "{}    {:.2}    {}    {:.2}    {unit}    {}    {:.2}, {:.2}, {:.2}",
+                            tr(lang, "Radius"),
+                            r.radius / units.to_mm(),
+                            tr(lang, "Diameter"),
+                            r.diameter() / units.to_mm(),
+                            tr(lang, "Center"),
+                            c.x,
+                            c.y,
+                            c.z
+                        )
+                    }
+                    (Mode::Edge, None) if m.edge.is_some() || m.edge_hover.is_some() => {
+                        tr(lang, "Not a circular edge").to_string()
+                    }
                     (Mode::Surface, None) if !m.points.is_empty() => {
                         tr(lang, "Not a round surface").to_string()
                     }

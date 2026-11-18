@@ -653,7 +653,7 @@ impl App {
             let alt = ui.input(|i| i.modifiers.alt);
             let spot = resp
                 .hover_pos()
-                .and_then(|p| self.measure_ray(rect, p, aspect, alt));
+                .and_then(|p| self.measure_ray(ui.ctx(), rect, p, aspect, alt));
             if let Some(Tool::Measure(m)) = &mut self.tool {
                 if spot.is_some() || ui.ctx().pointer_hover_pos().is_some() {
                     m.hover = spot;
@@ -666,12 +666,19 @@ impl App {
     }
 
     /// [`App::measure_spot`] for the screen point `p`.
-    fn measure_ray(&mut self, rect: egui::Rect, p: Pos2, aspect: f32, alt: bool) -> Option<Spot> {
+    fn measure_ray(
+        &mut self,
+        ctx: &egui::Context,
+        rect: egui::Rect,
+        p: Pos2,
+        aspect: f32,
+        alt: bool,
+    ) -> Option<Spot> {
         let ray = self.camera.ray(to_ndc(rect, p), aspect);
         let beside = self
             .camera
             .ray(to_ndc(rect, p + egui::vec2(14.0, 0.0)), aspect);
-        self.measure_spot(ray, beside, alt)
+        self.measure_spot(ctx, ray, beside, alt)
     }
 
     /// A click on a handle picks it; otherwise it acts on the active tool or selects.
@@ -697,7 +704,7 @@ impl App {
                 let hit = self.pick(o, d);
                 let alt = ui.input(|i| i.modifiers.alt);
                 let spot = matches!(self.tool, Some(Tool::Measure(_)))
-                    .then(|| self.measure_ray(rect, pos, aspect, alt))
+                    .then(|| self.measure_ray(ui.ctx(), rect, pos, aspect, alt))
                     .flatten();
                 let face = matches!(
                     self.tool,

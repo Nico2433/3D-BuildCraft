@@ -4,6 +4,7 @@ pub mod assistant;
 pub mod boolean;
 pub mod camera;
 pub mod cut;
+pub mod edge_loops;
 pub mod emboss;
 pub mod history;
 pub mod host;

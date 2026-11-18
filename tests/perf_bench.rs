@@ -140,3 +140,70 @@ fn shading_upload_hitch() {
         t.elapsed().as_secs_f64() * 1e3
     );
 }
+
+/// Circular edges (Measure > Circular edge): the time to find the feature edges of a
+/// mesh (off the UI thread in the app), then what a hover or click costs once they are
+/// known, on a subdivided sphere, the camel and the user's flower pots when present.
+/// Prints the circular loops found with their diameter and centre.
+#[test]
+#[ignore]
+fn circular_edge_latency() {
+    use buildcraft3d::edge_loops::FeatureEdges;
+    use std::path::Path;
+    let mut models: Vec<(String, Mesh, Mat4)> = vec![(
+        "sphere 400x400".into(),
+        primitives::sphere(10.0, 400, 400),
+        Mat4::IDENTITY,
+    )];
+    let files = [
+        "/mnt/hdd/Library/Projects/3D Builder/models/camel Repair.stl",
+        "/run/media/nico/KODAK/3D/Macetas/Robert/Meditacion/meditacion_medio.stl",
+        "/run/media/nico/KODAK/3D/Macetas/Robert/Lector/lector_medio.stl",
+        "/run/media/nico/KODAK/3D/Macetas/Robert/Cafe/cafe_medio.stl",
+        "/run/media/nico/KODAK/3D/Macetas/Robert/Mascotas/mascotas_medio.stl",
+        "/run/media/nico/KODAK/3D/Macetas/Robert/Madre e hijo.stl",
+    ];
+    for f in files.iter().filter(|f| Path::new(f).exists()) {
+        let loaded = io::load(Path::new(f)).unwrap();
+        for o in loaded.objects {
+            models.push((f.rsplit('/').next().unwrap().into(), o.mesh, o.transform));
+        }
+    }
+    for (name, mesh, model) in models {
+        println!("BENCH {name}: {} triangles", mesh.triangles.len());
+        let feats = time("  feature edges (worker)", || FeatureEdges::compute(&mesh));
+        println!(
+            "BENCH   {} feature edges, {} chains",
+            feats.edge_count(),
+            feats.chain_count()
+        );
+        let b = mesh.aabb_transformed(&model);
+        let probe = b.max;
+        let hit = time("  hover: nearest edge", || {
+            feats.nearest_chain(&model, probe, f32::INFINITY)
+        });
+        if let Some((chain, _)) = hit {
+            time("  click: loop + circle fit", || {
+                feats.edge_loop(chain, &model)
+            });
+        }
+        let mut round: Vec<_> = time("  all circular loops", || {
+            feats
+                .loops(&model)
+                .filter_map(|l| l.round().map(|r| (r, l.points.len(), l.fit.unwrap().rms)))
+                .collect()
+        });
+        round.sort_by(|a, b| b.0.radius.total_cmp(&a.0.radius));
+        println!("BENCH   box size {:?}, centre {:?}", b.size(), b.center());
+        for (r, n, rms) in round.iter().take(8) {
+            println!(
+                "BENCH   circle: diameter {:.2}, centre {:.2?}, axis {:.2?}, {n} vertices, rms {:.4}",
+                r.diameter(),
+                r.center,
+                r.axis.unwrap(),
+                rms
+            );
+        }
+        println!("BENCH   {} circular loops", round.len());
+    }
+}

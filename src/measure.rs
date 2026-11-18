@@ -1,8 +1,9 @@
 //! The Measure tool's model, independent of the UI: radius and diameter of round geometry
 //! (a circle through three points, a curved face, a whole object) and the picked points with
 //! their snapping. The Measure tool in `app` and the MCP `measure` tool share it.
+use crate::edge_loops::{EdgeLoop, FeatureEdges};
 use crate::mesh::Mesh;
-use crate::scene::Scene;
+use crate::scene::{Scene, WorkCache};
 use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap, SnapKind};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
@@ -98,7 +99,7 @@ fn least_squares<const N: usize>(rows: &[[f64; N]], rhs: &[f64]) -> Option<[f64;
     Some(x)
 }
 
-fn centroid(points: &[Vec3]) -> Vec3 {
+pub(crate) fn centroid(points: &[Vec3]) -> Vec3 {
     points.iter().sum::<Vec3>() / points.len().max(1) as f32
 }
 
@@ -109,7 +110,7 @@ fn rms(distances: impl Iterator<Item = f64>, radius: f64) -> f64 {
 }
 
 /// The circle that best fits `points` seen along `axis`, with its relative RMS error.
-fn fit_circle_around(points: &[Vec3], axis: Vec3) -> Option<(Round, f64)> {
+pub(crate) fn fit_circle_around(points: &[Vec3], axis: Vec3) -> Option<(Round, f64)> {
     if points.len() < 3 {
         return None;
     }
@@ -306,6 +307,22 @@ pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<PointSnap
         .map(|(_, s)| s)
 }
 
+/// The edge loop nearest to `p` over all objects (object id and loop) within `tolerance`
+/// mm, waiting for the feature edges when they are not known yet.
+pub fn nearest_edge_loop(scene: &Scene, p: Vec3, tolerance: f32) -> Option<(u64, EdgeLoop)> {
+    scene
+        .objects
+        .iter()
+        .filter_map(|o| {
+            let model = o.matrix();
+            let feats = crate::edge_loops::feature_edges(&o.mesh);
+            let (chain, d) = feats.nearest_chain(&model, p, tolerance)?;
+            Some((d, o.id, feats.edge_loop(chain, &model)))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id, l)| (id, l))
+}
+
 /// What the Measure tool measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -315,6 +332,8 @@ pub enum Mode {
     Surface,
     /// The radius of the circle through three points.
     Circle,
+    /// The diameter, radius and centre of the circular edge under a click.
+    Edge,
 }
 
 /// A picked point: where, the surface normal there, what it snapped to and how it was
@@ -341,6 +360,10 @@ impl Spot {
 /// A face's snapping info with what it was built from: object id, triangle, mesh, placement.
 type CachedFace = (u64, usize, Arc<Mesh>, Mat4, Option<FaceInfo>);
 
+/// The edge loop under the cursor and what it was found from: object id, chain, mesh and
+/// placement, so a moving cursor on the same edge does not fit it again.
+type HoverKey = (u64, usize, Arc<Mesh>, Mat4);
+
 /// The Measure tool's state.
 pub struct Measure {
     pub mode: Mode,
@@ -349,6 +372,13 @@ pub struct Measure {
     pub hover: Option<Spot>,
     /// Surface mode's result.
     pub round: Option<Round>,
+    /// Edge mode's result: the circular (or not) edge loop that was clicked.
+    pub edge: Option<EdgeLoop>,
+    /// The edge loop under the cursor, highlighted before a click.
+    pub edge_hover: Option<EdgeLoop>,
+    edge_key: Option<HoverKey>,
+    /// Feature edges per mesh, found on a worker (a big mesh takes a moment).
+    edges: WorkCache<Arc<FeatureEdges>>,
     /// The face last snapped on, so a moving cursor does not rebuild it.
     face: Option<CachedFace>,
 }
@@ -360,18 +390,24 @@ impl Measure {
             points: vec![],
             hover: None,
             round: None,
+            edge: None,
+            edge_hover: None,
+            edge_key: None,
+            edges: WorkCache::default(),
             face: None,
         }
     }
 
     /// A measurement with its points preset, for screenshots: `[mode:]point;point;…`, mode
-    /// `distance`, `surface` or `circle`; a point is `x,y,z` (mm) with `~` in front for
+    /// `distance`, `surface`, `circle` or `edge`; a point is `x,y,z` (mm) with `~` in front for
     /// the cursor point and `@vertex`, `@midpoint`, `@edge`, `@face` or `@plane` behind it
-    /// for the snap marker. Surface mode fits the face nearest its point.
+    /// for the snap marker. Surface mode fits the face nearest its point; edge mode takes the edge loop nearest
+    /// to its point.
     pub fn preset(spec: &str, scene: &Scene) -> Self {
         let (mode, rest) = match spec.split_once(':') {
             Some(("surface", rest)) => (Mode::Surface, rest),
             Some(("circle", rest)) => (Mode::Circle, rest),
+            Some(("edge", rest)) => (Mode::Edge, rest),
             Some((_, rest)) => (Mode::Distance, rest),
             None => (Mode::Distance, spec),
         };
@@ -405,6 +441,9 @@ impl Measure {
                 m.points.push(spot);
             }
         }
+        if let (Mode::Edge, Some(first)) = (mode, m.points.first()) {
+            m.edge = nearest_edge_loop(scene, first.point, f32::INFINITY).map(|(_, l)| l);
+        }
         if let (Mode::Surface, Some(first)) = (mode, m.points.first()) {
             m.round = scene.objects.iter().find_map(|o| {
                 let model = o.matrix();
@@ -416,7 +455,9 @@ impl Measure {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
+        let edges = std::mem::take(&mut self.edges);
         *self = Measure::new(mode);
+        self.edges = edges;
     }
 
     /// Points the mode takes before it starts over.
@@ -425,6 +466,8 @@ impl Measure {
             Mode::Distance => 2,
             Mode::Surface => 1,
             Mode::Circle => 3,
+            // Edge mode places no points: the loop under the cursor is the result.
+            Mode::Edge => 0,
         }
     }
 
@@ -444,6 +487,11 @@ impl Measure {
         match self.mode {
             Mode::Distance => None,
             Mode::Surface => self.round,
+            Mode::Edge => self
+                .edge
+                .as_ref()
+                .or(self.edge_hover.as_ref())
+                .and_then(EdgeLoop::round),
             Mode::Circle => {
                 let live = if self.points.len() < 3 {
                     self.hover
@@ -519,9 +567,44 @@ impl Measure {
         Some(spot)
     }
 
+    /// Finds the edge loop under the cursor for Edge mode: `hit` is the picked object and
+    /// the surface point, `tolerance` how far (mm) an edge may be from it. The edges of a
+    /// big mesh are found on a worker (`repaint` runs when they are ready); until then
+    /// nothing is under the cursor.
+    pub fn hover_edge(
+        &mut self,
+        scene: &Scene,
+        hit: Option<(u64, Vec3)>,
+        tolerance: f32,
+        repaint: impl FnOnce() + Send + 'static,
+    ) {
+        let found = hit.and_then(|(id, p)| {
+            let o = scene.get(id)?;
+            let feats = self.edges.get(&o.mesh, FeatureEdges::compute, repaint)?;
+            let model = o.matrix();
+            let (chain, _) = feats.nearest_chain(&model, p, tolerance)?;
+            Some((id, chain, o.mesh.clone(), model, feats))
+        });
+        let Some((id, chain, mesh, model, feats)) = found else {
+            self.edge_hover = None;
+            self.edge_key = None;
+            return;
+        };
+        let same = matches!(&self.edge_key, Some((i, c, m, mat))
+            if *i == id && *c == chain && Arc::ptr_eq(m, &mesh) && *mat == model);
+        if !same {
+            self.edge_hover = Some(feats.edge_loop(chain, &model));
+            self.edge_key = Some((id, chain, mesh, model));
+        }
+    }
+
     /// A click: place `spot`, starting over when the mode's points are all placed; in
     /// Surface mode, fit the curved face `face` (object, triangle) that was clicked.
     pub fn click(&mut self, scene: &Scene, spot: Spot, face: Option<(u64, usize)>) {
+        if self.mode == Mode::Edge {
+            self.edge = self.edge_hover.clone();
+            return;
+        }
         if self.points.len() >= self.capacity() {
             self.points.clear();
         }
@@ -705,6 +788,57 @@ mod tests {
         assert_eq!(m.hover.unwrap().kind, Some(SnapKind::Vertex));
         let d = Measure::preset("0,0,0;3,4,0", &scene);
         assert_eq!((d.mode, d.distance()), (Mode::Distance, 5.0));
+    }
+
+    #[test]
+    fn edge_mode_selects_the_loop_under_the_cursor_and_gives_its_circle() {
+        let mut scene = Scene::default();
+        let id = scene.add(Object::new(
+            "pot",
+            Primitive::Cylinder.build(),
+            DEFAULT_COLOR,
+        ));
+        let b = scene.get(id).unwrap().world_aabb();
+        let r = b.size().x / 2.0;
+        let rim = Vec3::new(b.center().x + r, b.center().y, b.max.z);
+        let mut m = Measure::new(Mode::Edge);
+        assert_eq!(m.capacity(), 0);
+        m.hover_edge(&scene, Some((id, rim - Vec3::Z * 0.3)), 1.0, || {});
+        // The worker may not be done yet; wait for it like the UI's next frame would.
+        for _ in 0..200 {
+            if m.edge_hover.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            m.hover_edge(&scene, Some((id, rim - Vec3::Z * 0.3)), 1.0, || {});
+        }
+        let hover = m.current_round().unwrap();
+        assert!(near(hover.diameter(), 2.0 * r, 0.02));
+        assert!(m.edge.is_none());
+        m.click(&scene, Spot::free(rim), None);
+        assert!(m.edge.is_some());
+        let c = m.current_round().unwrap();
+        assert!(
+            c.center
+                .distance(Vec3::new(b.center().x, b.center().y, b.max.z))
+                < 1e-2
+        );
+        // Far from any edge nothing is under the cursor; a click there clears the choice.
+        m.hover_edge(
+            &scene,
+            Some((id, Vec3::new(b.center().x, b.center().y, b.max.z))),
+            1.0,
+            || {},
+        );
+        assert!(m.edge_hover.is_none());
+        m.click(&scene, Spot::free(rim), None);
+        assert!(m.edge.is_none() && m.current_round().is_none());
+        // Changing the mode keeps nothing of the result.
+        m.set_mode(Mode::Distance);
+        assert!(m.edge.is_none());
+        let p = Measure::preset("edge:0,0,0", &scene);
+        assert_eq!(p.mode, Mode::Edge);
+        assert!(p.current_round().is_some());
     }
 
     #[test]

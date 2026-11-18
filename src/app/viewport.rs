@@ -72,7 +72,13 @@ impl App {
     /// snapped to a nearby vertex, edge or face centre unless Alt is held (it turns the
     /// Snap setting around). `beside` is the ray 14 px to the right on screen: how far in
     /// the scene the snap reaches.
-    fn measure_spot(&mut self, ray: (Vec3, Vec3), beside: (Vec3, Vec3), alt: bool) -> Option<Spot> {
+    fn measure_spot(
+        &mut self,
+        ctx: &egui::Context,
+        ray: (Vec3, Vec3),
+        beside: (Vec3, Vec3),
+        alt: bool,
+    ) -> Option<Spot> {
         let (origin, dir) = ray;
         let hit = self.pick_hit(origin, dir);
         let floor_t = -origin.z / dir.z;
@@ -84,6 +90,12 @@ impl App {
         let Some(Tool::Measure(m)) = &mut self.tool else {
             return None;
         };
+        if m.mode == Mode::Edge {
+            // The circular edge under the cursor, found on a worker for a big mesh.
+            let ctx = ctx.clone();
+            let at = hit.map(|(id, _, t)| (id, origin + dir * t));
+            m.hover_edge(&self.scene, at, tolerance, move || ctx.request_repaint());
+        }
         m.spot(
             &self.scene,
             hit.map(|(id, tri, t)| (id, tri, origin + dir * t)),

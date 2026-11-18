@@ -162,11 +162,48 @@ fn measure_overlay(
                 Stroke::new(1.5 / ppp, MEASURE_GREEN),
             ));
         }
-        let rim = r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector());
-        if let Some((c, e)) = to_screen(r.center).zip(to_screen(r.center + rim * r.radius)) {
+        // Radius line to the rim (the whole diameter for a circular edge, to the loop's
+        // first vertex), the centre as a dot with a small cross.
+        let edge = m.edge.as_ref().or(m.edge_hover.as_ref());
+        let rim = match (m.mode, edge.and_then(|l| l.points.first())) {
+            (Mode::Edge, Some(p)) => (*p - r.center).normalize_or_zero(),
+            _ => r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector()),
+        };
+        let start = if m.mode == Mode::Edge {
+            r.center - rim * r.radius
+        } else {
+            r.center
+        };
+        if let Some((c, e)) = to_screen(start).zip(to_screen(r.center + rim * r.radius)) {
             faint(c, e);
             painter.line_segment([c, e], Stroke::new(1.5 / ppp, MEASURE_GREEN));
+        }
+        if let Some(c) = to_screen(r.center) {
+            let arm = 6.0 / ppp;
+            let stroke = Stroke::new(1.5 / ppp, MEASURE_GREEN);
+            painter.line_segment([c - egui::vec2(arm, 0.0), c + egui::vec2(arm, 0.0)], stroke);
+            painter.line_segment([c - egui::vec2(0.0, arm), c + egui::vec2(0.0, arm)], stroke);
             painter.circle_filled(c, 3.0 / ppp, MEASURE_GREEN);
+        }
+    }
+    // The edge loop under the cursor (yellow, like the snap indicator) and the chosen one.
+    let loop_line = |l: &crate::edge_loops::EdgeLoop, color: Color32| {
+        let mut line: Vec<Pos2> = l.points.iter().filter_map(|p| to_screen(*p)).collect();
+        if l.closed {
+            line.extend(line.first().copied());
+        }
+        for w in line.windows(2) {
+            faint(w[0], w[1]);
+        }
+        painter.add(egui::Shape::line(line, Stroke::new(2.5 / ppp, color)));
+    };
+    if m.mode == Mode::Edge {
+        let chosen = m.edge.as_ref().map(|l| l.chain);
+        if let Some(l) = m.edge_hover.as_ref().filter(|l| Some(l.chain) != chosen) {
+            loop_line(l, SNAP_YELLOW);
+        }
+        if let Some(l) = &m.edge {
+            loop_line(l, MEASURE_GREEN);
         }
     }
     for (p, color) in marks {
