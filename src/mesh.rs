@@ -319,12 +319,13 @@ impl Mesh {
         max_deg: f32,
         within: impl Fn(usize) -> bool,
     ) -> Vec<usize> {
-        let unit: Vec<Vec3> = self
-            .triangle_positions()
-            .map(|[a, b, c]| Mesh::face_normal(a, b, c))
-            .collect();
-        let Some(_) = unit.get(start) else {
+        if start >= self.triangles.len() {
             return Vec::new();
+        }
+        // Only the triangles the region reaches need their normals.
+        let normal = |f: usize| {
+            let [a, b, c] = self.triangles[f].map(|v| self.positions[v as usize]);
+            Mesh::face_normal(a, b, c)
         };
         let cos = max_deg.clamp(0.0, 180.0).to_radians().cos();
         // Quantize positions for topology only; preserve triangle numbering and colours.
@@ -344,23 +345,48 @@ impl Mesh {
             .iter()
             .map(|t| t.map(|v| welded[v as usize]))
             .collect();
-        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
+        // Triangles around each welded vertex, as one flat list with offsets; two
+        // triangles share an edge when both are around its first vertex and hold the other.
+        let mut first = vec![0u32; vertices.len() + 1];
+        for &v in triangles.iter().flatten() {
+            first[v as usize + 1] += 1;
+        }
+        for v in 0..vertices.len() {
+            first[v + 1] += first[v];
+        }
+        let mut fill = first.clone();
+        let mut around = vec![0u32; triangles.len() * 3];
         for (f, t) in triangles.iter().enumerate() {
-            for k in 0..3 {
-                let (a, b) = (t[k], t[(k + 1) % 3]);
-                by_edge.entry((a.min(b), a.max(b))).or_default().push(f);
+            for &v in t {
+                around[fill[v as usize] as usize] = f as u32;
+                fill[v as usize] += 1;
             }
         }
+        // Whether `t` has the edge between `a` and `b`, which can be a collapsed one.
+        let has_edge = |t: &[u32; 3], a: u32, b: u32| {
+            if a == b {
+                (0..3).any(|k| t[k] == a && t[(k + 1) % 3] == a)
+            } else {
+                t.contains(&a) && t.contains(&b)
+            }
+        };
         let mut seen = vec![false; self.triangles.len()];
         seen[start] = true;
         let mut out = vec![start];
         let mut i = 0;
         while i < out.len() {
-            let t = triangles[out[i]];
+            let from = out[i];
+            let t = triangles[from];
+            let from_normal = normal(from);
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
-                for &g in &by_edge[&(a.min(b), a.max(b))] {
-                    if !seen[g] && unit[g].dot(unit[out[i]]) >= cos - 1e-6 && within(g) {
+                for &g in &around[first[a as usize] as usize..first[a as usize + 1] as usize] {
+                    let g = g as usize;
+                    if !seen[g]
+                        && has_edge(&triangles[g], a, b)
+                        && normal(g).dot(from_normal) >= cos - 1e-6
+                        && within(g)
+                    {
                         seen[g] = true;
                         out.push(g);
                     }

@@ -97,3 +97,15 @@ fn cut_obj_emboss() {
     println!("BENCH emboss target triangles: {}", small.triangles.len());
     time("emboss_apply", || emboss::apply(&small, &e2).is_ok());
 }
+
+#[test]
+#[ignore]
+fn paint_region() {
+    use glam::Vec3;
+    let m = primitives::sphere(10.0, 400, 400);
+    let n = time("face_region_near (brush 2 mm)", || {
+        m.face_region_near(1000, 0.5, &Mat4::IDENTITY, Some((m.positions[1000], 2.0)))
+    });
+    println!("BENCH region triangles: {}", n.len());
+    let _ = Vec3::ZERO;
+}
