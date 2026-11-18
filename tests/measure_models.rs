@@ -1,14 +1,15 @@
 //! The section tool (`section`, behind Measure's "Section at height" and the MCP `measure`
 //! `section`) on generated shapes, checked against their exact geometry, and on real flower
-//! pots: the ignored test prints a table (outer and inner diameter, centre, wall, latency),
+//! pots: the ignored test prints a table per pot (first round outer contour going down from
+//! the top with a horizontal plane and with the automatic tilt, diameters, tilt, latency),
 //! the pots read from `/run/media/nico/KODAK/3D/Macetas/Robert/` (missing files are skipped):
 //! `cargo test --offline --release -j 4 --test measure_models -- --ignored --nocapture`.
 
 use buildcraft3d::io;
 use buildcraft3d::mesh::Mesh;
 use buildcraft3d::primitives;
-use buildcraft3d::section::{section, Outline, Section};
-use glam::{Mat4, Vec3};
+use buildcraft3d::section::{section, section_tilted, Outline, Section, Tilt};
+use glam::{Mat4, Vec2, Vec3};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -175,6 +176,87 @@ fn rounded_rims_need_a_slice_under_the_crown() {
     }
 }
 
+// ---- tilted shapes ----------------------------------------------------------------------
+
+/// The outer radius of `profile` at height `z` (the largest crossing).
+fn outer_radius(profile: &[(f32, f32)], z: f32) -> f32 {
+    profile_radii(profile, z)[0]
+}
+
+#[test]
+fn a_pot_tilted_by_20_degrees_gives_its_true_diameter_at_the_click() {
+    let profile = pot_profile(25.0, 40.0, 90.0, 3.0, 4.0, Rim::Round(16));
+    let m = primitives::revolve(&profile, 128);
+    let model = Mat4::from_translation(Vec3::new(10.0, 20.0, 60.0))
+        * Mat4::from_rotation_x(20f32.to_radians());
+    let placed = m.transformed(&model);
+    for (axial, azimuth) in [(60.0f32, 0.5f32), (85.0, 2.5), (89.0, 4.0)] {
+        let r = outer_radius(&profile, axial);
+        let p = model.transform_point3(Vec3::new(r * azimuth.cos(), r * azimuth.sin(), axial));
+        let s = section_tilted(&placed, &Mat4::IDENTITY, p, Some(p), Tilt::Auto);
+        let found = found(&s.contours[s.nearest(p).unwrap()].outline)
+            .unwrap_or_else(|| panic!("axial {axial}: not round"));
+        assert!(s.auto_tilted, "axial {axial}");
+        assert!(
+            near(found.diameter, 2.0 * r, 0.1),
+            "axial {axial}: {} for {}",
+            found.diameter,
+            2.0 * r
+        );
+        assert!(
+            near(s.tilt_degrees(), 20.0, 0.3),
+            "axial {axial}: {}",
+            s.tilt_degrees()
+        );
+    }
+    // Horizontally the same clicks are ellipses.
+    let p = model.transform_point3(Vec3::new(outer_radius(&profile, 60.0), 0.0, 60.0));
+    let flat = section_tilted(&placed, &Mat4::IDENTITY, p, Some(p), Tilt::None);
+    assert!(flat.contours[flat.nearest(p).unwrap()]
+        .outline
+        .round()
+        .is_none());
+}
+
+#[test]
+fn a_rim_cut_at_a_slant_on_an_upright_wall_is_measured_in_the_mouths_plane() {
+    // The rim of a pot rises 4 mm over the 80 mm mouth along X (2.9 degrees).
+    let profile = pot_profile(25.0, 40.0, 90.0, 3.0, 4.0, Rim::Round(16));
+    let mut m = primitives::revolve(&profile, 128);
+    let slope = 0.05;
+    for p in &mut m.positions {
+        if p.z > 80.0 {
+            p.z += (p.z - 80.0) / 10.0 * slope * p.x;
+        }
+    }
+    let rim = m
+        .positions
+        .iter()
+        .copied()
+        .max_by(|a, b| a.z.total_cmp(&b.z))
+        .unwrap();
+    // A click on the outside of the wall 1 mm under the highest part of the rim and one on
+    // its crest.
+    let under = m
+        .positions
+        .iter()
+        .copied()
+        .filter(|p| (p.z - (rim.z - 1.0)).abs() < 0.3 && p.x > 0.0)
+        .max_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    for (name, p, tolerance) in [("under the rim", under, 1.5), ("rim crest", rim, 5.0)] {
+        let s = section_tilted(&m, &Mat4::IDENTITY, p, Some(p), Tilt::Auto);
+        let f = found(&s.contours[s.nearest(p).unwrap()].outline)
+            .unwrap_or_else(|| panic!("{name}: not round"));
+        assert!(near(f.diameter, 80.0, tolerance), "{name}: {}", f.diameter);
+        assert!(
+            near(s.tilt_degrees(), 2.9, 0.8),
+            "{name}: {}",
+            s.tilt_degrees()
+        );
+    }
+}
+
 // ---- the real pots --------------------------------------------------------------------
 
 const POTS: &str = "/run/media/nico/KODAK/3D/Macetas/Robert";
@@ -194,38 +276,125 @@ fn stl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// One table row: a click on the mouth means a cut under the crown of a rounded rim, so go
-/// down from the top in 1 mm steps (at most 30 % of the height) to the first slice with a
-/// round outer contour, and print it: the depth under the top, outer and inner diameter,
-/// centre, wall and the time of that cut.
-fn row(name: &str, mesh: &Mesh) {
-    let b = mesh.aabb();
-    let tris = mesh.triangles.len();
-    for k in 0..=(0.3 * b.size().z).ceil() as usize {
-        let z = b.max.z - 0.5 - k as f32;
-        let t = Instant::now();
-        let s = section(mesh, &Mat4::IDENTITY, Vec3::new(0.0, 0.0, z), Vec3::Z, None);
-        let ms = t.elapsed().as_secs_f64() * 1e3;
-        let outer = s
-            .contours
-            .iter()
-            .position(|c| c.depth == 0 && c.outline.round().is_some());
-        let Some(outer) = outer else { continue };
-        let o = found(&s.contours[outer].outline).unwrap();
-        let wall = s.walls().into_iter().find(|w| w.outer == outer);
-        let inner = wall.and_then(|w| found(&s.contours[w.inner].outline));
-        println!(
-            "BENCH {name}: {tris} tris; {:.1} mm under the top: outer {:.2}, inner {}, centre ({:.2}, {:.2}), wall {}, {ms:.1} ms",
-            b.max.z - z,
-            o.diameter,
-            inner.map_or("none".into(), |i| format!("{:.2}", i.diameter)),
-            o.center.x,
-            o.center.y,
-            wall.map_or("none".into(), |w| format!("{:.2}", w.thickness)),
-        );
-        return;
+/// A round outer contour found by a click `depth` mm under the top.
+struct Hit {
+    depth: f32,
+    outer: f32,
+    inner: Option<f32>,
+    tilt: f32,
+    ms: f64,
+}
+
+impl Hit {
+    fn show(&self) -> String {
+        format!(
+            "{:.1} mm under the top: outer {:.2}, inner {}, tilt {:.1} deg, {:.1} ms",
+            self.depth,
+            self.outer,
+            self.inner.map_or("none".into(), |i| format!("{i:.2}")),
+            self.tilt,
+            self.ms
+        )
     }
-    println!("BENCH {name}: {tris} tris, no round outer contour in the top 30 %");
+}
+
+/// What a cut found round at the contour nearest to `near`, with its time.
+fn hit(s: &Section, near: Vec3, depth: f32, ms: f64) -> Option<Hit> {
+    let i = s.nearest(near)?;
+    let outer = found(&s.contours[i].outline)?;
+    let inner = s
+        .walls()
+        .into_iter()
+        .find(|w| w.outer == i)
+        .and_then(|w| found(&s.contours[w.inner].outline));
+    Some(Hit {
+        depth,
+        outer: outer.diameter,
+        inner: inner.map(|f| f.diameter),
+        tilt: s.tilt_degrees(),
+        ms,
+    })
+}
+
+/// Going down from the top in 1 mm steps (at most 30 % of the height), the first click
+/// `click(z)` whose cut by `cut` has a round contour at the click.
+fn first_round(
+    mesh: &Mesh,
+    click: impl Fn(f32) -> Option<Vec3>,
+    cut: impl Fn(Vec3) -> Section,
+) -> Option<Hit> {
+    let b = mesh.aabb();
+    (0..=(0.3 * b.size().z).ceil() as usize).find_map(|k| {
+        let z = b.max.z - 0.5 - k as f32;
+        let p = click(z)?;
+        let t = Instant::now();
+        let s = cut(p);
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        hit(&s, p, b.max.z - z, ms)
+    })
+}
+
+/// The mesh vertex in the slab around height `z` that lies furthest out along `dir` from
+/// `centre` within 3 mm of that ray: a click on the outside of the wall.
+fn outer_wall_click(mesh: &Mesh, centre: Vec2, dir: Vec2, z: f32) -> Option<Vec3> {
+    mesh.positions
+        .iter()
+        .filter(|p| (p.z - z).abs() <= 0.3)
+        .filter(|p| {
+            let d = p.truncate() - centre;
+            d.dot(dir) > 0.0 && (d - dir * d.dot(dir)).length() < 3.0
+        })
+        .max_by(|a, b| {
+            (a.truncate() - centre)
+                .length()
+                .total_cmp(&(b.truncate() - centre).length())
+        })
+        .copied()
+}
+
+/// One table row per pot: the horizontal section going down 1 mm at a time from the top
+/// (where the old tool needed to click), the same clicks on the outside of the wall with the
+/// automatic tilt, and one click on the highest point of the rim.
+fn row(name: &str, mesh: &Mesh) {
+    let tris = mesh.triangles.len();
+    let b = mesh.aabb();
+    let flat = first_round(
+        mesh,
+        |z| Some(Vec3::new(0.0, 0.0, z)),
+        |p| section(mesh, &Mat4::IDENTITY, p, Vec3::Z, None),
+    );
+    let Some(flat) = flat else {
+        println!("BENCH {name}: {tris} tris, no round outer contour in the top 30 %");
+        return;
+    };
+    // Where the pot's axis is: the centre of that contour, found again to read it.
+    let z = b.max.z - flat.depth;
+    let s0 = section(mesh, &Mat4::IDENTITY, Vec3::new(0.0, 0.0, z), Vec3::Z, None);
+    let centre = s0
+        .contours
+        .iter()
+        .find_map(|c| (c.depth == 0).then(|| found(&c.outline)).flatten())
+        .unwrap()
+        .center
+        .truncate();
+    let top = mesh
+        .positions
+        .iter()
+        .copied()
+        .max_by(|a, c| a.z.total_cmp(&c.z))
+        .unwrap();
+    let dir = (top.truncate() - centre).normalize_or_zero();
+    let tilted = |near: Vec3| section_tilted(mesh, &Mat4::IDENTITY, near, Some(near), Tilt::Auto);
+    let auto = first_round(mesh, |z| outer_wall_click(mesh, centre, dir, z), tilted);
+    let t = Instant::now();
+    let s = tilted(top);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let rim = hit(&s, top, 0.0, ms);
+    let show = |h: Option<Hit>| h.map_or("no round contour".into(), |h| h.show());
+    println!("BENCH {name} ({tris} tris)");
+    println!("BENCH   horizontal  {}", show(Some(flat)));
+    println!("BENCH   auto-tilt   {}", show(auto));
+    println!("BENCH   rim top     {}", show(rim));
 }
 
 #[test]

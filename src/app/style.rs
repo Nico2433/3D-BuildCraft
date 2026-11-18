@@ -275,6 +275,11 @@ pub fn label(ui: &mut Ui, text: &str) -> Response {
     ui.label(label_text(text))
 }
 
+/// A label in a larger size, for the result a bar is about (a measured diameter).
+pub fn label_large(ui: &mut Ui, text: &str) -> Response {
+    ui.label(label_text(text).size(LABEL_FONT + 6.0))
+}
+
 /// `text` as [`label`] writes it.
 fn label_text(text: &str) -> egui::RichText {
     egui::RichText::new(text).size(LABEL_FONT + 1.3).color(TEXT)

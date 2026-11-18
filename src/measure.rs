@@ -1,9 +1,9 @@
-//! The Measure tool's model, independent of the UI: radius and diameter of round geometry
+//! The Measure tool's model, independent of the UI: diameter and radius of round geometry
 //! (a circle through three points, a curved face, a whole object) and the picked points with
 //! their snapping. The Measure tool in `app` and the MCP `measure` tool share it.
 use crate::mesh::Mesh;
 use crate::scene::Scene;
-use crate::section::{section, Outline, Section};
+use crate::section::{section_tilted, Outline, Section, Tilt};
 use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap, SnapKind};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
@@ -312,12 +312,13 @@ pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<PointSnap
 pub enum Mode {
     /// The distance between two points.
     Distance,
-    /// The radius of the curved face under a click.
+    /// The diameter of the curved face under a click.
     Surface,
-    /// The radius of the circle through three points.
+    /// The diameter of the circle through three points.
     Circle,
-    /// The diameter, radius and centre of the horizontal cross-section at a click's height
-    /// (the contour nearest to the click), and the wall thickness of a hollow object there.
+    /// The diameter, radius and centre of the cross-section at a click (the contour nearest
+    /// to it, horizontal or tilted to where it is round), and the wall thickness of a hollow
+    /// object there.
     Section,
 }
 
@@ -363,6 +364,8 @@ pub struct Measure {
     pub round: Option<Round>,
     /// Section mode's result.
     pub section: Option<SectionPick>,
+    /// Whether Section mode may tilt its plane to where the contour is round.
+    pub tilt: Tilt,
     /// The face last snapped on, so a moving cursor does not rebuild it.
     face: Option<CachedFace>,
 }
@@ -375,6 +378,7 @@ impl Measure {
             hover: None,
             round: None,
             section: None,
+            tilt: Tilt::Auto,
             face: None,
         }
     }
@@ -443,13 +447,17 @@ impl Measure {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
-        *self = Measure::new(mode);
+        *self = Measure {
+            tilt: self.tilt,
+            ..Measure::new(mode)
+        };
     }
 
-    /// The horizontal section of `o` through `p`, with the contour passing closest to `p`.
-    /// When `p` is on a flat face (a rim, a base) the cut goes a hair inside the material.
+    /// The section of `o` through `p`, with the contour passing closest to `p`: horizontal,
+    /// or with [`Tilt::Auto`] tilted where the horizontal contour is not round. When `p` is
+    /// on a flat face (a rim, a base) the cut goes a hair inside the material.
     fn cut(&self, o: &crate::scene::Object, p: Vec3) -> SectionPick {
-        let section = section(&o.mesh, &o.matrix(), p, Vec3::Z, Some(p));
+        let section = section_tilted(&o.mesh, &o.matrix(), p, Some(p), self.tilt);
         let chosen = section.nearest(p);
         SectionPick {
             object: o.id,
@@ -843,6 +851,29 @@ mod tests {
             assert!(near(m.current_round().unwrap().diameter(), 2.0 * r, 0.05));
             assert!(m.section.as_ref().unwrap().section.shift != 0.0);
         }
+    }
+
+    #[test]
+    fn a_click_on_a_tilted_cylinder_tilts_the_section_unless_tilt_is_off() {
+        let mut scene = Scene::default();
+        let mut can = Object::new("can", Primitive::Cylinder.build(), DEFAULT_COLOR);
+        can.rotation.x = 20.0;
+        let id = scene.add(can);
+        let o = scene.get(id).unwrap();
+        let local = o.mesh.aabb();
+        let r = local.size().x / 2.0;
+        let wall = o.matrix().transform_point3(local.center() + Vec3::X * r);
+        let mut m = Measure::new(Mode::Section);
+        assert_eq!(m.tilt, Tilt::Auto);
+        m.click(&scene, Spot::free(wall), Some((id, 0)));
+        let tilted = m.section.as_ref().unwrap();
+        assert!(tilted.section.auto_tilted && near(tilted.section.tilt_degrees(), 20.0, 0.3));
+        assert!(near(m.current_round().unwrap().diameter(), 2.0 * r, 0.05));
+        // The setting survives a change of mode and turns the search off.
+        m.tilt = Tilt::None;
+        m.set_mode(Mode::Section);
+        m.click(&scene, Spot::free(wall), Some((id, 0)));
+        assert!(m.current_round().is_none() && m.section.is_some());
     }
 
     #[test]

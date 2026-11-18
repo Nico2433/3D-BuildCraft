@@ -235,14 +235,15 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "measure",
-            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. radius_of (an object id): the radius and diameter of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the radius, diameter, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. section ({id, near} or {id, z} or {id, point, normal}) is THE way to get a diameter, radius, centre or wall thickness of anything round: a cylinder, a cone at any height, a pot's mouth and body, a rim, a base, a hole, a torus. It slices object id with a plane (near [x, y, z]: the horizontal plane at that point's height; z: the horizontal plane at world height z; point and normal: any plane) and returns every contour of the cut with a circle fitted to it (role outer or inner, centre, axis, radius, diameter, fit_error, why_not when not round) and walls: for each round contour inside another round one the thickness (outer radius minus inner radius) and the offset between their centres. near also makes nearest the index of the contour passing closest to that point, so to measure a rim, a base edge or a hole, give near as a point on it (read from get_scene, or the object's bounding box: a cylinder's top rim is [x_max, y_center, z_max]) and read the contour at nearest; a hollow object lists the outer and inner diameters and the wall. When the plane lies in a flat face (the top or bottom of a cylinder, the base of a cone, the rim of a hollow tube) it would cut no material, so the slice is taken a hair inside the solid (shifted_mm and a note say how far; 0.02 mm on a 100 mm object) on the side that has material, the one with a contour nearest to near. A smooth rounded rim has no flat top: slice a few mm under it so the outline is a full circle. Without a mode argument it needs a selection.",
+            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. Diameter is the main output of every round measurement (radius is half of it). diameter_of (an object id; radius_of is the same argument under its old name): the diameter and radius of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the diameter, radius, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. section ({id, near} or {id, z} or {id, point, normal}) is THE way to get a diameter (and radius, centre or wall thickness) of anything round: a cylinder, a cone at any height, a pot's mouth and body, a rim, a base, a hole, a torus. It slices object id with a plane (near [x, y, z]: the horizontal plane at that point's height; z: the horizontal plane at world height z; point and normal: any plane) and returns every contour of the cut with a circle fitted to it (role outer or inner, centre, axis, diameter, radius, fit_error, why_not when not round) and walls: for each round contour inside another round one the thickness (outer radius minus inner radius) and the offset between their centres. near also makes nearest the index of the contour passing closest to that point, so to measure a rim, a base edge or a hole, give near as a point on it (read from get_scene, or the object's bounding box: a cylinder's top rim is [x_max, y_center, z_max]) and read the contour at nearest; a hollow object lists the outer and inner diameters and the wall. When the plane lies in a flat face (the top or bottom of a cylinder, the base of a cone, the rim of a hollow tube) it would cut no material, so the slice is taken a hair inside the solid (shifted_mm and a note say how far; 0.02 mm on a 100 mm object) on the side that has material, the one with a contour nearest to near. With near, or point and no normal, tilt defaults to auto: when the horizontal contour at that point is not round (a pot whose mouth is tilted or cut at a slant, a tilted cylinder) the plane through the point is turned to where the contour is round (the plane's normal, tilt_degrees from vertical and auto_tilted say so), and every diameter is the true one in that plane; a click on the crest of a rounded rim is cut a hair under it. tilt none keeps the plane horizontal; z or normal always give exactly the plane asked for. A smooth rounded rim has no flat top: click on it or just under it. Without a mode argument it needs a selection.",
             json!({"type":"object","properties":{
                 "from":vec3("first point [x, y, z], mm; needs to"),
                 "to":vec3("second point [x, y, z], mm"),
                 "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"},
-                "radius_of":{"type":"integer","description":"object id from get_scene: radius and diameter of a sphere, cylinder, cone or torus"},
-                "section":{"type":"object","properties":{"id":{"type":"integer","description":"object id from get_scene"},"near":vec3("a point [x, y, z] in mm on or near the feature (a rim, a base edge, a hole, the wall): alone it gives the horizontal plane at its height; with z or point it only chooses nearest; the answer's nearest names the contour passing closest to it"),"z":{"type":"number","description":"world height in mm of a horizontal plane"},"point":vec3("a point [x, y, z] in mm on the plane (with normal; alone, the plane is horizontal)"),"normal":vec3("the plane's normal [x, y, z], default [0, 0, 1]")},"required":["id"],"description":"THE way to get diameters, centres and wall thickness: the cross-section of an object by a plane (give near, z, or point and normal): contours with fitted circles (centre, diameter), outer and inner, nearest to near, and wall thickness"},
-                "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] on a circle, mm: radius and diameter of the circle through them"},
+                "diameter_of":{"type":"integer","description":"object id from get_scene: diameter and radius of a sphere, cylinder, cone or torus"},
+                "radius_of":{"type":"integer","description":"the same as diameter_of (its old name)"},
+                "section":{"type":"object","properties":{"id":{"type":"integer","description":"object id from get_scene"},"near":vec3("a point [x, y, z] in mm on or near the feature (a rim, a base edge, a hole, the wall): alone it gives the horizontal plane at its height; with z or point it only chooses nearest; the answer's nearest names the contour passing closest to it"),"z":{"type":"number","description":"world height in mm of a horizontal plane"},"point":vec3("a point [x, y, z] in mm on the plane (with normal; alone, the plane is horizontal)"),"normal":vec3("the plane's normal [x, y, z], default [0, 0, 1]; the plane is then exactly this one, never tilted"),"tilt":{"type":"string","enum":["auto","none"],"description":"auto (default with near, or point without normal): when the horizontal contour is not round, tilt the plane through the point to where it is, for a tilted mouth or cylinder; none: keep it horizontal"}},"required":["id"],"description":"THE way to get diameters, centres and wall thickness: the cross-section of an object by a plane (give near, z, or point and normal): contours with fitted circles (diameter, centre), outer and inner, nearest to near, the plane's tilt, and wall thickness"},
+                "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] on a circle, mm: diameter and radius of the circle through them"},
                 "snap":{"type":"boolean","description":"snap from/to/circle points to vertices, edge middles, edges and face centres of the objects (default false)"},
                 "snap_tolerance":{"type":"number","description":"how far, in mm, a point may be from a feature to snap to it (default 1)"},
                 "align":{"type":"boolean","description":"with snap, line the second point up with the first: perpendicular between parallel faces, or along an axis (default true)"}
@@ -977,7 +978,7 @@ fn point_arg(v: &Value, what: &str) -> Result<glam::Vec3, String> {
 }
 
 fn round_json(r: &crate::measure::Round) -> Value {
-    json!({"kind":r.kind.name(),"radius":r.radius,"diameter":r.diameter(),"center":r.center.to_array(),"axis":r.axis.map(|a| a.to_array())})
+    json!({"kind":r.kind.name(),"diameter":r.diameter(),"radius":r.radius,"center":r.center.to_array(),"axis":r.axis.map(|a| a.to_array())})
 }
 
 /// The object an `id` argument names.
@@ -992,7 +993,7 @@ fn object_arg<'a>(
 
 /// `measure`'s `section`: the contours a plane cuts out of an object, with circle fits.
 fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, String> {
-    use crate::section::section;
+    use crate::section::{section_tilted, Tilt};
     let o = object_arg(scene, &spec["id"])?;
     let normal = match spec.get("normal").filter(|n| !n.is_null()) {
         Some(n) => point_arg(n, "section.normal")?,
@@ -1029,7 +1030,20 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
             "section.z is a horizontal plane; use point with normal for a slanted one".into(),
         );
     }
-    let s = section(&o.mesh, &o.matrix(), point, normal, hint);
+    // Only a plane the caller did not fix is turned.
+    let free = !horizontal && spec.get("normal").is_none_or(Value::is_null);
+    let tilt = match (spec["tilt"].as_str(), free) {
+        (Some("none"), _) | (None, false) => Tilt::None,
+        (Some("auto"), false) => {
+            return Err(
+                "section.tilt auto needs near, or point without normal: z and normal give exactly the plane asked for"
+                    .into(),
+            )
+        }
+        (Some("auto") | None, true) => Tilt::Auto,
+        (Some(other), _) => return Err(format!("section.tilt must be auto or none, not {other}")),
+    };
+    let s = section_tilted(&o.mesh, &o.matrix(), point, hint, tilt);
     if s.contours.is_empty() {
         let b = o.world_aabb();
         return Err(format!(
@@ -1055,8 +1069,8 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
                     out["circular"] = json!(true);
                     out["center"] = json!(r.center.to_array());
                     out["axis"] = json!(r.axis.map(|a| a.to_array()));
-                    out["radius"] = json!(r.radius);
                     out["diameter"] = json!(r.diameter());
+                    out["radius"] = json!(r.radius);
                     out["fit_error"] = json!(fit.rms);
                     out["fit_error_mm"] = json!(fit.rms * r.radius);
                 }
@@ -1075,13 +1089,29 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
         .map(|w| json!({"outer":w.outer,"inner":w.inner,"thickness":w.thickness,"center_offset":w.offset}))
         .collect();
     let nearest = near.and_then(|p| s.nearest(p));
-    let mut out = json!({"kind":"section","object":o.id,"plane":{"point":s.point.to_array(),"normal":s.normal.to_array()},"total":s.contours.len(),"contours":list,"walls":walls,"nearest":nearest});
+    let mut out = json!({"kind":"section","object":o.id,"plane":{"point":s.point.to_array(),"normal":s.normal.to_array(),"tilt_degrees":s.tilt_degrees(),"auto_tilted":s.auto_tilted},"total":s.contours.len(),"contours":list,"walls":walls,"nearest":nearest});
+    let mut notes = Vec::new();
     if s.shift != 0.0 {
         out["shifted_mm"] = json!(s.shift);
-        out["note"] = json!(format!(
+        notes.push(format!(
             "the plane lies in a flat face of the object (a rim, a base or an end), where it cuts no material; the slice was taken {:.3} mm inside the solid, on the side that has material, and the contours are projected back onto the plane",
             s.shift.abs()
         ));
+    }
+    if s.auto_tilted {
+        notes.push(format!(
+            "the horizontal contour there is not round, so the plane was tilted {:.1} degrees from vertical to cut a round one; the diameters are measured in the tilted plane",
+            s.tilt_degrees()
+        ));
+    }
+    let moved = s.point.distance(point);
+    if moved > 1e-4 {
+        notes.push(format!(
+            "the plane was taken {moved:.2} mm under the point, below the crest of a rounded rim"
+        ));
+    }
+    if !notes.is_empty() {
+        out["note"] = json!(notes.join("; "));
     }
     Ok(out)
 }
@@ -1109,7 +1139,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     if let Some(spec) = args.get("section") {
         return section_json(scene, spec);
     }
-    if let Some(id) = args.get("radius_of") {
+    if let Some(id) = args.get("diameter_of").or_else(|| args.get("radius_of")) {
         let o = object_arg(scene, id)?;
         let m = o.matrix();
         let axes = [m.x_axis, m.y_axis, m.z_axis].map(|a| a.truncate());
@@ -1180,7 +1210,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     }
     if scene.selection.is_empty() {
         return Err(format!(
-            "{}; or give from and to, ids, radius_of, circle or section, to measure without a selection",
+            "{}; or give from and to, ids, diameter_of, circle or section, to measure without a selection",
             nothing_selected("measure")
         ));
     }
@@ -1294,6 +1324,51 @@ mod tests {
     }
 
     #[test]
+    fn measure_section_tilts_the_plane_of_a_tilted_cylinder_and_tilt_none_does_not() {
+        use crate::primitives::Primitive;
+        let (mut scene, id) = scene_with(Primitive::Cylinder);
+        let unit = scene.get(id).unwrap().world_aabb().size().x as f64 / 2.0;
+        let o = scene.objects.iter_mut().find(|o| o.id == id).unwrap();
+        o.rotation.x = 20.0;
+        let m = o.matrix();
+        // A point on the wall half way up the tilted cylinder.
+        let local = o.mesh.aabb();
+        let mid = m.transform_point3(glam::Vec3::new(
+            local.center().x + unit as f32,
+            local.center().y,
+            local.center().z,
+        ));
+        let near = json!([mid.x, mid.y, mid.z]);
+        let s = measure(&scene, &json!({"section":{"id":id,"near":near}})).unwrap();
+        assert_eq!(s["plane"]["auto_tilted"], true);
+        assert!((s["plane"]["tilt_degrees"].as_f64().unwrap() - 20.0).abs() < 0.3);
+        assert_eq!(s["contours"][0]["circular"], true);
+        assert!((s["contours"][0]["diameter"].as_f64().unwrap() - 2.0 * unit).abs() < 0.05);
+        assert!(s["note"].as_str().unwrap().contains("tilted"));
+        // Kept horizontal, or with a plane of its own, the contour is an ellipse.
+        for spec in [
+            json!({"id":id,"near":near,"tilt":"none"}),
+            json!({"id":id,"point":near,"normal":[0,0,1]}),
+            json!({"id":id,"z":mid.z}),
+        ] {
+            let s = measure(&scene, &json!({ "section": spec })).unwrap();
+            assert_eq!(s["plane"]["auto_tilted"], false);
+            assert_eq!(s["contours"][0]["circular"], false);
+        }
+        let bad = measure(
+            &scene,
+            &json!({"section":{"id":id,"point":near,"normal":[0,0,1],"tilt":"auto"}}),
+        )
+        .unwrap_err();
+        assert!(bad.contains("tilt"), "{bad}");
+        assert!(check_args(
+            "measure",
+            &json!({"section":{"id":1,"near":[0,0,0],"tilt":"sideways"}})
+        )
+        .is_err());
+    }
+
+    #[test]
     fn measure_section_arguments_are_checked_against_the_schema() {
         assert!(check_args("measure", &json!({"section":{"id":1,"near":[0,0,0]}})).is_ok());
         assert!(check_args("measure", &json!({"section":{"id":1,"z":5}})).is_ok());
@@ -1312,7 +1387,8 @@ mod tests {
     fn measure_radius_of_objects_and_circles() {
         use crate::primitives::Primitive;
         let (scene, id) = scene_with(Primitive::Cylinder);
-        let r = measure(&scene, &json!({"radius_of":id})).unwrap();
+        let r = measure(&scene, &json!({"diameter_of":id})).unwrap();
+        assert_eq!(r, measure(&scene, &json!({"radius_of":id})).unwrap());
         assert_eq!(r["kind"], "cylinder");
         let radius = r["radius"].as_f64().unwrap();
         assert!((r["diameter"].as_f64().unwrap() - 2.0 * radius).abs() < 1e-3);

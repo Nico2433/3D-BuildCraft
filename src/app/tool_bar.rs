@@ -4,6 +4,7 @@
 use super::icons::Icon;
 use super::style;
 use super::*;
+use crate::section::Tilt;
 
 impl App {
     pub(super) fn capture_photo(&mut self) {
@@ -298,8 +299,8 @@ impl App {
                 let modes = [Mode::Distance, Mode::Surface, Mode::Circle, Mode::Section];
                 let names = [
                     tr(lang, "Distance"),
-                    tr(lang, "Radius of a surface"),
-                    tr(lang, "Radius from 3 points"),
+                    tr(lang, "Diameter of a surface"),
+                    tr(lang, "Diameter from 3 points"),
                     tr(lang, "Section at height"),
                 ];
                 let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
@@ -309,37 +310,56 @@ impl App {
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let unit = tr(lang, units.label());
-                let text = match (m.mode, m.current_round()) {
+                // The diameter is what the round tools are for: large and first.
+                let diameter = |d: f32| format!("{}    {:.2}    {unit}", tr(lang, "Diameter"), d);
+                match (m.mode, m.current_round()) {
                     (Mode::Distance, _) => {
-                        format!(
-                            "{}    {:.2}    {unit}",
-                            names[0],
-                            m.distance() / units.to_mm()
-                        )
+                        style::label(
+                            ui,
+                            &format!(
+                                "{}    {:.2}    {unit}",
+                                names[0],
+                                m.distance() / units.to_mm()
+                            ),
+                        );
                     }
                     (_, Some(r)) => {
                         let c = r.center / units.to_mm();
-                        format!(
-                            "{}    {:.2}    {}    {:.2}    {unit}    {}    {:.2}, {:.2}, {:.2}",
-                            tr(lang, "Radius"),
-                            r.radius / units.to_mm(),
-                            tr(lang, "Diameter"),
-                            r.diameter() / units.to_mm(),
-                            tr(lang, "Center"),
-                            c.x,
-                            c.y,
-                            c.z
-                        )
+                        style::label_large(ui, &diameter(r.diameter() / units.to_mm()));
+                        style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                        style::label(
+                            ui,
+                            &format!(
+                                "{}    {:.2}    {unit}    {}    {:.2}, {:.2}, {:.2}",
+                                tr(lang, "Radius"),
+                                r.radius / units.to_mm(),
+                                tr(lang, "Center"),
+                                c.x,
+                                c.y,
+                                c.z
+                            ),
+                        );
                     }
                     (Mode::Section, None) if m.section.is_some() => {
-                        tr(lang, "Not a circular section").to_string()
+                        style::label(ui, tr(lang, "Not a circular section"));
                     }
                     (Mode::Surface, None) if !m.points.is_empty() => {
-                        tr(lang, "Not a round surface").to_string()
+                        style::label(ui, tr(lang, "Not a round surface"));
                     }
-                    _ => format!("{}    0.00    {unit}", tr(lang, "Radius")),
-                };
-                style::label(ui, &text);
+                    _ => {
+                        style::label_large(ui, &diameter(0.0));
+                    }
+                }
+                // A plane turned to where the contour is round.
+                let tilted = m
+                    .section
+                    .as_ref()
+                    .filter(|s| m.mode == Mode::Section && s.section.auto_tilted);
+                if let Some(s) = tilted {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    let degrees = s.section.tilt_degrees();
+                    style::label(ui, &format!("{} {degrees:.0}°", tr(lang, "Tilted")));
+                }
                 // What else the cut says: every round contour (outer and inner diameters)
                 // and the wall's thickness.
                 let diameters: Vec<String> = m
@@ -357,6 +377,21 @@ impl App {
                 if !diameters.is_empty() {
                     style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                     style::label(ui, &format!("{}    {unit}", diameters.join("    ")));
+                }
+                if m.mode == Mode::Section {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    let mut auto = m.tilt == Tilt::Auto;
+                    let switch = style::labeled(ui, tr(lang, "Tilt"), |ui| {
+                        style::switch(ui, &mut auto, tr(lang, "Auto"), tr(lang, "Off"))
+                    });
+                    switch.clone().on_hover_text(tr(
+                        lang,
+                        "Tilts the plane through the click to where the contour is round (a tilted mouth)",
+                    ));
+                    if switch.changed() {
+                        m.tilt = if auto { Tilt::Auto } else { Tilt::None };
+                        m.section = None;
+                    }
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let snap = &mut self.settings.snap;

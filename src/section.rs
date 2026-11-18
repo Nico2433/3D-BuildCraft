@@ -6,9 +6,13 @@
 //!
 //! A contour is *circular* when a circle fits its points (see [`Outline::why_not`]): RMS
 //! distance from the circle under [`CIRCLE_RMS`] of the radius, no point further than
-//! [`CIRCLE_MAX`], at least [`MIN_CLOSED`] points round a closed contour (a hexagon or a
-//! square also has all its corners on a circle but is a polygon), or for an open one
-//! [`MIN_ARC`] points spanning [`MIN_SWEEP_DEG`] degrees.
+//! [`CIRCLE_MAX`], at least [`MIN_CLOSED`] points round a closed contour that fills
+//! [`MIN_FILL`] of its circle (a hexagon or a square also has all its corners on a circle but
+//! is a polygon), or for an open one [`MIN_ARC`] points spanning [`MIN_SWEEP_DEG`] degrees.
+//!
+//! A click on a tilted round feature (a pot whose head is tilted) is cut by a tilted plane:
+//! [`section_tilted`] with [`Tilt::Auto`] turns the plane through the point to the feature's
+//! axis, so the diameter is the true one and not an ellipse's.
 //!
 //! When the plane lies in a flat face (the top or bottom of a cylinder, the base of a cone,
 //! the rim of a hollow cylinder) it cuts no material, so [`section`] slices a hair inside
@@ -22,6 +26,10 @@ use rustc_hash::FxHashMap as HashMap;
 pub const CIRCLE_RMS: f64 = 0.01;
 /// The largest distance of any point from the circle, as a fraction of the radius.
 pub const CIRCLE_MAX: f64 = 0.025;
+/// The area a closed contour must enclose, as a fraction of its circle's: a thin sliver
+/// along a rim's crest has all its points on a circle but is not a section of a round body
+/// (an inscribed octagon fills 0.90).
+pub const MIN_FILL: f32 = 0.85;
 /// Points a closed contour needs to count as round.
 pub const MIN_CLOSED: usize = 8;
 /// Points an open contour needs to count as round.
@@ -65,10 +73,18 @@ pub struct Section {
     /// How far (mm, along the normal) the plane was moved into the material because it lay in
     /// a flat face; 0 when it cut as asked. The contours are projected back onto the plane.
     pub shift: f32,
+    /// Whether [`Cutter::cut_round`] turned the plane away from horizontal to find a round
+    /// contour.
+    pub auto_tilted: bool,
     pub contours: Vec<Contour>,
 }
 
 impl Section {
+    /// How far the plane is tilted from horizontal, degrees (0 to 90).
+    pub fn tilt_degrees(&self) -> f32 {
+        self.normal.z.abs().clamp(0.0, 1.0).acos().to_degrees()
+    }
+
     /// The contour whose outline passes closest to `p`, and how far (mm).
     pub fn closest(&self, p: Vec3) -> Option<(usize, f32)> {
         self.contours
@@ -130,47 +146,426 @@ pub fn section(
     normal: Vec3,
     near: Option<Vec3>,
 ) -> Section {
-    let normal = normal.try_normalize().unwrap_or(Vec3::Z);
-    let world: Vec<Vec3> = mesh
-        .positions
-        .iter()
-        .map(|p| model.transform_point3(*p))
-        .collect();
-    let (welded, _) = mesh.welded_indices();
-    let plane = |shift: f32| Plane {
-        point,
-        normal,
-        shift,
-    };
-    let size = world.iter().fold(
-        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
-        |(lo, hi), p| (lo.min(*p), hi.max(*p)),
-    );
-    let shift = SHIFT * (size.1 - size.0).max_element().max(0.0);
-    let dist = |p: &Vec3| (*p - point).dot(normal);
-    let in_a_face = shift > 0.0
-        && mesh.triangles.iter().any(|t| {
-            t.iter()
-                .all(|&i| dist(&world[i as usize]).abs() <= shift / 2.0)
+    Cutter::new(mesh, model).cut(point, normal, near)
+}
+
+/// Whether [`section_tilted`] may turn the plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tilt {
+    /// Cut with a horizontal plane.
+    None,
+    /// Cut horizontally unless that contour is not round, then look for the plane through
+    /// the point that cuts the roundest contour (see [`Cutter::cut_round`]).
+    Auto,
+}
+
+/// The section a click gives: horizontal through `point`, or with [`Tilt::Auto`] the tilted
+/// plane that cuts a round contour near `near` when the horizontal one is not round.
+pub fn section_tilted(
+    mesh: &Mesh,
+    model: &Mat4,
+    point: Vec3,
+    near: Option<Vec3>,
+    tilt: Tilt,
+) -> Section {
+    let cutter = Cutter::new(mesh, model);
+    match tilt {
+        Tilt::None => cutter.cut(point, Vec3::Z, near),
+        Tilt::Auto => cutter.cut_round(point, near),
+    }
+}
+
+/// How many slabs of height the triangles are sorted into by their lowest point.
+const Z_BINS: usize = 256;
+/// A triangle taller than this many slabs is tested against every plane.
+const TALL_BINS: f32 = 4.0;
+
+/// A mesh placed in the world once, so that many planes can cut it. Triangles are sorted
+/// into slabs of height, so a plane that is nearly horizontal only looks at the few slabs
+/// it passes through.
+pub struct Cutter<'a> {
+    mesh: &'a Mesh,
+    world: Vec<Vec3>,
+    /// The corners of the box round the object.
+    bounds: (Vec3, Vec3),
+    /// Triangle numbers by the slab their lowest vertex is in (slab `i` starts at
+    /// `bounds.0.z + i * slab`), and those taller than [`TALL_BINS`] slabs.
+    bins: Vec<Vec<u32>>,
+    tall: Vec<u32>,
+    slab: f32,
+    /// Positions closer than this are one point (a millionth of the object's size).
+    weld: f32,
+    /// The object's largest size, mm.
+    size: f32,
+    /// How far a plane lying in a flat face is moved into the material (see [`SHIFT`]).
+    shift: f32,
+}
+
+impl<'a> Cutter<'a> {
+    pub fn new(mesh: &'a Mesh, model: &Mat4) -> Self {
+        let world: Vec<Vec3> = mesh
+            .positions
+            .iter()
+            .map(|p| model.transform_point3(*p))
+            .collect();
+        let (lo, hi) = world.iter().fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+        );
+        let size = (hi - lo).max_element().max(0.0);
+        let slab = ((hi.z - lo.z) / Z_BINS as f32).max(f32::MIN_POSITIVE);
+        let mut bins = vec![Vec::new(); Z_BINS];
+        let mut tall = Vec::new();
+        for (n, t) in mesh.triangles.iter().enumerate() {
+            let z = t.map(|i| world[i as usize].z);
+            let (low, high) = (z[0].min(z[1]).min(z[2]), z[0].max(z[1]).max(z[2]));
+            if high - low > TALL_BINS * slab {
+                tall.push(n as u32);
+            } else {
+                bins[(((low - lo.z) / slab) as usize).min(Z_BINS - 1)].push(n as u32);
+            }
+        }
+        Cutter {
+            mesh,
+            bounds: (lo, hi),
+            bins,
+            tall,
+            slab,
+            weld: size.max(1.0) * 1e-6,
+            size,
+            shift: SHIFT * size,
+            world,
+        }
+    }
+
+    /// The triangles that may cross the plane through `point` with `normal`: those whose
+    /// height range meets the heights the plane has inside the object's box.
+    fn near_plane(&self, point: Vec3, normal: Vec3) -> Vec<[u32; 3]> {
+        let (lo, hi) = self.bounds;
+        let pad = 2.0 * self.shift;
+        let (zlo, zhi) = if normal.z.abs() < 1e-6 {
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            let at = |x: f32, y: f32| {
+                point.z - (normal.x * (x - point.x) + normal.y * (y - point.y)) / normal.z
+            };
+            let z = [(lo.x, lo.y), (lo.x, hi.y), (hi.x, lo.y), (hi.x, hi.y)].map(|(x, y)| at(x, y));
+            let fold = |f: fn(f32, f32) -> f32, start: f32| z.iter().fold(start, |a, b| f(a, *b));
+            (
+                fold(f32::min, f32::INFINITY) - pad,
+                fold(f32::max, f32::NEG_INFINITY) + pad,
+            )
+        };
+        // A triangle of at most TALL_BINS slabs that reaches `zlo` starts in the slab
+        // that many below it.
+        let first = ((zlo - lo.z) / self.slab - TALL_BINS)
+            .floor()
+            .clamp(0.0, Z_BINS as f32) as usize;
+        let last = ((zhi - lo.z) / self.slab)
+            .floor()
+            .clamp(-1.0, (Z_BINS - 1) as f32);
+        let bins = self
+            .bins
+            .get(first..=(last.max(0.0) as usize).max(first))
+            .unwrap_or(&[]);
+        bins.iter()
+            .flatten()
+            .chain(&self.tall)
+            .map(|&n| self.mesh.triangles[n as usize])
+            .filter(|t| {
+                let z = t.map(|i| self.world[i as usize].z);
+                z[0].min(z[1]).min(z[2]) <= zhi && z[0].max(z[1]).max(z[2]) >= zlo
+            })
+            .collect()
+    }
+
+    /// [`section`] for this mesh.
+    pub fn cut(&self, point: Vec3, normal: Vec3, near: Option<Vec3>) -> Section {
+        let normal = normal.try_normalize().unwrap_or(Vec3::Z);
+        let tris = self.near_plane(point, normal);
+        let shift = self.shift;
+        let dist = |i: u32| (self.world[i as usize] - point).dot(normal);
+        let in_a_face = shift > 0.0
+            && tris
+                .iter()
+                .any(|t| t.iter().all(|&i| dist(i).abs() <= shift / 2.0));
+        let plane = Plane {
+            point,
+            normal,
+            shift: 0.0,
+        };
+        let slice = |plane| slice(&self.world, self.weld, &tris, plane);
+        if !in_a_face {
+            return slice(plane);
+        }
+        let [up, down] = [shift, -shift].map(|s| slice(Plane { shift: s, ..plane }));
+        let up_wins = match (up.contours.is_empty(), down.contours.is_empty()) {
+            (true, _) => false,
+            (_, true) => true,
+            _ => match near.and_then(|n| up.closest(n).zip(down.closest(n))) {
+                Some((a, b)) => a.1 <= b.1,
+                None => up.area() >= down.area(),
+            },
+        };
+        if up_wins {
+            up
+        } else {
+            down
+        }
+    }
+}
+
+/// A plane's section and how round the contour nearest to the probe is.
+#[derive(Clone)]
+struct Trial {
+    section: Section,
+    /// RMS distance of that contour from its circle as a fraction of the radius; infinite
+    /// when there is no closed contour of enough points.
+    cost: f32,
+}
+
+impl Trial {
+    fn contour(&self, near: Vec3) -> Option<&Contour> {
+        self.section.contours.get(self.section.nearest(near)?)
+    }
+
+    fn round(&self, near: Vec3) -> bool {
+        self.contour(near).is_some_and(|c| c.outline.is_circular())
+    }
+}
+
+/// The most the best plane may be turned from horizontal, degrees.
+const MAX_TILT_DEG: f32 = 60.0;
+/// Rounds of "turn the plane to where the ellipse says the axis is" before giving up.
+const MAX_TURNS: usize = 8;
+/// A turn smaller than this (degrees) is not worth another cut: it changes a diameter by
+/// less than a hundred thousandth.
+const MIN_TURN_DEG: f64 = 0.2;
+/// Degrees either side of a direction round a ring in which [`Cutter::cut_round`] looks for
+/// the highest point of the rim.
+const RIM_SECTOR_DEG: f32 = 4.0;
+/// How far under the point (as a fraction of the object's size) the final plane may go to
+/// leave the crest of a rounded rim: none first, then 0.1, 0.3 and 1 mm on a 100 mm pot.
+const NUDGES: [f32; 4] = [0.0, 0.001, 0.003, 0.01];
+/// How far in from the point (as a fraction of the object's size) the axis is looked for when
+/// the plane through the point itself shows no complete contour: a click just under a tilted
+/// rim has the rim's low side above the plane.
+const AXIS_DEPTHS: [f32; 3] = [0.04, 0.1, 0.2];
+
+impl Cutter<'_> {
+    fn trial(&self, point: Vec3, normal: Vec3, near: Vec3) -> Trial {
+        let section = self.cut(point, normal, Some(near));
+        let cost = section
+            .nearest(near)
+            .map(|i| &section.contours[i].outline)
+            .filter(|o| o.closed && o.points.len() >= MIN_CLOSED)
+            .and_then(|o| o.fit)
+            .map_or(f32::INFINITY, |f| f.rms);
+        Trial { section, cost }
+    }
+
+    /// The axis of the round feature the plane through `point` with `normal` cuts near
+    /// `near`: the normal turned round after round to where the contour's ellipse says it
+    /// is, while that makes the contour rounder.
+    fn axis(&self, point: Vec3, near: Vec3, normal: Vec3) -> (Vec3, Option<Round>) {
+        let mut best = self.trial(point, normal, near);
+        for _ in 0..MAX_TURNS {
+            let Some((turned, degrees)) = best
+                .contour(near)
+                .and_then(|c| turned(c, best.section.normal))
+            else {
+                break;
+            };
+            if degrees < MIN_TURN_DEG {
+                break;
+            }
+            let next = turned
+                .into_iter()
+                .map(|n| self.trial(point, n, near))
+                .find(|t| t.cost < best.cost);
+            let Some(next) = next else { break };
+            best = next;
+        }
+        let round = best.contour(near).and_then(|c| c.outline.round());
+        (best.section.normal, round)
+    }
+
+    /// The plane of a ring's rim through `point` when the rim is slanted against its wall: a
+    /// pot's mouth cut at an angle, found from the highest vertices of the ring (round
+    /// `axis` through `circle`) on `point`'s side and 120 degrees either way, and the plane through them moved to `point`. `None` when the
+    /// ring has no vertices there or the plane is tilted more than [`MAX_TILT_DEG`].
+    fn mouth(&self, point: Vec3, axis: Vec3, circle: Round) -> Option<Vec3> {
+        let (u, v) = (
+            axis.any_orthonormal_vector(),
+            axis.cross(axis.any_orthonormal_vector()),
+        );
+        let at = |p: Vec3| {
+            let d = p - circle.center;
+            Vec2::new(d.dot(u), d.dot(v))
+        };
+        let start = at(point).normalize_or_zero();
+        // The direction of each of the three points round the ring.
+        let dirs = [0.0f32, 120.0, 240.0].map(|deg| {
+            let (s, c) = deg.to_radians().sin_cos();
+            Vec2::new(start.x * c - start.y * s, start.x * s + start.y * c)
         });
-    if !in_a_face {
-        return slice(mesh, &world, &welded, plane(0.0));
+        let band = (circle.radius * 0.08).max(4.0);
+        let cos = RIM_SECTOR_DEG.to_radians().cos();
+        let mut top: [Option<(f32, Vec3)>; 3] = [None; 3];
+        for p in &self.world {
+            let d = at(*p);
+            let r = d.length();
+            if (r - circle.radius).abs() > band || r < f32::MIN_POSITIVE {
+                continue;
+            }
+            let height = (*p - circle.center).dot(axis);
+            for (slot, dir) in top.iter_mut().zip(dirs) {
+                if d.dot(dir) >= cos * r && slot.is_none_or(|(h, _)| height > h) {
+                    *slot = Some((height, *p));
+                }
+            }
+        }
+        let [Some((_, a)), Some((_, b)), Some((_, c))] = top else {
+            return None;
+        };
+        let n = (b - a).cross(c - a).try_normalize()?;
+        let n = if n.z < 0.0 { -n } else { n };
+        (n.z >= MAX_TILT_DEG.to_radians().cos()).then_some(n)
     }
-    let both = [shift, -shift].map(|s| slice(mesh, &world, &welded, plane(s)));
-    let [up, down] = both;
-    let up_wins = match (up.contours.is_empty(), down.contours.is_empty()) {
-        (true, _) => false,
-        (_, true) => true,
-        _ => match near.and_then(|n| up.closest(n).zip(down.closest(n))) {
-            Some((a, b)) => a.1 <= b.1,
-            None => up.area() >= down.area(),
-        },
+
+    /// The section through `point` that is round near `near` (`point` when none): the
+    /// horizontal one when its contour is round. Else a plane through `point` whose normal
+    /// is the axis of the round feature there, found by turning a plane through a point a
+    /// little inwards (where a tilted rim no longer cuts the contour short) to where its
+    /// contour's ellipse puts the axis; or the plane of a slanted rim on an upright wall
+    /// (a pot's mouth cut at an angle), found from the ring's highest points. The plane may
+    /// be taken a hair under `point`, below the crest of a rounded rim. When no such plane
+    /// cuts a round contour the horizontal section is returned. A turned plane says so in
+    /// [`Section::auto_tilted`].
+    pub fn cut_round(&self, point: Vec3, near: Option<Vec3>) -> Section {
+        let near = near.unwrap_or(point);
+        let flat = self.trial(point, Vec3::Z, near);
+        if flat.round(near) {
+            return flat.section;
+        }
+        // The plane with `normal` through `point`, or a hair under it when `point` is on the
+        // crest of a rounded rim that has no contour of its own.
+        let found = |n: Vec3| {
+            NUDGES.iter().find_map(|d| {
+                let t = self.trial(point - n * (d * self.size), n, near);
+                t.round(near).then(|| {
+                    let mut section = t.section;
+                    section.auto_tilted = section.tilt_degrees() > MIN_TURN_DEG as f32;
+                    section
+                })
+            })
+        };
+        // Towards the middle of the object's height.
+        let inwards = if point.z > (self.bounds.0.z + self.bounds.1.z) / 2.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        for depth in AXIS_DEPTHS {
+            let inwards = Vec3::Z * depth * self.size * inwards;
+            let (n, round) = self.axis(point + inwards, near + inwards, Vec3::Z);
+            let mouth = round.and_then(|r| self.mouth(point, n, r));
+            if let Some(s) = [Some(n), mouth].into_iter().flatten().find_map(found) {
+                return s;
+            }
+        }
+        flat.section
+    }
+}
+
+/// Where a cylinder's axis is if the closed `contour` cut by the plane with `normal` is its
+/// ellipse: tilted from the normal by the angle whose cosine is minor/major, towards the
+/// major axis, on either side (a plane cannot say which): the one that puts the contour's
+/// points more nearly at the same distance from the axis first. Also the angle, degrees.
+/// `None` when the contour is no ellipse to speak of or an axis is tilted more than
+/// [`MAX_TILT_DEG`] from vertical.
+fn turned(contour: &Contour, normal: Vec3) -> Option<([Vec3; 2], f64)> {
+    let points = &contour.outline.points;
+    if !contour.outline.closed || points.len() < MIN_CLOSED {
+        return None;
+    }
+    let (u, v) = (
+        normal.any_orthonormal_vector(),
+        normal.cross(normal.any_orthonormal_vector()),
+    );
+    let flat: Vec<(f64, f64)> = points
+        .iter()
+        .map(|p| {
+            (
+                (*p - points[0]).dot(u) as f64,
+                (*p - points[0]).dot(v) as f64,
+            )
+        })
+        .collect();
+    // Second moments of the polygon's area (exact for any sampling of the boundary).
+    let (mut area, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
+    for (i, &(x0, y0)) in flat.iter().enumerate() {
+        let (x1, y1) = flat[(i + 1) % flat.len()];
+        let w = x0 * y1 - x1 * y0;
+        area += w / 2.0;
+        cx += (x0 + x1) * w / 6.0;
+        cy += (y0 + y1) * w / 6.0;
+        sxx += (x0 * x0 + x0 * x1 + x1 * x1) * w / 12.0;
+        syy += (y0 * y0 + y0 * y1 + y1 * y1) * w / 12.0;
+        sxy += (x0 * y1 + 2.0 * x0 * y0 + 2.0 * x1 * y1 + x1 * y0) * w / 24.0;
+    }
+    if area.abs() < 1e-9 {
+        return None;
+    }
+    let sign = area.signum();
+    let (area, cx, cy) = (area * sign, cx * sign / area.abs(), cy * sign / area.abs());
+    let (sxx, syy, sxy) = (
+        sxx * sign - area * cx * cx,
+        syy * sign - area * cy * cy,
+        sxy * sign - area * cx * cy,
+    );
+    let mean = (sxx + syy) / 2.0;
+    let spread = (((sxx - syy) / 2.0).powi(2) + sxy * sxy).sqrt();
+    if mean - spread <= 0.0 {
+        return None;
+    }
+    let cos = ((mean - spread) / (mean + spread)).sqrt();
+    let phi = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let major = u * phi.cos() as f32 + v * phi.sin() as f32;
+    let sin = (1.0 - cos * cos).sqrt() as f32;
+    let candidates = [1.0f32, -1.0].map(|side| {
+        let n = normal * cos as f32 + major * (side * sin);
+        if n.z < 0.0 {
+            -n
+        } else {
+            n
+        }
+    });
+    // How unevenly the points sit round the line through the centre along `axis`.
+    let centre = points[0] + u * cx as f32 + v * cy as f32;
+    let uneven = |axis: Vec3| {
+        let radii: Vec<f32> = points
+            .iter()
+            .map(|p| {
+                let d = *p - centre;
+                (d - axis * d.dot(axis)).length()
+            })
+            .collect();
+        let mean = radii.iter().sum::<f32>() / radii.len() as f32;
+        radii.iter().map(|r| (r - mean).powi(2)).sum::<f32>() / mean.max(f32::MIN_POSITIVE)
     };
-    if up_wins {
-        up
+    let [a, b] = candidates;
+    let ordered = if uneven(a) <= uneven(b) {
+        [a, b]
     } else {
-        down
-    }
+        [b, a]
+    };
+    let limit = MAX_TILT_DEG.to_radians().cos();
+    ordered
+        .iter()
+        .all(|n| n.z >= limit)
+        .then_some((ordered, cos.acos().to_degrees()))
 }
 
 /// A plane through `point` moved `shift` along its normal.
@@ -181,24 +576,23 @@ struct Plane {
     shift: f32,
 }
 
-/// The outline of `mesh` (vertices `world`, welded ids `welded`) on `plane`; the points are
-/// projected back onto the plane through `plane.point`.
-fn slice(mesh: &Mesh, world: &[Vec3], welded: &[u32], plane: Plane) -> Section {
+/// The outline of the triangles `tris` (vertices `world`, those within `weld` of each other
+/// being one) on `plane`; the points are projected back onto the plane through
+/// `plane.point`.
+fn slice(world: &[Vec3], weld: f32, tris: &[[u32; 3]], plane: Plane) -> Section {
     let Plane {
         point,
         normal,
         shift,
     } = plane;
-    let dist: Vec<f32> = world
-        .iter()
-        .map(|p| (*p - point).dot(normal) - shift)
-        .collect();
     // A crossing point per mesh edge, and the segments between the two of each triangle.
-    let mut index: HashMap<u64, u32> = HashMap::default();
+    let mut index: HashMap<([i32; 3], [i32; 3]), u32> = HashMap::default();
+    let grid = |p: Vec3| (p / weld).round().as_ivec3().to_array();
     let mut points: Vec<Vec3> = Vec::new();
     let mut segments: Vec<[u32; 2]> = Vec::new();
-    for t in &mesh.triangles {
-        let above = t.map(|i| dist[i as usize] >= 0.0);
+    let dist = |i: u32| (world[i as usize] - point).dot(normal);
+    for t in tris {
+        let above = t.map(|i| dist(i) >= shift);
         if above[0] == above[1] && above[1] == above[2] {
             continue;
         }
@@ -209,10 +603,10 @@ fn slice(mesh: &Mesh, world: &[Vec3], welded: &[u32], plane: Plane) -> Section {
             if above[k] == above[(k + 1) % 3] {
                 continue;
             }
-            let (wa, wb) = (welded[a as usize], welded[b as usize]);
-            let key = (wa.min(wb) as u64) << 32 | wa.max(wb) as u64;
+            let (ga, gb) = (grid(world[a as usize]), grid(world[b as usize]));
+            let key = (ga.min(gb), ga.max(gb));
             ends[n] = *index.entry(key).or_insert_with(|| {
-                let (da, db) = (dist[a as usize], dist[b as usize]);
+                let (da, db) = (dist(a) - shift, dist(b) - shift);
                 let at = da / (da - db);
                 points.push(world[a as usize].lerp(world[b as usize], at) - normal * shift);
                 (points.len() - 1) as u32
@@ -275,6 +669,7 @@ fn slice(mesh: &Mesh, world: &[Vec3], welded: &[u32], plane: Plane) -> Section {
         point,
         normal,
         shift,
+        auto_tilted: false,
         contours: out,
     }
 }
@@ -366,6 +761,9 @@ pub struct CircleFit {
     pub max: f32,
     /// Degrees the points go round the circle (360 for a closed loop).
     pub sweep: f32,
+    /// The area the points enclose (an open contour closed by its chord) as a fraction of
+    /// the circle's.
+    pub fill: f32,
 }
 
 impl Outline {
@@ -389,6 +787,12 @@ impl Outline {
         if self.closed && n < MIN_CLOSED {
             Some(format!(
                 "a closed contour of {n} points is a polygon, not round (needs {MIN_CLOSED})"
+            ))
+        } else if self.closed && fit.fill < MIN_FILL {
+            Some(format!(
+                "it encloses only {:.0}% of its circle's area, a sliver (needs {:.0}%)",
+                fit.fill * 100.0,
+                MIN_FILL * 100.0
             ))
         } else if !self.closed && (n < MIN_ARC || fit.sweep < MIN_SWEEP_DEG) {
             Some(format!(
@@ -445,6 +849,7 @@ fn fit_loop(points: &[Vec3], closed: bool) -> Option<CircleFit> {
     for (i, p) in points.iter().enumerate() {
         normal += (*p - c).cross(points[(i + 1) % points.len()] - c);
     }
+    let area = normal.length() / 2.0;
     let mut axis = normal.try_normalize()?;
     // A stable direction for the axis: its largest component is positive.
     let big = axis.abs().max_element();
@@ -484,6 +889,7 @@ fn fit_loop(points: &[Vec3], closed: bool) -> Option<CircleFit> {
         rms: (sum / (points.len() + usize::from(closed)) as f64).sqrt() as f32,
         max: max as f32,
         sweep: sweep.abs().to_degrees(),
+        fill: area / (std::f32::consts::PI * round.radius * round.radius),
     })
 }
 
@@ -676,5 +1082,72 @@ mod tests {
             6.0,
             0.03
         ));
+    }
+
+    /// A cylinder tilted `deg` degrees about X, lifted to z 50.
+    fn tilted(deg: f32) -> Mat4 {
+        Mat4::from_translation(Vec3::Z * 50.0) * Mat4::from_rotation_x(deg.to_radians())
+    }
+
+    #[test]
+    fn a_tilted_cylinder_clicked_on_its_wall_or_rim_gives_its_true_diameter() {
+        let m = primitives::prism(96, 10.0, 30.0);
+        let model = tilted(20.0);
+        // Points on the wall half way up, at the top rim's edge, and on its tilted face.
+        let rim = |angle: f32, r: f32, h: f32| {
+            model.transform_point3(Vec3::new(r * angle.cos(), r * angle.sin(), h))
+        };
+        for (name, p) in [
+            ("wall", rim(0.3, 10.0, 15.0)),
+            ("rim edge", rim(2.0, 10.0, 30.0)),
+            ("rim face", rim(4.0, 9.0, 30.0)),
+            ("base edge", rim(1.0, 10.0, 0.0)),
+        ] {
+            let s = section_tilted(&m, &model, p, Some(p), Tilt::Auto);
+            let c = &s.contours[s.nearest(p).unwrap()];
+            let d = c
+                .outline
+                .round()
+                .unwrap_or_else(|| panic!("{name}: not round"))
+                .diameter();
+            assert!(s.auto_tilted, "{name}");
+            assert!(near_f(d, 20.0, 0.03), "{name}: {d}");
+            assert!(
+                near_f(s.tilt_degrees(), 20.0, 0.1),
+                "{name}: {}",
+                s.tilt_degrees()
+            );
+        }
+    }
+
+    #[test]
+    fn an_upright_cylinder_is_not_tilted_and_tilt_none_stays_horizontal() {
+        let m = primitives::prism(96, 10.0, 30.0);
+        let p = Vec3::new(10.0, 0.0, 15.0);
+        let s = section_tilted(&m, &Mat4::IDENTITY, p, Some(p), Tilt::Auto);
+        assert!(!s.auto_tilted && s.tilt_degrees() < 1e-3);
+        let model = tilted(20.0);
+        let q = model.transform_point3(Vec3::new(10.0, 0.0, 15.0));
+        let flat = section_tilted(&m, &model, q, Some(q), Tilt::None);
+        assert!(!flat.auto_tilted && flat.tilt_degrees() < 1e-3);
+        assert!(flat.contours[0].outline.round().is_none());
+    }
+
+    #[test]
+    fn a_thin_sliver_along_a_circle_is_not_round() {
+        // Out along a circle of radius 10 and back along one of 9.95: every point fits a
+        // circle, the loop encloses almost nothing.
+        let arc = |r: f32, i: usize| {
+            let a = i as f32 / 24.0 * std::f32::consts::TAU;
+            Vec3::new(r * a.cos(), r * a.sin(), 0.0)
+        };
+        let points: Vec<Vec3> = (0..24)
+            .map(|i| arc(10.0, i))
+            .chain((0..24).rev().map(|i| arc(9.95, i)))
+            .collect();
+        let sliver = Outline::new(points, true);
+        assert!(sliver.why_not().unwrap().contains("sliver"));
+        let disc = Outline::new((0..24).map(|i| arc(10.0, i)).collect(), true);
+        assert!(disc.is_circular() && disc.fit.unwrap().fill > 0.98);
     }
 }
