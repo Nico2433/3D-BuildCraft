@@ -290,7 +290,11 @@ impl App {
                 self.apply(Action::OpenPath(path), ctx);
                 self.wait_jobs();
                 // Files without units are taken as millimetres instead of asking.
-                while !self.pending_import.is_empty() {
+                while let Some(p) = self.pending_import.first() {
+                    if let Err(e) = p.check_size() {
+                        self.cancel_import();
+                        return Err(e);
+                    }
                     self.finish_import(false);
                 }
             }

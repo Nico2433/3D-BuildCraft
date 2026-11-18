@@ -423,3 +423,54 @@ fn notices_raised_for_an_agent_are_english_in_a_spanish_ui() {
     );
     assert_eq!(tr(Lang::Es, "Could not save:"), "No se pudo guardar:");
 }
+
+#[test]
+fn files_without_triangles_or_larger_than_the_limit_are_refused() {
+    use buildcraft3d::io;
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, bytes: &[u8]| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    };
+    let load = |path: &std::path::Path| io::load(path).err().map(|e| format!("{e:#}"));
+    // Empty, zeros and text with no triangles in any of the formats that read plain files.
+    for name in [
+        "a.stl", "a.obj", "a.ply", "a.svg", "a.3mf", "a.glb", "a.gltf",
+    ] {
+        for bytes in [&b""[..], &[0u8; 200][..], &b"garbage"[..]] {
+            let e = load(&write(name, bytes)).unwrap_or_else(|| panic!("{name} {bytes:?} loaded"));
+            assert!(english(&e), "{e}");
+        }
+    }
+    let e = load(&write("empty.stl", b"solid x\nendsolid x\n")).unwrap();
+    assert!(e.contains("no triangles"), "{e}");
+    // A drawing whose real size is far over the limit.
+    let huge = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1e9" height="10"><rect width="1e9" height="10"/></svg>"#;
+    let e = load(&write("huge.svg", huge)).unwrap();
+    assert!(e.contains("the most is 10000 mm"), "{e}");
+    let ok = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><rect width="100" height="10"/></svg>"#;
+    assert!(load(&write("ok.svg", ok)).is_none());
+    // The same limit as insert_shape's size.
+    assert_eq!(io::MAX_SIZE_MM, args::limits::OBJECT_SIZE.max);
+    assert!(io::check_size(glam::Vec3::new(10_000.0, 1.0, 1.0)).is_ok());
+    assert!(io::check_size(glam::Vec3::new(10_001.0, 1.0, 1.0)).is_err());
+    assert!(io::check_size(glam::Vec3::NAN).is_err());
+}
+
+#[test]
+fn load_image_of_a_blank_picture_gives_a_solid_in_every_method() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blank.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([255, 255, 255, 255]))
+        .save(&path)
+        .unwrap();
+    for method in ["contour", "height_map", "edge", "stamp"] {
+        let a = json!({"path": path.to_str().unwrap(), "method": method});
+        let opts = args::load_image(&a).unwrap();
+        match image3d::build(&opts) {
+            Ok(mesh) => assert!(!mesh.is_empty(), "{method}"),
+            Err(e) => assert!(english(&format!("{e:#}")), "{method}: {e:#}"),
+        }
+    }
+}

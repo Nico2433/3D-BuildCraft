@@ -218,15 +218,19 @@ impl App {
         self.wait_jobs();
         // A file that fails to load leaves a notice, which `serve_agent` returns.
         // Files dropped onto the window meanwhile stay queued for the user.
-        let (added, dropped): (Vec<_>, Vec<_>) = self
+        let (mut added, dropped): (Vec<_>, Vec<_>) = self
             .pending_import
             .split_off(queued.min(self.pending_import.len()))
             .into_iter()
             .partition(|p| p.batch.is_none());
         self.pending_import.extend(dropped);
         let count = added.len();
-        for (i, mut p) in added.into_iter().enumerate() {
+        // Each file, at its units, is checked before any is added.
+        for p in &mut added {
             p.units = units;
+            p.check_size()?;
+        }
+        for (i, p) in added.into_iter().enumerate() {
             self.pending_import.insert(i, p);
         }
         for _ in 0..count {

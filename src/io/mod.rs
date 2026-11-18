@@ -139,6 +139,66 @@ pub fn file_stem(path: &Path) -> &str {
         .unwrap_or("Object")
 }
 
+/// The largest an object may be along one axis, in mm: the limit of the tools and of what a
+/// file that carries its own units may hold.
+pub const MAX_SIZE_MM: f32 = 10_000.0;
+
+/// The size along each axis of the box round all `objects` placed, in mm.
+pub fn extent(objects: &[ModelObject]) -> glam::Vec3 {
+    let mut bounds = crate::mesh::Aabb::empty();
+    for o in objects.iter().filter(|o| !o.mesh.is_empty()) {
+        let b = o.mesh.aabb();
+        for i in 0..8 {
+            let corner = glam::Vec3::select(
+                glam::BVec3::new(i & 1 != 0, i & 2 != 0, i & 4 != 0),
+                b.max,
+                b.min,
+            );
+            bounds.grow(o.transform.transform_point3(corner));
+        }
+    }
+    // Not `is_valid`: an infinite box is a size too, and the one to refuse.
+    if bounds.min.cmple(bounds.max).all() {
+        bounds.size()
+    } else {
+        glam::Vec3::ZERO
+    }
+}
+
+/// An error naming the limit when a model of this `size` in mm is larger than
+/// [`MAX_SIZE_MM`] along any side (or has no size).
+pub fn check_size(size: glam::Vec3) -> Result<()> {
+    if size.is_nan() || size.max_element() > MAX_SIZE_MM {
+        bail!(
+            "The model is {:.0} × {:.0} × {:.0} mm; the most is {MAX_SIZE_MM} mm along each side",
+            size.x,
+            size.y,
+            size.z
+        );
+    }
+    Ok(())
+}
+
+/// What a file read must hold: objects with triangles (empty ones are dropped), and, when
+/// the format carries its units, none larger than [`MAX_SIZE_MM`].
+fn checked(
+    mut objects: Vec<ModelObject>,
+    format: Format,
+    units_known: bool,
+) -> Result<Vec<ModelObject>> {
+    objects.retain(|o| !o.mesh.is_empty());
+    if objects.is_empty() {
+        bail!(
+            "The file has no triangles: it is empty, or not a valid {} model",
+            format.label()
+        );
+    }
+    if units_known {
+        check_size(extent(&objects))?;
+    }
+    Ok(objects)
+}
+
 pub fn load(path: &Path) -> Result<LoadedModel> {
     let Some(format) = Format::from_path(path) else {
         bail!(
@@ -164,6 +224,7 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
         format,
         Format::ThreeMf | Format::Gltf | Format::Glb | Format::Svg
     );
+    let objects = checked(objects, format, units_known)?;
     Ok(LoadedModel {
         objects,
         info,

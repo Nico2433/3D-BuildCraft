@@ -321,7 +321,7 @@ Each argument's description says what it returns, with an example.",
         ),
         tool(
             "open",
-            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. The opened objects get new ids (all selected; call get_scene) and the undo history is cleared. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
+            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. The opened objects get new ids (all selected; call get_scene) and the undo history is cleared. A file with no triangles, or larger than the limit of a tool's size (10000 mm along a side), is an error. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
                 "path": { "type": "string", "description": "model file path on the app's computer; if it says no such file, send the file with file_name and file_text or file_base64" },
                 "discard_changes": { "type": "boolean", "description": "drop the scene's unsaved changes; default false" }
@@ -471,7 +471,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "import",
-            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (changes.created) and become the selection, replacing the previous one. For a picture (PNG, JPEG) use load_image.",
+            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (changes.created) and become the selection, replacing the previous one. A file with no triangles, or whose size (after units) is over 10000 mm along a side, is an error. For a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
                 "path": text("model file path on the app's computer; if it says no such file, send the file with file_name and file_text or file_base64"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),

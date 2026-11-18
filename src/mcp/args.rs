@@ -53,7 +53,7 @@ pub mod limits {
     /// A world position or point.
     pub const COORD: Limit = Limit::new(-100_000.0, 100_000.0, "mm");
     /// The size of an object along one axis.
-    pub const OBJECT_SIZE: Limit = Limit::new(0.01, 10_000.0, "mm");
+    pub const OBJECT_SIZE: Limit = Limit::new(0.01, crate::io::MAX_SIZE_MM, "mm");
     /// Rotation angles and turns of a pattern or sticker.
     pub const ANGLE: Limit = Limit::new(-3600.0, 3600.0, "degrees");
     /// A turn of the pattern in its own plane.

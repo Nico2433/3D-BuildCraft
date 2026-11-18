@@ -59,6 +59,13 @@ impl PendingImport {
         glam::Mat4::from_scale(Vec3::splat(self.units.to_mm())) * o.transform
     }
 
+    /// Fails when the file is larger than the tools allow at the chosen units.
+    pub fn check_size(&self) -> Result<(), String> {
+        io::check_size(self.bounds().size()).map_err(|e| {
+            format!("{e:#}; if the file is in other units, give units (micron, mm, cm, inch, foot or m)")
+        })
+    }
+
     /// The box round the whole file at the chosen units, before the shift.
     fn bounds(&self) -> Aabb {
         self.objects
@@ -438,6 +445,20 @@ mod tests {
             assert!((got.min - want.min).abs().max_element() < 1e-3);
             assert!((got.size().x - 100.0).abs() < 1e-3, "at the chosen units");
         }
+    }
+
+    #[test]
+    fn a_file_too_big_at_its_units_is_refused_naming_the_limit() {
+        let mut file = cube_file("big.stl", 20.0, None);
+        assert!(file.check_size().is_ok());
+        file.units = Units::Meter;
+        let e = file.check_size().unwrap_err();
+        assert!(
+            e.contains("the most is 10000 mm") && e.contains("give units"),
+            "{e}"
+        );
+        file.units = Units::Centimeter;
+        assert!(file.check_size().is_ok());
     }
 
     #[test]
