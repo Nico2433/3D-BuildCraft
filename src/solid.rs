@@ -24,9 +24,10 @@ const SMOOTH_BUDGET: usize = 400_000;
 /// is a number of passes, 0 to [`SMOOTH_STEPS`]. With `edges` each pass is one step of
 /// Loop subdivision, so edges and corners melt into a rounder, smaller shape. Without
 /// it each pass splits every face in four while the mesh has fewer than 4096 points,
-/// then relaxes it with ten rounds of HC Laplacian smoothing, which keeps the volume:
-/// a box turns into a pillow of about its size, and a detailed scan keeps its triangle
-/// count while its mesh evens out. Colours and textures follow their faces. Beyond the
+/// then relaxes it with ten rounds of HC Laplacian smoothing: a box turns into a pillow a
+/// few percent wider than the box (a 10 mm cube is 10.8 mm across after 3 passes) with
+/// about 80% of its volume, and a detailed scan keeps its triangle count while its mesh
+/// evens out. Colours and textures follow their faces. Beyond the
 /// original: points on open or non-manifold edges stay put, flat fans are rebuilt from
 /// their centre first, and the bottom keeps its height so a model stays on the floor.
 pub fn smooth_by(mesh: &Mesh, amount: f32, edges: bool) -> Result<Mesh> {
