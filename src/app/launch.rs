@@ -275,7 +275,7 @@ impl App {
             }
         }
         if let Some(spec) = launch.measure {
-            self.tool = Some(Tool::measure_preset(&spec));
+            self.tool = Some(Tool::Measure(Measure::preset(&spec, &self.scene)));
         }
         match launch.tool.as_deref() {
             Some("paint-colors" | "emboss-colors") => self.actions.push(Action::PaintMenu(false)),

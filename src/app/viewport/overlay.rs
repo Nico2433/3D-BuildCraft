@@ -93,33 +93,147 @@ impl App {
             g.paint(&painter, hot, self.field);
         }
         self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
-        if let Some(Tool::Measure { points, hover }) = &self.tool {
-            // The placed points are blue and the live one green, as the original's.
-            let live = if points.len() < 2 { *hover } else { None };
-            let marks: Vec<(Vec3, Color32)> = points
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (*p, if i == 0 { MEASURE_BLUE } else { MEASURE_GREEN }))
-                .chain(live.map(|p| (p, MEASURE_GREEN)))
-                .collect();
-            if let [(a, _), (b, _)] = marks[..] {
-                if let Some((a, b)) = to_screen(a).zip(to_screen(b)) {
-                    painter.line_segment(
-                        [a, b],
-                        Stroke::new(
-                            11.0 / ui.ctx().pixels_per_point(),
-                            Color32::from_white_alpha(13),
-                        ),
-                    );
-                }
-            }
-            for (p, color) in marks {
-                if let Some(tip) = to_screen(p) {
-                    measure_arrow(&painter, tip, color, ui.ctx().pixels_per_point());
-                }
-            }
+        if let Some(Tool::Measure(m)) = &self.tool {
+            measure_overlay(
+                &painter,
+                m,
+                &to_screen,
+                ui.ctx().pixels_per_point(),
+                self.settings.lang(),
+            );
         }
     }
+}
+
+/// The measure marks: arrows on the placed points (blue the first, green the others) and
+/// on the live one, the faint line between two of them, the fitted circle or sphere with
+/// its radius line, and the snap indicator with its name beside the live point.
+fn measure_overlay(
+    painter: &egui::Painter,
+    m: &Measure,
+    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
+    ppp: f32,
+    lang: Lang,
+) {
+    let faint = |a: Pos2, b: Pos2| {
+        painter.line_segment(
+            [a, b],
+            Stroke::new(11.0 / ppp, Color32::from_white_alpha(13)),
+        );
+    };
+    let live = if m.points.len() < m.capacity() {
+        m.hover
+    } else {
+        None
+    };
+    let marks: Vec<(Vec3, Color32)> = m
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.point, if i == 0 { MEASURE_BLUE } else { MEASURE_GREEN }))
+        .chain(live.map(|p| (p.point, MEASURE_GREEN)))
+        .collect();
+    if let (Mode::Distance, [(a, _), (b, _)]) = (m.mode, &marks[..]) {
+        if let Some((a, b)) = to_screen(*a).zip(to_screen(*b)) {
+            faint(a, b);
+        }
+    }
+    if let Some(r) = m.current_round() {
+        // Seen from any side: a circle about its axis, or three for a sphere.
+        let axes = r
+            .axis
+            .map_or([Vec3::X, Vec3::Y, Vec3::Z].to_vec(), |a| vec![a]);
+        for axis in axes {
+            let (u, v) = (
+                axis.any_orthonormal_vector(),
+                axis.cross(axis.any_orthonormal_vector()),
+            );
+            let ring: Vec<Pos2> = (0..=96)
+                .filter_map(|i| {
+                    let t = i as f32 / 96.0 * std::f32::consts::TAU;
+                    to_screen(r.center + (u * t.cos() + v * t.sin()) * r.radius)
+                })
+                .collect();
+            for w in ring.windows(2) {
+                faint(w[0], w[1]);
+            }
+            painter.add(egui::Shape::line(
+                ring,
+                Stroke::new(1.5 / ppp, MEASURE_GREEN),
+            ));
+        }
+        let rim = r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector());
+        if let Some((c, e)) = to_screen(r.center).zip(to_screen(r.center + rim * r.radius)) {
+            faint(c, e);
+            painter.line_segment([c, e], Stroke::new(1.5 / ppp, MEASURE_GREEN));
+            painter.circle_filled(c, 3.0 / ppp, MEASURE_GREEN);
+        }
+    }
+    for (p, color) in marks {
+        if let Some(tip) = to_screen(p) {
+            measure_arrow(painter, tip, color, ppp);
+        }
+    }
+    if let Some((at, kind)) = live.and_then(|s| to_screen(s.point).zip(s.kind)) {
+        snap_indicator(painter, at, kind, ppp, lang);
+    }
+}
+
+/// The snap indicator: a square on a vertex, a triangle on an edge middle, a diamond on an
+/// edge, a circle on a face centre, a cross on a plane; the kind's name is beside it.
+fn snap_indicator(painter: &egui::Painter, at: Pos2, kind: SnapKind, ppp: f32, lang: Lang) {
+    let u = 1.0 / ppp;
+    let stroke = Stroke::new(2.0 * u, SNAP_YELLOW);
+    let r = 7.0 * u;
+    let points = |offsets: &[(f32, f32)]| -> Vec<Pos2> {
+        offsets
+            .iter()
+            .map(|(x, y)| Pos2::new(at.x + x * r, at.y + y * r))
+            .collect()
+    };
+    match kind {
+        SnapKind::Vertex => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(at, egui::vec2(2.0 * r, 2.0 * r)),
+                0.0,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        SnapKind::Midpoint => {
+            painter.add(egui::Shape::closed_line(
+                points(&[(0.0, -1.0), (1.0, 0.8), (-1.0, 0.8)]),
+                stroke,
+            ));
+        }
+        SnapKind::Edge => {
+            painter.add(egui::Shape::closed_line(
+                points(&[(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)]),
+                stroke,
+            ));
+        }
+        SnapKind::Face => {
+            painter.circle_stroke(at, r, stroke);
+            painter.circle_filled(at, 2.0 * u, SNAP_YELLOW);
+        }
+        SnapKind::Plane => {
+            painter.line_segment(
+                [points(&[(-1.0, 0.0)])[0], points(&[(1.0, 0.0)])[0]],
+                stroke,
+            );
+            painter.line_segment(
+                [points(&[(0.0, -1.0)])[0], points(&[(0.0, 1.0)])[0]],
+                stroke,
+            );
+        }
+    }
+    painter.text(
+        Pos2::new(at.x + 12.0 * u, at.y + 8.0 * u),
+        egui::Align2::LEFT_TOP,
+        tr(lang, kind.name()),
+        egui::FontId::proportional(13.0 * u),
+        SNAP_YELLOW,
+    );
 }
 
 /// The webcam's live picture, fitted in the view, in place of the scene.
@@ -175,6 +289,7 @@ pub(super) fn camera_feed(
 
 const MEASURE_GREEN: Color32 = Color32::from_rgb(0x50, 0xE8, 0x28);
 const MEASURE_BLUE: Color32 = Color32::from_rgb(0x20, 0xA8, 0xF0);
+const SNAP_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD8, 0x3C);
 
 /// The measure marker: a thick downward arrow about 25 px tall whose tip is `tip`, with a
 /// small red dot on the tip.

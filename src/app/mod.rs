@@ -8,11 +8,13 @@ use crate::emboss::{Emboss, Pattern, Projection, Shape};
 use crate::history::{History, Snapshot};
 use crate::i18n::{tr, Lang};
 use crate::io::{self, Format, ModelObject, Rgba};
+use crate::measure::{Measure, Mode, Spot};
 use crate::mesh::{ray_aabb, ray_triangle, Aabb, Mesh};
 use crate::primitives::Primitive;
 use crate::render::{DrawItem, FrameCallback, Renderer, ViewFlags};
 use crate::scene::{Axis, Material, Object, Scene};
 use crate::settings::{Autosave, ColorMode, Settings, Units};
+use crate::snapping::SnapKind;
 use eframe::egui::{
     self, Align2, Color32, Key, KeyboardShortcut, Modifiers, PointerButton, Pos2, Sense, Stroke,
     Vec2,
@@ -115,11 +117,7 @@ enum Tool {
         bodies: Vec<settle::Body>,
         before: Box<Checkpoint>,
     },
-    Measure {
-        points: Vec<Vec3>,
-        /// The surface point under the cursor.
-        hover: Option<Vec3>,
-    },
+    Measure(Measure),
     Cut {
         plane: CutPlane,
         keep: Keep,
@@ -232,27 +230,6 @@ impl Tool {
             menu: (0, paint_menu::PaintMenu::Closed),
             pattern_menu: false,
         }
-    }
-
-    /// A measurement with its points preset, for screenshots: see `Launch::measure`.
-    fn measure_preset(spec: &str) -> Self {
-        let mut points = vec![];
-        let mut hover = None;
-        for entry in spec.split(';') {
-            let v: Vec<f32> = entry
-                .trim_start_matches('~')
-                .split(',')
-                .filter_map(|n| n.trim().parse().ok())
-                .collect();
-            if let [x, y, z] = v[..] {
-                if entry.starts_with('~') {
-                    hover = Some(Vec3::new(x, y, z));
-                } else {
-                    points.push(Vec3::new(x, y, z));
-                }
-            }
-        }
-        Tool::Measure { points, hover }
     }
 
     /// "Load image" with its default settings.

@@ -117,7 +117,7 @@ impl App {
                                 Action::Capture,
                                 matches!(cam.latest(), Some(Ok(_))),
                             )),
-                            Some(Tool::Measure { .. }) | None => None,
+                            Some(Tool::Measure(_)) | None => None,
                         }
                     };
                     let cancel = if self.pending_import.is_empty() {
@@ -294,28 +294,51 @@ impl App {
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
-            Some(Tool::Measure { points, hover }) => {
-                let d = match (&points[..], hover) {
-                    ([a, b], _) => a.distance(*b),
-                    ([a], Some(h)) => a.distance(*h),
-                    _ => 0.0,
-                } / units.to_mm();
+            Some(Tool::Measure(m)) => {
+                let modes = [Mode::Distance, Mode::Surface, Mode::Circle];
+                let names = [
+                    tr(lang, "Distance"),
+                    tr(lang, "Radius of a surface"),
+                    tr(lang, "Radius from 3 points"),
+                ];
+                let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
                 ui.add_space(12.0);
-                style::label(
-                    ui,
-                    &format!(
-                        "{}    {d:.2}    {}",
-                        tr(lang, "Distance"),
-                        tr(lang, units.label())
+                if style::dropdown(ui, "measure_mode", 200.0, &names, &mut k) {
+                    m.set_mode(modes[k]);
+                }
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                let unit = tr(lang, units.label());
+                let text = match (m.mode, m.current_round()) {
+                    (Mode::Distance, _) => {
+                        format!(
+                            "{}    {:.2}    {unit}",
+                            names[0],
+                            m.distance() / units.to_mm()
+                        )
+                    }
+                    (_, Some(r)) => format!(
+                        "{}    {:.2}    {}    {:.2}    {unit}",
+                        tr(lang, "Radius"),
+                        r.radius / units.to_mm(),
+                        tr(lang, "Diameter"),
+                        r.diameter() / units.to_mm()
                     ),
-                );
+                    (Mode::Surface, None) if !m.points.is_empty() => {
+                        tr(lang, "Not a round surface").to_string()
+                    }
+                    _ => format!("{}    0.00    {unit}", tr(lang, "Radius")),
+                };
+                style::label(ui, &text);
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let snap = &mut self.settings.snap;
-                if style::labeled(ui, tr(lang, "Snap"), |ui| {
+                let switch = style::labeled(ui, tr(lang, "Snap"), |ui| {
                     style::switch(ui, snap, tr(lang, "On"), tr(lang, "Off"))
-                })
-                .changed()
-                {
+                });
+                switch.clone().on_hover_text(tr(
+                    lang,
+                    "Snaps to vertices, edges and face centres; hold Alt to turn it around",
+                ));
+                if switch.changed() {
                     let _ = self.settings.save();
                 }
             }

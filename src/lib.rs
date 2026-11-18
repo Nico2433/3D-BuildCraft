@@ -12,6 +12,7 @@ pub mod image3d;
 pub mod io;
 pub mod library;
 pub mod mcp;
+pub mod measure;
 pub mod mesh;
 pub mod outline;
 pub mod paper;

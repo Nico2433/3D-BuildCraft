@@ -230,12 +230,7 @@ impl App {
                     self.scene.selection.insert(id);
                 }
             }
-            Action::Measure => {
-                self.tool = Some(Tool::Measure {
-                    points: vec![],
-                    hover: None,
-                })
-            }
+            Action::Measure => self.tool = Some(Tool::Measure(Measure::new(Mode::Distance))),
             Action::StartCut => {
                 let mut plane = CutPlane::at_height(0.0);
                 plane.center = self.scene.selection_aabb().center();

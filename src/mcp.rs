@@ -235,11 +235,16 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "measure",
-            "Read-only measurements. No arguments: min, max, size (mm), volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. Without from/to or ids it needs a selection.",
+            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. radius_of (an object id): the radius and diameter of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the radius, diameter, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. Without a mode argument it needs a selection.",
             json!({"type":"object","properties":{
                 "from":vec3("first point [x, y, z], mm; needs to"),
                 "to":vec3("second point [x, y, z], mm"),
-                "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"}
+                "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"},
+                "radius_of":{"type":"integer","description":"object id from get_scene: radius and diameter of a sphere, cylinder, cone or torus"},
+                "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] on a circle, mm: radius and diameter of the circle through them"},
+                "snap":{"type":"boolean","description":"snap from/to/circle points to vertices, edge middles, edges and face centres of the objects (default false)"},
+                "snap_tolerance":{"type":"number","description":"how far, in mm, a point may be from a feature to snap to it (default 1)"},
+                "align":{"type":"boolean","description":"with snap, line the second point up with the first: perpendicular between parallel faces, or along an axis (default true)"}
             }}),
         ),
         tool(
@@ -959,26 +964,96 @@ pub fn find_font(all: &[String], name: &str) -> Result<String, String> {
     ))
 }
 
+/// A point argument `[x, y, z]` in mm.
+fn point_arg(v: &Value, what: &str) -> Result<glam::Vec3, String> {
+    let bad = || format!("{what} must be a point [x, y, z] in mm");
+    let a = v.as_array().filter(|a| a.len() == 3).ok_or_else(bad)?;
+    let mut p = [0.0; 3];
+    for i in 0..3 {
+        p[i] = a[i].as_f64().ok_or_else(bad)? as f32;
+    }
+    Ok(glam::Vec3::from_array(p))
+}
+
+fn round_json(r: &crate::measure::Round) -> Value {
+    json!({"kind":r.kind.name(),"radius":r.radius,"diameter":r.diameter(),"center":r.center.to_array(),"axis":r.axis.map(|a| a.to_array())})
+}
+
 /// Computes measurements without modifying the scene.
 pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, String> {
+    use crate::snapping::{align, Alignment};
     let vector = |v: glam::Vec3| v.to_array();
+    let flag = |key: &str, default: bool| args[key].as_bool().unwrap_or(default);
+    let snap = flag("snap", false);
+    let tolerance = args["snap_tolerance"].as_f64().unwrap_or(1.0) as f32;
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err("snap_tolerance must be a distance in mm, 0 or more".into());
+    }
+    // Each point, snapped to the nearest face feature of an object when asked to.
+    let pick = |v: &Value,
+                what: &str|
+     -> Result<(glam::Vec3, Option<crate::snapping::PointSnap>), String> {
+        let p = point_arg(v, what)?;
+        let hit = snap
+            .then(|| crate::measure::snap_to_scene(scene, p, tolerance))
+            .flatten();
+        Ok((hit.map_or(p, |h| h.point), hit))
+    };
+    if let Some(id) = args.get("radius_of") {
+        let o = id
+            .as_u64()
+            .and_then(|id| scene.get(id))
+            .ok_or_else(|| format!("no object with id {id}; get_scene lists the ids"))?;
+        let m = o.matrix();
+        let axes = [m.x_axis, m.y_axis, m.z_axis].map(|a| a.truncate());
+        return crate::measure::fit_object(&o.world_mesh(), axes)
+            .map(|r| round_json(&r))
+            .ok_or_else(|| {
+                format!(
+                    "object {} is not round: no sphere, cylinder or circular outline fits its vertices; give circle with three points on the feature instead",
+                    o.id
+                )
+            });
+    }
+    if let Some(points) = args.get("circle") {
+        let bad = "circle must be three points [[x, y, z], [x, y, z], [x, y, z]] on the circle, mm";
+        let p = points.as_array().filter(|p| p.len() == 3).ok_or(bad)?;
+        let picked = [pick(&p[0], bad)?, pick(&p[1], bad)?, pick(&p[2], bad)?];
+        let round = crate::measure::circle_through(picked[0].0, picked[1].0, picked[2].0)
+            .ok_or("the three points lie on a line or coincide, so no circle goes through them")?;
+        let mut out = round_json(&round);
+        if snap {
+            out["snapped"] = json!(picked
+                .iter()
+                .map(|p| p.1.map(|h| h.kind.name()))
+                .collect::<Vec<_>>());
+            out["points"] = json!(picked.iter().map(|p| vector(p.0)).collect::<Vec<_>>());
+        }
+        return Ok(out);
+    }
     if args.get("from").is_some() || args.get("to").is_some() {
-        let point = |key: &str| -> Result<glam::Vec3, String> {
-            let a = args[key]
-                .as_array()
-                .filter(|a| a.len() == 3)
-                .ok_or("from and to must both be points [x, y, z] in mm")?;
-            let mut p = [0.0; 3];
-            for i in 0..3 {
-                p[i] = a[i]
-                    .as_f64()
-                    .ok_or("from and to must both be points [x, y, z] in mm")?
-                    as f32;
+        let both = "from and to must both be points [x, y, z] in mm";
+        let (a, ha) = pick(&args["from"], both)?;
+        let (mut b, hb) = pick(&args["to"], both)?;
+        let mut alignment = None;
+        if snap && flag("align", true) {
+            if let Some((p, how)) = align(a, ha.map(|h| h.normal), b, hb.map(|h| h.normal)) {
+                b = p;
+                alignment = Some(match how {
+                    Alignment::Perpendicular => "perpendicular".to_string(),
+                    Alignment::Axis(i) => format!("along {}", ["X", "Y", "Z"][i]),
+                });
             }
-            Ok(glam::Vec3::from_array(p))
-        };
-        let d = point("to")? - point("from")?;
-        return Ok(json!({"distance":d.length(),"differences":vector(d)}));
+        }
+        let d = b - a;
+        let mut out = json!({"distance":d.length(),"differences":vector(d)});
+        if snap {
+            out["from"] = json!(vector(a));
+            out["to"] = json!(vector(b));
+            out["snapped"] = json!([ha.map(|h| h.kind.name()), hb.map(|h| h.kind.name())]);
+            out["alignment"] = json!(alignment);
+        }
+        return Ok(out);
     }
     if let Some(ids) = args.get("ids") {
         let ids = ids
@@ -998,7 +1073,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     }
     if scene.selection.is_empty() {
         return Err(format!(
-            "{}; or give from and to, or ids, to measure without a selection",
+            "{}; or give from and to, ids, radius_of or circle, to measure without a selection",
             nothing_selected("measure")
         ));
     }
@@ -1025,6 +1100,68 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scene_with(shape: crate::primitives::Primitive) -> (crate::scene::Scene, u64) {
+        let mut scene = crate::scene::Scene::default();
+        let o = crate::scene::Object::new("shape", shape.build(), crate::scene::DEFAULT_COLOR);
+        let id = scene.add(o);
+        (scene, id)
+    }
+
+    #[test]
+    fn measure_radius_of_objects_and_circles() {
+        use crate::primitives::Primitive;
+        let (scene, id) = scene_with(Primitive::Cylinder);
+        let r = measure(&scene, &json!({"radius_of":id})).unwrap();
+        assert_eq!(r["kind"], "cylinder");
+        let radius = r["radius"].as_f64().unwrap();
+        assert!((r["diameter"].as_f64().unwrap() - 2.0 * radius).abs() < 1e-3);
+        assert_eq!(
+            measure(&scene_with(Primitive::Sphere).0, &json!({"radius_of":1})).unwrap()["kind"],
+            "sphere"
+        );
+        let (cube, id) = scene_with(Primitive::Cube);
+        let err = measure(&cube, &json!({"radius_of":id})).unwrap_err();
+        assert!(err.contains("not round"), "{err}");
+        assert!(measure(&cube, &json!({"radius_of":99}))
+            .unwrap_err()
+            .contains("no object"));
+        let c = measure(&cube, &json!({"circle":[[5,0,0],[0,5,0],[-5,0,0]]})).unwrap();
+        assert!((c["radius"].as_f64().unwrap() - 5.0).abs() < 1e-4);
+        assert!(measure(&cube, &json!({"circle":[[0,0,0],[1,0,0],[2,0,0]]})).is_err());
+        assert!(measure(&cube, &json!({"circle":[[0,0,0],[1,0,0]]})).is_err());
+    }
+
+    #[test]
+    fn measure_snaps_and_aligns_points() {
+        let (scene, id) = scene_with(crate::primitives::Primitive::Cube);
+        let b = scene.get(id).unwrap().world_aabb();
+        let (lo, hi) = (b.min, b.max);
+        // A free distance is unchanged and has no snap fields.
+        let free = measure(&scene, &json!({"from":[0,0,0],"to":[3,4,0]})).unwrap();
+        assert!((free["distance"].as_f64().unwrap() - 5.0).abs() < 1e-5);
+        assert!(free.get("snapped").is_none());
+        // Near the top corner and over the bottom face: both snap, and the line is the height.
+        let args = json!({"from":[hi.x - 0.2, hi.y - 0.1, hi.z],"to":[lo.x + 3.0, lo.y + 2.0, lo.z],"snap":true});
+        let r = measure(&scene, &args).unwrap();
+        assert_eq!(r["snapped"][0], "Vertex");
+        assert_eq!(r["alignment"], "perpendicular");
+        let height = (hi.z - lo.z) as f64;
+        assert!((r["distance"].as_f64().unwrap() - height).abs() < 1e-3);
+        let off = measure(&scene, &json!({"from":[hi.x - 0.2, hi.y - 0.1, hi.z],"to":[lo.x + 3.0, lo.y + 2.0, lo.z],"snap":true,"align":false})).unwrap();
+        assert!(off["alignment"].is_null() && off["distance"].as_f64().unwrap() > height + 1.0);
+        assert!(measure(
+            &scene,
+            &json!({"from":[0,0,0],"to":[1,1,1],"snap":true,"snap_tolerance":-1})
+        )
+        .is_err());
+        let circle = measure(
+            &scene,
+            &json!({"circle":[[hi.x,hi.y,hi.z],[lo.x,hi.y,hi.z],[lo.x,lo.y,hi.z]],"snap":true}),
+        )
+        .unwrap();
+        assert_eq!(circle["snapped"][2], "Vertex");
+    }
 
     #[test]
     fn base64_matches_known_values() {

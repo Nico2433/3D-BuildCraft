@@ -648,21 +648,30 @@ impl App {
         rect: egui::Rect,
         aspect: f32,
     ) {
-        if matches!(self.tool, Some(Tool::Measure { .. })) {
+        if matches!(self.tool, Some(Tool::Measure(_))) {
             // The marker takes the place of the cursor.
-            let spot = resp.hover_pos().and_then(|p| {
-                let (o, d) = self.camera.ray(to_ndc(rect, p), aspect);
-                self.measure_spot(o, d)
-            });
-            if let Some(Tool::Measure { hover, points }) = &mut self.tool {
+            let alt = ui.input(|i| i.modifiers.alt);
+            let spot = resp
+                .hover_pos()
+                .and_then(|p| self.measure_ray(rect, p, aspect, alt));
+            if let Some(Tool::Measure(m)) = &mut self.tool {
                 if spot.is_some() || ui.ctx().pointer_hover_pos().is_some() {
-                    *hover = spot;
+                    m.hover = spot;
                 }
-                if resp.hovered() && points.len() < 2 {
+                if resp.hovered() && m.points.len() < m.capacity() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                 }
             }
         }
+    }
+
+    /// [`App::measure_spot`] for the screen point `p`.
+    fn measure_ray(&mut self, rect: egui::Rect, p: Pos2, aspect: f32, alt: bool) -> Option<Spot> {
+        let ray = self.camera.ray(to_ndc(rect, p), aspect);
+        let beside = self
+            .camera
+            .ray(to_ndc(rect, p + egui::vec2(14.0, 0.0)), aspect);
+        self.measure_spot(ray, beside, alt)
     }
 
     /// A click on a handle picks it; otherwise it acts on the active tool or selects.
@@ -686,17 +695,20 @@ impl App {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let (o, d) = self.camera.ray(to_ndc(rect, pos), aspect);
                 let hit = self.pick(o, d);
-                let spot = self.measure_spot(o, d);
-                let face = matches!(self.tool, Some(Tool::Paint { .. } | Tool::Material { .. }))
-                    .then(|| self.pick_face(o, d))
+                let alt = ui.input(|i| i.modifiers.alt);
+                let spot = matches!(self.tool, Some(Tool::Measure(_)))
+                    .then(|| self.measure_ray(rect, pos, aspect, alt))
                     .flatten();
+                let face = matches!(
+                    self.tool,
+                    Some(Tool::Paint { .. } | Tool::Material { .. } | Tool::Measure(_))
+                )
+                .then(|| self.pick_face(o, d))
+                .flatten();
                 match &mut self.tool {
-                    Some(Tool::Measure { points, .. }) => {
-                        if let Some(p) = spot {
-                            if points.len() >= 2 {
-                                points.clear();
-                            }
-                            points.push(p);
+                    Some(Tool::Measure(m)) => {
+                        if let Some(spot) = spot {
+                            m.click(&self.scene, spot, face);
                         }
                     }
                     Some(Tool::Paint {

@@ -68,20 +68,29 @@ impl App {
             .map(|(id, _, distance)| (id, origin + dir * distance))
     }
 
-    /// The point a measure click would take: the surface under the ray, or the floor.
-    fn measure_spot(&self, origin: Vec3, dir: Vec3) -> Option<Vec3> {
-        let p = match self.pick(origin, dir) {
-            Some((_, p)) => p,
-            None => {
-                let t = -origin.z / dir.z;
-                (t.is_finite() && t > 0.0).then(|| origin + dir * t)?
-            }
+    /// The point a measure click would take: the surface under the ray, or the floor,
+    /// snapped to a nearby vertex, edge or face centre unless Alt is held (it turns the
+    /// Snap setting around). `beside` is the ray 14 px to the right on screen: how far in
+    /// the scene the snap reaches.
+    fn measure_spot(&mut self, ray: (Vec3, Vec3), beside: (Vec3, Vec3), alt: bool) -> Option<Spot> {
+        let (origin, dir) = ray;
+        let hit = self.pick_hit(origin, dir);
+        let floor_t = -origin.z / dir.z;
+        let floor =
+            (hit.is_none() && floor_t.is_finite() && floor_t > 0.0).then(|| origin + dir * floor_t);
+        let depth = hit.map_or(floor_t, |h| h.2);
+        let tolerance = ((beside.0 + beside.1 * depth) - (origin + dir * depth)).length();
+        let snap = self.settings.snap != alt;
+        let Some(Tool::Measure(m)) = &mut self.tool else {
+            return None;
         };
-        Some(if self.settings.snap {
-            (p * 10.0).round() / 10.0
-        } else {
-            p
-        })
+        m.spot(
+            &self.scene,
+            hit.map(|(id, tri, t)| (id, tri, origin + dir * t)),
+            floor,
+            tolerance,
+            snap,
+        )
     }
 
     pub(super) fn viewport(&mut self, ctx: &egui::Context) {
