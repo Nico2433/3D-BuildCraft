@@ -329,9 +329,9 @@ Each argument's description says what it returns, with an example.",
         ),
         tool(
             "save",
-            "Save the whole scene to a file on the app's computer. The extension picks the format: 3MF (keeps colours, materials and the model's details), STL, OBJ, PLY, GLB or glTF; a path without one gets .3mf. Fails if the file exists unless overwrite is true. The app writes on its own computer: the folder must exist there and be writable for it (a sandboxed app, such as the Flatpak, sees only some folders).",
+            "Save the whole scene to a file on the app's computer, as the Save as command does. The extension picks the format: 3MF (keeps colours, materials and the model's details), STL, OBJ, PLY, GLB or glTF. The path must be absolute and name a file with an extension: a relative path, a folder or a name without extension is an error. Fails if the file exists unless overwrite is true. Replies with the scene plus saved_to (the path written) and bytes. Like Save as, it names the scene after the file, so the model's default title (see model_info) becomes the file's name; a title set with model_info stays. The app writes on its own computer: the folder must exist there and be writable for it. A Flatpak app sees the real home folder but has its own private /tmp, not the agent's; other folders (/root, /proc) may be missing or read-only for it, and the error says which.",
             json!({ "type": "object", "properties": {
-                "path": { "type": "string", "description": "file path in an existing folder, e.g. /home/me/box.3mf" },
+                "path": { "type": "string", "description": "absolute file path with an extension, in an existing folder, e.g. /home/me/box.3mf" },
                 "overwrite": { "type": "boolean", "description": "replace an existing file; default false" }
             }, "required": ["path"] }),
         ),

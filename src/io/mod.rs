@@ -198,8 +198,14 @@ pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()
             return e;
         }
         let folder = path.parent().unwrap_or(Path::new("."));
+        // A folder the app cannot see is not the same as one it may not write in.
+        let why = if folder.is_dir() {
+            "is not writable for the app"
+        } else {
+            "does not exist for the app (a Flatpak app sees the real home folder but has its own private /tmp)"
+        };
         anyhow::anyhow!(
-            "{e:#}. The folder {} does not exist or is not writable for the app (a sandboxed app, such as the Flatpak, sees only some folders); save in an existing folder, e.g. the home folder",
+            "{e:#}. The folder {} {why}; save in an existing folder that is writable, e.g. the home folder",
             folder.display()
         )
     })

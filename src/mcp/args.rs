@@ -326,6 +326,51 @@ pub fn picture_file(a: &Value, key: &str) -> Result<PathBuf, String> {
     ))
 }
 
+/// `save`'s file: an absolute path to a file name with an extension, in a folder that
+/// may not exist (the write says so). Returns it as given.
+pub fn save_path(a: &Value) -> Result<PathBuf, String> {
+    use crate::io::{self, Format};
+    let path = PathBuf::from(
+        a["path"]
+            .as_str()
+            .ok_or("path is missing: the file to write, e.g. /home/me/box.3mf")?,
+    );
+    if !path.is_absolute() {
+        return Err(format!(
+            "give an absolute path, such as /home/me/box.3mf: {} is relative and the app's working folder is not yours",
+            path.display()
+        ));
+    }
+    if path.is_dir() || path.file_name().is_none() {
+        return Err(format!(
+            "{} is a folder; give the file to write in it, e.g. {}/box.3mf",
+            path.display(),
+            path.display().to_string().trim_end_matches('/')
+        ));
+    }
+    if path.extension().is_none() {
+        return Err(format!(
+            "{} has no extension, which picks the format; add one of {}, e.g. {}.3mf",
+            path.display(),
+            io::SAVE_FORMATS,
+            path.display()
+        ));
+    }
+    if !Format::from_path(&path).is_some_and(|f| Format::SAVE.contains(&f)) {
+        return Err(format!(
+            "save writes {}, chosen by the path's extension; SVG and pictures cannot be saved",
+            io::SAVE_FORMATS
+        ));
+    }
+    if path.exists() && !flag(a, "overwrite", false)? {
+        return Err(format!(
+            "{} exists; pass overwrite to replace it",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 /// The size `[x, y, z]` of an object, when it is given.
 pub fn object_size(a: &Value) -> Result<Option<Vec3>, String> {
     vec3(a, "size", OBJECT_SIZE)

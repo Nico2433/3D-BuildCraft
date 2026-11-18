@@ -368,12 +368,49 @@ fn a_missing_picture_and_an_unwritable_folder_say_what_to_do() {
             .unwrap_err();
         let e = format!("{e:#}");
         assert!(
-            e.contains("/no/such/folder does not exist or is not writable for the app")
+            e.contains("/no/such/folder does not exist for the app")
                 && e.contains("existing folder"),
             "{e}"
         );
         assert!(english(&e));
     }
+    // A folder that exists but cannot be written in says so, not that it is missing.
+    let e = buildcraft3d::io::save(
+        std::path::Path::new("/proc/x.3mf"),
+        std::slice::from_ref(&object),
+        &Default::default(),
+    )
+    .unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.contains("/proc is not writable for the app"), "{e}");
+}
+
+#[test]
+fn save_takes_only_an_absolute_file_path_with_an_extension() {
+    let dir = std::env::temp_dir();
+    let err = |p: &str| args::save_path(&json!({ "path": p })).unwrap_err();
+    assert!(err("box.3mf").contains("give an absolute path"));
+    assert!(err("relative/box.stl").contains("give an absolute path"));
+    // A folder is not a file, and is not turned into "/tmp.3mf".
+    for folder in [dir.to_str().unwrap(), "/", "/tmp/"] {
+        assert!(err(folder).contains("is a folder"), "{folder}");
+    }
+    assert!(err("/no/such/folder/box").contains("has no extension"));
+    assert!(err("/no/such/folder/box.svg").contains("cannot be saved"));
+    assert!(args::save_path(&json!({}))
+        .unwrap_err()
+        .contains("path is missing"));
+    let path = dir.join(format!("buildcraft-save-{}.stl", uuid::Uuid::new_v4()));
+    let path_str = path.to_str().unwrap();
+    assert_eq!(
+        args::save_path(&json!({ "path": path_str })),
+        Ok(path.clone())
+    );
+    std::fs::write(&path, b"x").unwrap();
+    assert!(err(path_str).contains("pass overwrite"));
+    let ok = args::save_path(&json!({ "path": path_str, "overwrite": true }));
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(ok, Ok(path));
 }
 
 #[test]

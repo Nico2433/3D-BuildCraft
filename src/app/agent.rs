@@ -167,6 +167,8 @@ impl App {
         }
         // Objects are cheap to clone (their meshes are shared): the answer says what changed.
         let before = self.scene.objects.clone();
+        // What `save` wrote: the file and its size in bytes.
+        let mut saved = None;
         match tool {
             "get_scene" => {}
             "select" => {
@@ -293,27 +295,10 @@ impl App {
                 }
             }
             "save" => {
-                let mut path = PathBuf::from(
-                    a["path"]
-                        .as_str()
-                        .ok_or("path is missing: the file to write, e.g. /home/me/box.3mf")?,
-                );
-                if path.extension().is_none() {
-                    path.set_extension("3mf");
-                }
-                if !Format::from_path(&path).is_some_and(|f| Format::SAVE.contains(&f)) {
-                    return Err(format!(
-                        "save writes {}, chosen by the path's extension; SVG and pictures cannot be saved",
-                        io::SAVE_FORMATS
-                    ));
-                }
-                if path.exists() && a["overwrite"].as_bool() != Some(true) {
-                    return Err(format!(
-                        "{} exists; pass overwrite to replace it",
-                        path.display()
-                    ));
-                }
-                self.save_to(path);
+                let path = args::save_path(a)?;
+                self.save_to(path.clone());
+                // A write that failed left an error notice, which `serve_agent` returns.
+                saved = std::fs::metadata(&path).ok().map(|m| (path, m.len()));
             }
             "print" => self.agent_print(ctx)?,
             other => return Err(format!("unknown tool: {other}; tools/list lists the tools")),
@@ -323,6 +308,10 @@ impl App {
             self.tool = None;
         }
         let mut answer = self.scene_json();
+        if let Some((path, bytes)) = saved {
+            answer["saved_to"] = json!(path.display().to_string());
+            answer["bytes"] = json!(bytes);
+        }
         let changes = changes(&before, &self.scene.objects);
         if changes.as_object().is_some_and(|c| !c.is_empty()) {
             answer["changes"] = changes;
