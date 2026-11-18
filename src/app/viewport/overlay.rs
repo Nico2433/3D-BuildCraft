@@ -147,20 +147,13 @@ fn measure_overlay(
                 Stroke::new(1.5 / ppp, MEASURE_GREEN),
             ));
         }
-        // Radius line to the rim (the whole diameter for a section, to
-        // the outline's first vertex), the centre as a dot with a small cross.
-        let outline = m.outline();
-        let on_outline = outline.is_some();
-        let rim = match outline.and_then(|l| l.points.first()) {
+        // Radius line from the centre to the rim (to the outline's first vertex on a
+        // section), the centre as a dot with a small cross.
+        let rim = match m.outline().and_then(|l| l.points.first()) {
             Some(p) => (*p - r.center).normalize_or_zero(),
             None => r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector()),
         };
-        let start = if on_outline {
-            r.center - rim * r.radius
-        } else {
-            r.center
-        };
-        if let Some((c, e)) = to_screen(start).zip(to_screen(r.center + rim * r.radius)) {
+        if let Some((c, e)) = to_screen(r.center).zip(to_screen(r.center + rim * r.radius)) {
             faint(c, e);
             painter.line_segment([c, e], Stroke::new(1.5 / ppp, MEASURE_GREEN));
         }
