@@ -14,6 +14,7 @@ pub mod library;
 pub mod mcp;
 pub mod measure;
 pub mod mesh;
+pub mod mesh_cache;
 pub mod outline;
 pub mod paper;
 pub mod picture;

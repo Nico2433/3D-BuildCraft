@@ -7,12 +7,13 @@ mod selection;
 mod shader;
 
 use crate::mesh::Mesh;
+use crate::mesh_cache::MeshCache;
 use crate::scene::Material;
 use bytemuck::{Pod, Zeroable};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu, CallbackResources, CallbackTrait};
 use glam::{Mat4, Vec3, Vec4};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -75,6 +76,9 @@ struct Vertex {
 /// What one frame draws. Built by the UI, consumed by the callback.
 #[derive(Clone)]
 pub struct DrawItem {
+    /// Who draws it (an object id; previews use ids no object has): the renderer keeps
+    /// showing an owner's previous copy while the new one's shading is computed.
+    pub owner: u64,
     pub mesh: Arc<Mesh>,
     pub model: Mat4,
     pub color: [u8; 4],
@@ -168,9 +172,6 @@ pub struct FrameCallback {
     pub lines: Vec<Polyline>,
 }
 
-/// Angle above which neighbouring faces get separate vertices (a crease).
-const CREASE_DEG: f32 = 40.0;
-
 struct GpuMesh {
     _keep: Arc<Mesh>,
     vbuf: wgpu::Buffer,
@@ -180,8 +181,6 @@ struct GpuMesh {
     /// Drawn triangles, for the wireframe built on first use.
     triangles: Vec<[u32; 3]>,
     lines: Option<(wgpu::Buffer, u32)>,
-    /// Drawn with [`Mesh::provisional_shading`] until the worker's shading replaces it.
-    provisional: bool,
 }
 
 #[derive(PartialEq)]
@@ -223,9 +222,9 @@ pub struct Renderer {
     object_capacity: u64,
     /// Scratch for the per-frame object uniforms, kept to avoid reallocating.
     object_bytes: Vec<u8>,
-    meshes: HashMap<usize, GpuMesh>,
-    /// `Mesh::shading` results from the worker, until they are uploaded.
-    shading: crate::scene::WorkCache<Arc<crate::mesh::Shading>>,
+    meshes: MeshCache<GpuMesh>,
+    /// This frame's copy to draw for each [`DrawItem`], set by `prepare`.
+    item_keys: Vec<usize>,
     /// The texture array and how many registry pictures it already holds.
     textures: wgpu::Texture,
     texture_bg: wgpu::BindGroup,
@@ -233,6 +232,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The GPU copy drawn for item `i` of this frame.
+    fn gpu(&self, i: usize) -> &GpuMesh {
+        self.meshes
+            .get(self.item_keys[i])
+            .expect("copy resolved in prepare")
+    }
+
     /// Mesh uploads and wireframe copies are rebuilt on the next draw.
     pub fn release_meshes(&mut self) {
         let bytes: u64 = self
@@ -245,7 +251,7 @@ impl Renderer {
             self.meshes.len(),
             bytes
         );
-        self.meshes = HashMap::new();
+        self.meshes.clear();
         self.selection = None;
     }
 
@@ -369,39 +375,10 @@ impl Renderer {
         (buf, bg)
     }
 
-    /// The GPU copy of `mesh`, from the worker's shading when it is ready and from the
-    /// provisional one otherwise (the worker is started and wakes `repaint` when done).
-    fn sync_mesh(&mut self, device: &wgpu::Device, mesh: &Arc<Mesh>, repaint: &egui::Context) {
-        let key = Arc::as_ptr(mesh) as usize;
-        if self.meshes.get(&key).is_some_and(|g| !g.provisional) {
-            return;
-        }
-        let repaint = repaint.clone();
-        let ready = self.shading.get(
-            mesh,
-            |m| Arc::new(m.shading(CREASE_DEG)),
-            move || repaint.request_repaint(),
-        );
-        match ready {
-            Some(shading) => {
-                self.shading.take(mesh);
-                self.meshes
-                    .insert(key, Self::upload_mesh(device, mesh, &shading, false));
-            }
-            None if !self.meshes.contains_key(&key) => {
-                let shading = mesh.provisional_shading();
-                self.meshes
-                    .insert(key, Self::upload_mesh(device, mesh, &shading, true));
-            }
-            None => {}
-        }
-    }
-
     fn upload_mesh(
         device: &wgpu::Device,
         mesh: &Arc<Mesh>,
         shading: &crate::mesh::Shading,
-        provisional: bool,
     ) -> GpuMesh {
         let verts: Vec<Vertex> = shading
             .positions
@@ -435,7 +412,6 @@ impl Renderer {
             bounds: mesh.aabb(),
             lines: None,
             triangles: shading.triangles.clone(),
-            provisional,
         }
     }
 

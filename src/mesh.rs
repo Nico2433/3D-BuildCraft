@@ -435,20 +435,31 @@ impl Mesh {
         n.iter().map(|v| v.normalize_or_zero()).collect()
     }
 
-    /// A cheap stand-in for [`Mesh::shading`] (linear time, a few ms at 320k triangles):
-    /// the mesh's own vertices with smooth normals, no creases, paint or textures. Drawn
-    /// while the real shading is computed on a worker.
+    /// A cheap stand-in for [`Mesh::shading`] (linear time, about 2 ms at 320k triangles):
+    /// every triangle gets its own vertices with its face normal, so hard-edged models
+    /// look right and a dense smooth one (tiny triangles) is hard to tell from the real
+    /// shading. No creases, paint or textures. Last resort, drawn only when a big mesh
+    /// has nothing earlier to show while the real shading is computed on a worker.
     pub fn provisional_shading(&self) -> Shading {
-        let n = self.positions.len();
-        Shading {
-            positions: self.positions.clone(),
-            normals: self.vertex_normals(),
+        let n = self.triangles.len() * 3;
+        let mut out = Shading {
+            positions: Vec::with_capacity(n),
+            normals: Vec::with_capacity(n),
             colors: vec![[0; 4]; n],
             uvs: vec![[0.0; 2]; n],
             tex: vec![0; n],
-            triangles: self.triangles.clone(),
+            triangles: Vec::with_capacity(self.triangles.len()),
             edges: Vec::new(),
+        };
+        for t in &self.triangles {
+            let [a, b, c] = t.map(|i| self.positions[i as usize]);
+            let normal = (b - a).cross(c - a).normalize_or_zero();
+            let base = out.positions.len() as u32;
+            out.positions.extend([a, b, c]);
+            out.normals.extend([normal; 3]);
+            out.triangles.push([base, base + 1, base + 2]);
         }
+        out
     }
 
     /// The mesh as drawn: vertices split where faces meet at more than `crease_deg`, so

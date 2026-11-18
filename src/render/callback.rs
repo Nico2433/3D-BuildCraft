@@ -69,12 +69,17 @@ impl CallbackTrait for FrameCallback {
         let mut bytes = std::mem::take(&mut r.object_bytes);
         bytes.clear();
         bytes.resize(slots * OBJECT_STRIDE as usize, 0);
-        let mut live = HashSet::new();
+        r.item_keys.clear();
         for (i, it) in self.items.iter().enumerate() {
-            let key = Arc::as_ptr(&it.mesh) as usize;
-            live.insert(key);
-            r.sync_mesh(device, &it.mesh, &self.repaint);
-            let gm = r.meshes.get_mut(&key).expect("mesh synced above");
+            let repaint = self.repaint.clone();
+            let key = r.meshes.resolve(
+                it.owner,
+                &it.mesh,
+                &mut |mesh, shading| Renderer::upload_mesh(device, mesh, shading),
+                move || repaint.request_repaint(),
+            );
+            r.item_keys.push(key);
+            let gm = r.meshes.get_mut(key).expect("mesh resolved above");
             let c = it.color;
             let color = Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32)
                 .to_array()
@@ -138,7 +143,7 @@ impl CallbackTrait for FrameCallback {
         }
         r.object_bytes = bytes;
         r.upload_lines(device, queue, &self.lines);
-        r.meshes.retain(|k, _| live.contains(k));
+        r.meshes.finish_frame();
         r.update_selection(self, device, screen, encoder);
         vec![]
     }
@@ -159,8 +164,8 @@ impl CallbackTrait for FrameCallback {
         let slot = |s: u64| [(s * OBJECT_STRIDE) as u32];
         if self.flags.floor && self.flags.reflections && !self.flags.xray && self.eye.z > 0.0 {
             pass.set_pipeline(&r.solid);
-            for (i, it) in self.items.iter().enumerate() {
-                let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
+            for i in 0..self.items.len() {
+                let Some(gm) = r.meshes.get(r.item_keys[i]) else {
                     continue;
                 };
                 if gm.index_count == 0 {
@@ -187,7 +192,7 @@ impl CallbackTrait for FrameCallback {
         // them without writing depth.
         let draw_item = |pass: &mut wgpu::RenderPass<'static>, i: usize| {
             let it = &self.items[i];
-            let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
+            let Some(gm) = r.meshes.get(r.item_keys[i]) else {
                 return;
             };
             if gm.index_count == 0 {
@@ -224,13 +229,13 @@ impl CallbackTrait for FrameCallback {
         if self.flags.wireframe {
             pass.set_pipeline(&r.wire);
             // Not on see-through items: the wire belongs to what is being made.
-            for (i, it) in self
+            for (i, _) in self
                 .items
                 .iter()
                 .enumerate()
                 .filter(|(_, it)| it.color[3] == 255)
             {
-                let Some(gm) = r.meshes.get(&(Arc::as_ptr(&it.mesh) as usize)) else {
+                let Some(gm) = r.meshes.get(r.item_keys[i]) else {
                     continue;
                 };
                 let Some((lines, count)) = &gm.lines else {

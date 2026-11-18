@@ -765,7 +765,12 @@ mod tests {
     fn provisional_shading_covers_the_same_triangles() {
         let mesh = Primitive::Sphere.build();
         let p = mesh.provisional_shading();
-        assert_eq!(p.triangles, mesh.triangles);
+        assert_eq!(p.triangles.len(), mesh.triangles.len());
+        for (src, drawn) in mesh.triangles.iter().zip(&p.triangles) {
+            for (&s, &d) in src.iter().zip(drawn) {
+                assert_eq!(p.positions[d as usize], mesh.positions[s as usize]);
+            }
+        }
         assert_eq!(p.normals.len(), p.positions.len());
         assert_eq!(p.colors.len(), p.positions.len());
         assert!(p.edges.is_empty());

@@ -138,3 +138,106 @@ fn shading_upload_hitch() {
         t.elapsed().as_secs_f64() * 1e3
     );
 }
+
+/// `Mesh::shading` and the provisional shading per triangle count, to choose
+/// `render::SYNC_SHADING_TRIANGLES` (the largest mesh shaded on the UI thread).
+#[test]
+#[ignore]
+fn shading_cost_by_size() {
+    for (rings, name) in [
+        (1, "cube"),
+        (50, "sphere 50"),
+        (100, "sphere 100"),
+        (150, "sphere 150"),
+        (200, "sphere 200"),
+        (300, "sphere 300"),
+        (400, "sphere 400"),
+    ] {
+        let m = if rings == 1 {
+            primitives::cube(10.0)
+        } else {
+            primitives::sphere(10.0, rings, rings)
+        };
+        let best = |f: &dyn Fn()| {
+            (0..5)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        println!(
+            "BENCH {name}: {} triangles, shading {:.2} ms, provisional {:.2} ms",
+            m.triangles.len(),
+            best(&|| {
+                m.shading(40.0);
+            }),
+            best(&|| {
+                m.provisional_shading();
+            }),
+        );
+    }
+}
+
+/// UI-thread cost of the first frame that draws a new mesh, for 12, 20k and 320k
+/// triangles: before the worker (`Mesh::shading` inline), with the worker and the
+/// provisional smooth shading (commit 4808262, reproduced here from `vertex_normals`),
+/// and now (`MeshCache::resolve`: inline below `SYNC_SHADING_TRIANGLES`, otherwise the
+/// previous copy is held, or the flat provisional shading on first load). The GPU upload
+/// is replaced by a clone of the shading in all of them.
+#[test]
+#[ignore]
+fn new_mesh_ui_cost() {
+    use buildcraft3d::mesh::Shading;
+    use buildcraft3d::mesh_cache::MeshCache;
+    use std::sync::Arc;
+    let cases = [
+        ("12 triangles", primitives::cube(10.0)),
+        ("20k triangles", primitives::sphere(10.0, 100, 100)),
+        ("320k triangles", primitives::sphere(10.0, 400, 400)),
+    ];
+    let mut build = |_: &Arc<Mesh>, s: &Shading| s.clone();
+    for (name, mesh) in cases {
+        let mesh = Arc::new(mesh);
+        let ms = |f: &mut dyn FnMut()| {
+            let t = Instant::now();
+            f();
+            t.elapsed().as_secs_f64() * 1e3
+        };
+        let before = ms(&mut || {
+            std::hint::black_box(mesh.shading(40.0).clone());
+        });
+        let worker_commit = ms(&mut || {
+            let n = mesh.vertex_normals();
+            let n = std::hint::black_box(n);
+            let mut s = Shading {
+                positions: mesh.positions.clone(),
+                normals: n,
+                triangles: mesh.triangles.clone(),
+                ..Default::default()
+            };
+            s = s.clone();
+            std::hint::black_box(s);
+        });
+        // A new mesh replacing one already drawn by the same object.
+        let mut cache: MeshCache<Shading> = MeshCache::default();
+        let previous = Arc::new(primitives::sphere(10.0, 20, 20));
+        let first_load = ms(&mut || {
+            cache.resolve(1, &previous, &mut build, || {});
+        });
+        cache.finish_frame();
+        let replace = ms(&mut || {
+            cache.resolve(1, &mesh, &mut build, || {});
+        });
+        println!(
+            "BENCH {name}: before {before:.2} ms | worker commit {worker_commit:.2} ms | now: new mesh over a previous one {replace:.2} ms (small previous load {first_load:.2} ms)"
+        );
+        // First load of this mesh with nothing to show.
+        let mut cache: MeshCache<Shading> = MeshCache::default();
+        let first = ms(&mut || {
+            cache.resolve(2, &mesh, &mut build, || {});
+        });
+        println!("BENCH {name}: now, first load with nothing to show {first:.2} ms");
+    }
+}

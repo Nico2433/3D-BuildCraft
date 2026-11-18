@@ -73,12 +73,25 @@ Screenshots of a known state: `cargo run --release -- --screenshot out.png` with
 - Per-frame work is cached by mesh identity (`Arc<Mesh>`): GPU uploads, world boxes, stats,
   the picking BVH and the measure face. `scene::WorkCache<T>` is the shared "compute on a
   worker, keyed by a weak mesh pointer" helper (one worker at a time; results of meshes that
-  were edited or deleted are dropped with them): `cached_stats` and the renderer's
-  `Mesh::shading` both use it. A new mesh is drawn at once with `Mesh::provisional_shading`
-  (own vertices, smooth normals, no creases, paint or textures; 2 ms at 320k triangles) and
-  swapped for the real shading, with a repaint, when the worker finishes (about 70 ms at
-  320k triangles). Before, the UI thread ran `Mesh::shading` (65-73 ms hitch).
-  `shading_upload_hitch` in `tests/perf_bench.rs` measures both.
+  were edited or deleted are dropped with them): `cached_stats` and the renderer's shading
+  both use it.
+- Which copy of a mesh is drawn is decided by `mesh_cache::MeshCache` (generic over the GPU
+  copy, so `tests/mesh_cache.rs` runs it without a device), keyed per object (`DrawItem::owner`).
+  Meshes up to `SYNC_SHADING_TRIANGLES` (10k, about 2 ms of `Mesh::shading`) are shaded on
+  the UI thread, so the first frame is already the final look. A bigger one is shaded on the
+  worker; meanwhile the object keeps drawing its previous copy (a tool preview replacing the
+  object's mesh looks unchanged for the ~70 ms it takes at 320k triangles), and only a mesh
+  with nothing earlier to show (first load of a huge file) uses `Mesh::provisional_shading`
+  (flat face normals, one vertex set per triangle, no creases/paint/textures). Commit 4808262
+  had drawn the provisional smooth shading first for every new mesh, which made a cube
+  flicker rounded-then-flat on entering a tool; the fix is the synchronous path below the
+  threshold plus the hold above it. Copies no longer drawn are kept as spares (4 copies,
+  1.5M triangles) so leaving a tool, undo and redo do not shade again.
+  UI-thread cost of the first frame of a new mesh (`new_mesh_ui_cost`, `shading_cost_by_size`
+  in `tests/perf_bench.rs`): 12 triangles 0.02 ms inline; 20k 4.7 ms before the worker, now
+  held, 0.02 ms; 320k 75 ms before the worker, 2.8 ms with the smooth provisional, now 0.03 ms
+  held (first load with nothing to show: 12 ms). The test counts shading requests per tool
+  entry (one per distinct mesh, none on leave/undo/redo).
 
 ## Hubs
 
