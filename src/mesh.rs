@@ -415,10 +415,20 @@ impl Mesh {
             })
             .collect();
         let unit: Vec<Vec3> = face.iter().map(|n| n.normalize_or_zero()).collect();
-        let mut around: Vec<Vec<u32>> = vec![Vec::new(); self.positions.len()];
+        // Faces around each vertex, as one flat list with a start offset per vertex.
+        let mut start = vec![0u32; self.positions.len() + 1];
+        for &v in self.triangles.iter().flatten() {
+            start[v as usize + 1] += 1;
+        }
+        for v in 0..self.positions.len() {
+            start[v + 1] += start[v];
+        }
+        let mut fill = start.clone();
+        let mut around = vec![0u32; self.triangles.len() * 3];
         for (f, t) in self.triangles.iter().enumerate() {
             for &v in t {
-                around[v as usize].push(f as u32);
+                around[fill[v as usize] as usize] = f as u32;
+                fill[v as usize] += 1;
             }
         }
         let mut out = Shading::default();
@@ -428,7 +438,7 @@ impl Mesh {
             for k in 0..3 {
                 let v = t[k];
                 // Faces at this vertex that bend less than the crease from this one.
-                let n: Vec3 = around[v as usize]
+                let n: Vec3 = around[start[v as usize] as usize..start[v as usize + 1] as usize]
                     .iter()
                     .filter(|&&g| g as usize == f || unit[f].dot(unit[g as usize]) >= cos)
                     .map(|&g| face[g as usize])
@@ -458,21 +468,24 @@ impl Mesh {
             }
         }
         out.triangles = corner.clone();
-        let mut edges: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::default();
+        // Every edge as (low vertex, high vertex, face, side), sorted so the faces on one
+        // edge sit together.
+        let mut edges: Vec<(u32, u32, u32, u8)> = Vec::with_capacity(self.triangles.len() * 3);
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
-                edges.entry((a.min(b), a.max(b))).or_default().push((f, k));
+                edges.push((a.min(b), a.max(b), f as u32, k as u8));
             }
         }
-        for faces in edges.values() {
+        edges.sort_unstable();
+        for faces in edges.chunk_by(|x, y| (x.0, x.1) == (y.0, y.1)) {
             // Borders are left out: they mark broken meshes, which get a red outline on the floor instead.
-            let sharp = match faces[..] {
-                [(f, _), (g, _)] => unit[f].dot(unit[g]) < cos,
+            let sharp = match faces {
+                [(_, _, f, _), (_, _, g, _)] => unit[*f as usize].dot(unit[*g as usize]) < cos,
                 _ => false,
             };
             if sharp {
-                let (f, k) = faces[0];
+                let (f, k) = (faces[0].2 as usize, faces[0].3 as usize);
                 out.edges.push([corner[f][k], corner[f][(k + 1) % 3]]);
             }
         }
