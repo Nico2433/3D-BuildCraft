@@ -703,10 +703,15 @@ mod tests {
         cache: &mut WorkCache<std::sync::Arc<crate::mesh::Shading>>,
         mesh: &Arc<Mesh>,
     ) -> std::sync::Arc<crate::mesh::Shading> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if let Some(s) = cache.get(mesh, shade, || {}) {
                 return s;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never answered"
+            );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }

@@ -2,7 +2,8 @@
 //! `section`) on generated shapes, checked against their exact geometry, and on real flower
 //! pots: the ignored test prints a table per pot (first round outer contour going down from
 //! the top with a horizontal plane and with the automatic tilt, diameters, tilt, latency),
-//! the pots read from `/run/media/nico/KODAK/3D/Macetas/Robert/` (missing files are skipped):
+//! the pots read from the folder in `BUILDCRAFT_POTS` (default `/run/media/nico/KODAK/3D/Macetas/Robert/`;
+//! a missing folder is skipped):
 //! `cargo test --offline --release -j 4 --test measure_models -- --ignored --nocapture`.
 
 use buildcraft3d::io;
@@ -259,7 +260,7 @@ fn a_rim_cut_at_a_slant_on_an_upright_wall_is_measured_in_the_mouths_plane() {
 
 // ---- the real pots --------------------------------------------------------------------
 
-const POTS: &str = "/run/media/nico/KODAK/3D/Macetas/Robert";
+const DEFAULT_POTS: &str = "/run/media/nico/KODAK/3D/Macetas/Robert";
 
 fn stl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -400,10 +401,11 @@ fn row(name: &str, mesh: &Mesh) {
 #[test]
 #[ignore]
 fn section_on_the_real_pots() {
+    let dir = std::env::var("BUILDCRAFT_POTS").unwrap_or_else(|_| DEFAULT_POTS.into());
     let mut files = Vec::new();
-    stl_files(Path::new(POTS), &mut files);
+    stl_files(Path::new(&dir), &mut files);
     if files.is_empty() {
-        println!("BENCH real pots: {POTS} not found, skipped");
+        println!("BENCH real pots: {dir} not found, skipped");
     }
     for f in files {
         let Ok(loaded) = io::load(&f) else {
