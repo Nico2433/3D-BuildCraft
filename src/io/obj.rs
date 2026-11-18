@@ -6,7 +6,7 @@ use crate::mesh::Mesh;
 use crate::scene::DEFAULT_COLOR;
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -14,7 +14,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("Could not read {}", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut materials: HashMap<String, Rgba> = HashMap::new();
+    let mut materials: HashMap<String, Rgba> = HashMap::default();
     let mut positions: Vec<Vec3> = Vec::new();
     // (name, colour, triangles with global indices)
     let mut groups: Vec<(String, Rgba, Vec<[u32; 3]>)> = Vec::new();
@@ -94,7 +94,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
             bail!("Face index out of range in {name}");
         }
         // Keep only the vertices this object uses.
-        let mut remap: HashMap<u32, u32> = HashMap::new();
+        let mut remap: HashMap<u32, u32> = HashMap::default();
         let mut local = Vec::new();
         let triangles = tris
             .iter()
@@ -121,7 +121,7 @@ pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
 }
 
 fn parse_mtl(text: &str) -> HashMap<String, Rgba> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     let mut current: Option<String> = None;
     for line in text.lines() {
         let mut it = line.split_whitespace();
