@@ -35,7 +35,7 @@ optdepends=(
 options=('!lto')
 _id=io.github.nico2433.BuildCraft3D
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('a3707eb9c072efa6536e426ab0ddc1c836f9c4303f8ba4bbd99fb40708f6b5b8')
+sha256sums=('f5576d798b9622eaddcaa0084ef2020cedeb1a3dc956d8007715b178715ad14f')
 
 prepare() {
   cd "3D-BuildCraft-$pkgver"
