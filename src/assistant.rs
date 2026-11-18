@@ -194,6 +194,21 @@ pub fn mcp_url(port: u16) -> Result<String> {
     Ok(mcp::http::url(port, &mcp::http::token()?))
 }
 
+/// Whether Antigravity's `~/.gemini/antigravity/mcp_config.json` has our server; `No`
+/// when the file is missing or unreadable.
+fn antigravity_registration(url: &str) -> Registration {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let config = home.map(|h| {
+        std::path::PathBuf::from(h)
+            .join(".gemini")
+            .join("antigravity")
+            .join("mcp_config.json")
+    });
+    config
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map_or(Registration::No, |text| Registration::read(&text, url))
+}
+
 /// Antigravity's `mcp_config.json` entry for the server at `url`.
 pub fn antigravity_config(url: &str) -> String {
     json!({ "mcpServers": { SERVER: { "serverUrl": url } } }).to_string()
@@ -302,9 +317,14 @@ pub fn detect(url: &str) -> Detected {
         AgentKind::Antigravity,
     ] {
         if let Some(path) = find_program(kind.names().1) {
-            let registered = run_agent(&path, &["mcp".into(), "list".into()])
-                .map(|output| Registration::read(&output, url))
-                .map_err(|e| format!("{e:#}"));
+            let registered = match kind {
+                // `antigravity` is the editor itself and opens its window; read its
+                // settings file instead of running it.
+                AgentKind::Antigravity => Ok(antigravity_registration(url)),
+                _ => run_agent(&path, &["mcp".into(), "list".into()])
+                    .map(|output| Registration::read(&output, url))
+                    .map_err(|e| format!("{e:#}")),
+            };
             found.agents.push(InstalledAgent {
                 kind,
                 path,
