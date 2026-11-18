@@ -99,10 +99,9 @@ impl App {
     }
 }
 
-/// The measure marks: arrows on the placed points (blue the first, green the others), the
-/// faint line between two of them (the second may be the point under the cursor, which gets
-/// no marker of its own: the pointer is there), and the fitted circle or sphere with its
-/// radius line.
+/// The measure marks: arrows on the placed points (blue the first, green the others) and on
+/// the live one (the arrow is the tool's cursor), the faint line between two of them, and
+/// the fitted circle or sphere with its radius line.
 fn measure_overlay(
     painter: &egui::Painter,
     m: &Measure,
@@ -199,7 +198,7 @@ fn measure_overlay(
             loop_line(&c.outline, MEASURE_GREEN);
         }
     }
-    for (p, color) in marks.into_iter().take(m.points.len()) {
+    for (p, color) in marks {
         if let Some(tip) = to_screen(p) {
             measure_arrow(painter, tip, color, ppp);
         }
