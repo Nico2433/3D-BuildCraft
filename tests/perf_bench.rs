@@ -65,3 +65,35 @@ fn boolean_and_cut() {
         apply(Op::Union, &[a.clone(), b.clone()]).unwrap()
     });
 }
+
+#[test]
+#[ignore]
+fn cut_obj_emboss() {
+    use buildcraft3d::cut::{cut_plane, CutPlane};
+    use buildcraft3d::emboss::{self, Emboss};
+    use glam::Vec3;
+    let m = primitives::sphere(10.0, 400, 400);
+    let plane = CutPlane::through(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.2, 0.1, 1.0)).unwrap();
+    time("cut_plane", || cut_plane(&m, &plane));
+    let obj = ModelObject {
+        name: "s".into(),
+        mesh: m.clone(),
+        transform: Mat4::IDENTITY,
+        color: DEFAULT_COLOR,
+    };
+    let path = std::env::temp_dir().join("bench_sphere.obj");
+    time("obj_write", || {
+        io::save(&path, std::slice::from_ref(&obj), &ModelInfo::default()).unwrap()
+    });
+    time("obj_read", || io::load(&path).unwrap());
+    let small = primitives::sphere(10.0, 100, 100);
+    let e = Emboss {
+        text: "Hello".into(),
+        size: 8.0,
+        ..Emboss::default()
+    };
+    let mut e2 = e.clone();
+    emboss::place(&small, &mut e2, Vec3::new(0.0, -10.0, 0.0), -Vec3::Y);
+    println!("BENCH emboss target triangles: {}", small.triangles.len());
+    time("emboss_apply", || emboss::apply(&small, &e2));
+}
