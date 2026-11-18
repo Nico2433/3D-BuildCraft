@@ -6,7 +6,7 @@ use crate::boolean::{from_manifold, to_manifold};
 use crate::mesh::{Dsu, Mesh};
 use crate::texture::FaceTex;
 use anyhow::{bail, Result};
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use manifold_rust::linalg::Vec3 as MVec3;
 use manifold_rust::manifold::Manifold;
 use manifold_rust::types::Box as MBox;
@@ -455,9 +455,8 @@ pub fn extrude_down(mesh: &Mesh, floor: f32) -> Result<Mesh> {
 /// Most voxels along the longest side; keeps memory and time bounded on big models.
 const MAX_CELLS: f32 = 160.0;
 
-/// Voxels the inner surface is pulled in by, a safety for the trilinear sample, which
-/// can overshoot the true depth a little where the surface is concave.
-const SAFETY: f32 = 0.1;
+/// Rounding slack, in voxels, added to the curvature margin of the inner surface.
+const SLACK: f32 = 0.02;
 
 const JITTER: (f32, f32) = (0.013_7, 0.029_1);
 
@@ -466,7 +465,7 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     let b = mesh.aabb();
     let size = b.max - b.min;
     // Depths are exact distances to the surface near the wall, so the wall is within
-    // SAFETY voxels of the request; big models get coarse voxels and so a coarser surface.
+    // the margin of the request; big models get coarse voxels and so a coarser surface.
     let h = (wall / 4.0).max(size.max_element() / MAX_CELLS);
     // One outside voxel on every side, so every line starts and ends outside.
     let cells = (size / h).ceil().as_uvec3() + 2;
@@ -474,7 +473,8 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     // Centred on the model, so the first outside voxel centre lies as far beyond the
     // surface on both ends of every axis and the cavity is not shifted towards one side.
     let origin = (b.min + b.max - cells.as_vec3() * h) * 0.5;
-    let center = |i: usize, axis: usize| origin[axis] + (i as f32 + 0.5) * h;
+    let grid = Grid { origin, h, n };
+    let center = |i: usize, axis: usize| grid.center(i, axis);
     let idx = |x: usize, y: usize, z: usize| (z * n[1] + y) * n[0] + x;
 
     // Crossings of each vertical line through voxel centres with the surface.
@@ -525,32 +525,19 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
             }
         }
     }
-    let range = |lo: f32, hi: f32, axis: usize| {
-        let cell = |v: f32| (v - origin[axis]) / h - 0.5;
-        let first = cell(lo - reach).ceil().max(0.0) as usize;
-        let last = (cell(hi + reach).floor().max(-1.0) + 1.0) as usize;
-        first..last.min(n[axis])
-    };
-    for t in &mesh.triangles {
-        let [a, b2, c] = t.map(|i| mesh.positions[i as usize]);
-        let (lo, hi) = (a.min(b2).min(c), a.max(b2).max(c));
-        for z in range(lo.z, hi.z, 2) {
-            for y in range(lo.y, hi.y, 1) {
-                for x in range(lo.x, hi.x, 0) {
-                    let p = Vec3::new(center(x, 0), center(y, 1), center(z, 2));
-                    let d = dist_to_triangle(p, a, b2, c);
-                    let cell = &mut sdist[idx(x, y, z)];
-                    *cell = cell.min(d);
-                }
-            }
-        }
-    }
+    carve_distances(mesh, &grid, reach, &mut sdist);
     for (d, &i) in sdist.iter_mut().zip(&inside) {
         if !i {
             *d = -*d;
         }
     }
 
+    // Concave parts of the surface (holes, the inside of a ring) make the trilinear sample
+    // overestimate the depth, and the level set's chords cut into the cavity, each by up
+    // to h²/(8R) with R the radius of the inner surface there. R is at least `wall`
+    // (the surface is offset that far from a concave one), so the inner surface is
+    // pulled in by their sum, which vanishes as the voxels shrink.
+    let margin = h * h / (4.0 * wall) + SLACK * h;
     let sdf = |p: MVec3| -> f64 {
         // Trilinear sample of the signed distance (mm), minus the wall.
         let g = [
@@ -574,9 +561,100 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
                 .product();
             acc += wgt * sdist[idx(i[0], i[1], i[2])];
         }
-        (acc - wall - h * SAFETY) as f64
+        (acc - wall - margin) as f64
     };
     level_set(&sdf, b.min, b.max, h)
+}
+
+/// A regular grid of voxels of side `h`, `n` of them along each axis from `origin`.
+struct Grid {
+    origin: Vec3,
+    h: f32,
+    n: [usize; 3],
+}
+
+impl Grid {
+    /// Coordinate of the centre of voxel `i` along `axis`.
+    fn center(&self, i: usize, axis: usize) -> f32 {
+        self.origin[axis] + (i as f32 + 0.5) * self.h
+    }
+
+    /// Voxels whose centres lie in [lo, hi] along `axis`.
+    fn span(&self, lo: f32, hi: f32, axis: usize) -> std::ops::Range<usize> {
+        let cell = |v: f32| (v - self.origin[axis]) / self.h - 0.5;
+        let first = cell(lo).ceil().max(0.0) as usize;
+        let last = (cell(hi).floor().max(-1.0) + 1.0) as usize;
+        first..last.min(self.n[axis])
+    }
+}
+
+/// Layers of voxels one thread takes at a time in [`carve_distances`].
+const SLAB: usize = 4;
+
+/// Lowers every voxel of `dist` to its distance to the surface of `mesh` where that is
+/// below its current value (callers start it at `reach`, so farther voxels keep it).
+/// Threads take slabs of `SLAB` layers; per triangle and voxel, cheap lower bounds (the
+/// plane, the bounding box) skip the exact distance, and a row only spans the voxels
+/// within `reach` of the box.
+fn carve_distances(mesh: &Mesh, grid: &Grid, reach: f32, dist: &mut [f32]) {
+    let [n0, n1, _] = grid.n;
+    let slabs = std::sync::Mutex::new(dist.chunks_mut(SLAB * n0 * n1).enumerate());
+    let worker = || {
+        loop {
+            // The lock is released before the slab is worked on.
+            let next = slabs.lock().unwrap().next();
+            let Some((k, slab)) = next else { break };
+            carve_slab(mesh, grid, reach, k * SLAB, slab);
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(worker);
+        }
+    });
+}
+
+/// [`carve_distances`] for the layers from `z_lo` that `slab` holds.
+fn carve_slab(mesh: &Mesh, grid: &Grid, reach: f32, z_lo: usize, slab: &mut [f32]) {
+    let [n0, n1, _] = grid.n;
+    let layers = slab.len() / (n0 * n1);
+    // Distance from `v` to the interval [lo, hi].
+    let gap = |v: f32, lo: f32, hi: f32| (lo - v).max(v - hi).max(0.0);
+    let (z_min, z_max) = (grid.center(z_lo, 2), grid.center(z_lo + layers - 1, 2));
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
+        if lo.z - reach > z_max || hi.z + reach < z_min {
+            continue;
+        }
+        let normal = (b - a).cross(c - a).normalize_or_zero();
+        let zs = grid.span(lo.z - reach, hi.z + reach, 2);
+        for z in zs.start.max(z_lo)..zs.end.min(z_lo + layers) {
+            let pz = grid.center(z, 2);
+            let dz = gap(pz, lo.z, hi.z);
+            for y in grid.span(lo.y - reach, hi.y + reach, 1) {
+                let py = grid.center(y, 1);
+                let dyz2 = dz * dz + gap(py, lo.y, hi.y).powi(2);
+                let rest = reach * reach - dyz2;
+                if rest <= 0.0 {
+                    continue;
+                }
+                let rx = rest.sqrt();
+                for x in grid.span(lo.x - rx, hi.x + rx, 0) {
+                    let p = Vec3::new(grid.center(x, 0), py, pz);
+                    let cell = &mut slab[((z - z_lo) * n1 + y) * n0 + x];
+                    // Cheap lower bounds first: the plane and the bounding box.
+                    if normal.dot(p - a).abs() >= *cell
+                        || dyz2 + gap(p.x, lo.x, hi.x).powi(2) >= *cell * *cell
+                    {
+                        continue;
+                    }
+                    *cell = cell.min(dist_to_triangle(p, a, b, c));
+                }
+            }
+        }
+    }
 }
 
 /// Grid shifts (in cells) [`level_set`] tries; between them every face offset lies
@@ -613,9 +691,33 @@ fn level_set(
     bail!("Could not build the inner surface; try another wall thickness")
 }
 
-/// Distance from `p` to the triangle `abc` (closest point by Ericson's region tests).
+/// Distance from `p` to the segment `ab`.
+fn dist_to_segment(p: DVec3, a: DVec3, b: DVec3) -> f64 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + ab * t)).length()
+}
+
+/// Distance from `p` to the triangle `abc` (closest point by Ericson's region tests, in
+/// f64; a needle or a sliver, whose barycentric division would blow up, falls back to
+/// its three edges).
 pub(crate) fn dist_to_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    let [p, a, b, c] = [p, a, b, c].map(|v| v.as_dvec3());
     let (ab, ac, ap) = (b - a, c - a, p - a);
+    let edges = || {
+        dist_to_segment(p, a, b)
+            .min(dist_to_segment(p, b, c))
+            .min(dist_to_segment(p, c, a))
+    };
+    // |ab x ac|² against |ab|²|ac|²: sin² of the angle at `a`.
+    if ab.cross(ac).length_squared() <= 1e-18 * ab.length_squared() * ac.length_squared() {
+        return edges() as f32;
+    }
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     let q = if d1 <= 0.0 && d2 <= 0.0 {
         a
@@ -637,14 +739,14 @@ pub(crate) fn dist_to_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
             b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
         } else {
             let sum = va + vb + vc;
-            if sum.abs() < 1e-20 {
-                a
-            } else {
+            if sum > 0.0 {
                 a + ab * (vb / sum) + ac * (vc / sum)
+            } else {
+                return edges() as f32;
             }
         }
     };
-    (p - q).length()
+    (p - q).length() as f32
 }
 
 /// One closed solid per connected patch of downward faces: the patch on top, its
@@ -866,58 +968,229 @@ mod tests {
         }
     }
 
-    /// Smallest and largest wall of `hollow(mesh, wall)`: the distance from each cavity
-    /// vertex (one off the original surface) to the original surface.
-    fn wall_range(mesh: &Mesh, wall: f32) -> (f32, f32) {
-        let out = hollow(mesh, wall).unwrap();
-        let near = |p: Vec3| {
-            mesh.triangles
-                .iter()
-                .map(|t| {
-                    let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-                    dist_to_triangle(p, a, b, c)
-                })
-                .fold(f32::MAX, f32::min)
+    #[test]
+    fn distance_to_a_triangle_matches_sampling_and_known_regions() {
+        let (a, b, c) = (
+            Vec3::ZERO,
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+        );
+        let d = |p: Vec3| dist_to_triangle(p, a, b, c);
+        // Interior (above and on the plane), edges, vertices.
+        assert!((d(Vec3::new(1.0, 1.0, 2.0)) - 2.0).abs() < 1e-6);
+        assert!(d(Vec3::new(1.0, 1.0, 0.0)) < 1e-6);
+        assert!((d(Vec3::new(2.0, -1.5, 0.0)) - 1.5).abs() < 1e-6);
+        assert!((d(Vec3::new(-2.0, 1.0, 0.0)) - 2.0).abs() < 1e-6);
+        // Beyond the hypotenuse (x/4 + y/3 = 1), and the vertices.
+        assert!((d(Vec3::new(4.0, 3.0, 0.0)) - 12.0 / 5.0).abs() < 1e-5);
+        assert!((d(Vec3::new(-3.0, -4.0, 0.0)) - 5.0).abs() < 1e-6);
+        assert!((d(Vec3::new(6.0, 0.0, 0.0)) - 2.0).abs() < 1e-6);
+        // Brute force: the nearest of a dense sampling of the triangle never beats it
+        // (it is the minimum) and comes within the sampling step.
+        let mut s = 7u32;
+        let mut rnd = || {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 8) as f32 / (1 << 24) as f32
         };
+        let samples: Vec<Vec3> = (0..=200)
+            .flat_map(|i| (0..=200 - i).map(move |j| (i as f32 / 200.0, j as f32 / 200.0)))
+            .map(|(u, v)| a + (b - a) * u + (c - a) * v)
+            .collect();
+        for _ in 0..300 {
+            let p = Vec3::new(rnd() * 12.0 - 4.0, rnd() * 10.0 - 4.0, rnd() * 8.0 - 4.0);
+            let brute = samples
+                .iter()
+                .map(|&q| (p - q).length())
+                .fold(f32::MAX, f32::min);
+            assert!(
+                d(p) <= brute + 1e-5 && brute - d(p) < 0.03,
+                "{p}: {} {brute}",
+                d(p)
+            );
+        }
+    }
+
+    #[test]
+    fn distance_to_a_degenerate_triangle_is_finite_and_exact() {
+        let p = Vec3::new(1.0, 1.0, 0.0);
+        // A needle (collinear), a point and a sliver thinner than f32 resolves.
+        let needle = dist_to_triangle(
+            p,
+            Vec3::ZERO,
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        assert!((needle - 1.0).abs() < 1e-6);
+        let dot = dist_to_triangle(p, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        assert!((dot - 2f32.sqrt()).abs() < 1e-6);
+        let sliver = dist_to_triangle(
+            p,
+            Vec3::ZERO,
+            Vec3::new(100.0, 1e-7, 0.0),
+            Vec3::new(50.0, 1e-7, 0.0),
+        );
+        assert!((sliver - 1.0).abs() < 1e-5, "{sliver}");
+    }
+
+    /// Distance from `p` to the nearest triangle of `mesh` (brute force).
+    fn nearest(mesh: &Mesh, p: Vec3) -> f32 {
+        mesh.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                dist_to_triangle(p, a, b, c)
+            })
+            .fold(f32::MAX, f32::min)
+    }
+
+    /// Smallest and largest wall of `hollow(mesh, wall)`: the distance to the original
+    /// surface from the vertices, centre and edge midpoints of every `step`-th triangle
+    /// of the result that lies off that surface (the cavity), so face interiors count.
+    fn wall_range(mesh: &Mesh, wall: f32, step: usize) -> (f32, f32) {
+        let out = hollow(mesh, wall).unwrap();
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        // Every seventh vertex keeps the brute-force distance affordable.
-        for &p in out.positions.iter().step_by(7) {
-            let d = near(p);
-            if d > 1e-3 {
-                lo = lo.min(d);
-                hi = hi.max(d);
+        for t in out.triangles.iter().step_by(step) {
+            let [a, b, c] = t.map(|i| out.positions[i as usize]);
+            let points = [
+                a,
+                b,
+                c,
+                (a + b + c) / 3.0,
+                (a + b) / 2.0,
+                (b + c) / 2.0,
+                (c + a) / 2.0,
+            ];
+            let depths = points.map(|p| nearest(mesh, p));
+            // Outer faces have vertices on the original surface.
+            if depths[..3].iter().all(|&d| d > 1e-3) {
+                lo = depths.iter().fold(lo, |m, &d| m.min(d));
+                hi = depths.iter().fold(hi, |m, &d| m.max(d));
             }
         }
         assert!(lo <= hi, "no cavity");
         (lo, hi)
     }
 
+    /// `cargo test --offline --release -- --ignored --nocapture hollow_bench`
+    #[test]
+    #[ignore]
+    fn hollow_bench() {
+        let cases = [
+            (
+                "cube 30, wall 2",
+                scaled(Primitive::Cube.build(), 30.0),
+                2.0,
+            ),
+            (
+                "sphere 200k, wall 2",
+                crate::primitives::sphere(15.0, 316, 316),
+                2.0,
+            ),
+            (
+                "sphere 200k, wall 5",
+                crate::primitives::sphere(15.0, 316, 316),
+                5.0,
+            ),
+            (
+                "sphere 500k, wall 2",
+                crate::primitives::sphere(15.0, 500, 500),
+                2.0,
+            ),
+            (
+                "sphere 500k, wall 5",
+                crate::primitives::sphere(15.0, 500, 500),
+                5.0,
+            ),
+            ("torus, wall 1", scaled(Primitive::Torus.build(), 40.0), 1.0),
+            ("torus, wall 2", scaled(Primitive::Torus.build(), 40.0), 2.0),
+            ("cube with a hole, wall 2", cube_with_hole(0.5), 2.0),
+            ("cube with a hole, wall 0.3", cube_with_hole(0.5), 0.3),
+        ];
+        for (name, mesh, wall) in cases {
+            let t = std::time::Instant::now();
+            inner(&mesh, wall).unwrap();
+            let t_inner = t.elapsed();
+            let hollowed = hollow(&mesh, wall).unwrap();
+            let total = t.elapsed();
+            let walls = if mesh.triangles.len() < 20_000 {
+                let (lo, hi) = wall_range(&mesh, wall, 17);
+                format!("wall {lo:.3}..{hi:.3}")
+            } else {
+                String::new()
+            };
+            println!(
+                "{name}: {} tris, inner {t_inner:.2?}, with hollow {total:.2?} ({} tris) {walls}",
+                mesh.triangles.len(),
+                hollowed.triangles.len()
+            );
+        }
+    }
+
+    fn scaled(m: Mesh, size: f32) -> Mesh {
+        let k = size / (m.aabb().max - m.aabb().min).max_element();
+        m.transformed(&glam::Mat4::from_scale(Vec3::splat(k)))
+    }
+
+    /// A 30 mm cube with a hole of `radius` through it along z.
+    fn cube_with_hole(radius: f32) -> Mesh {
+        let cube = scaled(Primitive::Cube.build(), 30.0);
+        let c = cube.aabb().center();
+        let pin = Primitive::Cylinder.build();
+        let k = Vec3::new(2.0 * radius, 2.0 * radius, 40.0) / pin.aabb().size();
+        let pin = pin.transformed(
+            &(glam::Mat4::from_translation(c)
+                * glam::Mat4::from_scale(k)
+                * glam::Mat4::from_translation(-pin.aabb().center())),
+        );
+        crate::boolean::apply(crate::boolean::Op::Subtract, &[cube, pin]).unwrap()
+    }
+
+    /// Checks `wall_range` of `mesh` against the request: never thinner than `wall`
+    /// (1e-3 of rounding), and at most `extra` thicker.
+    fn check_wall(name: &str, mesh: &Mesh, wall: f32, extra: f32, step: usize) {
+        let (lo, hi) = wall_range(mesh, wall, step);
+        println!("{name}, wall {wall}: {lo:.3}..{hi:.3}");
+        assert!(
+            lo >= wall - 1e-3 && hi <= wall + extra,
+            "{name}, wall {wall}: {lo}..{hi}"
+        );
+    }
+
+    #[test]
+    fn hollow_wall_on_concave_shapes_is_never_thinner() {
+        let torus = scaled(crate::primitives::torus(0.75, 0.25, 48, 16), 40.0);
+        let pierced = cube_with_hole(0.5);
+        // Voxels are wall / 4 down to 1 mm walls on these 30-40 mm models, so the wall is
+        // within 0.25 mm there. 0.3 mm is the coarse case (voxels about a wall): the
+        // curvature margin keeps the wall thick enough, and it comes out thicker.
+        for (name, mesh, wall) in [
+            ("torus", &torus, 2.0f32),
+            ("cube with a hole", &pierced, 2.0),
+            ("cube with a hole", &pierced, 0.3),
+        ] {
+            let h = (wall / 4.0).max(40.0 / MAX_CELLS);
+            check_wall(name, mesh, wall, (0.5 * h).max(0.25), 17);
+        }
+    }
+
     #[test]
     fn hollow_wall_is_never_thinner_and_close_to_asked() {
-        let scaled = |p: Primitive, size: f32| {
-            let m = p.build();
-            let k = size / (m.aabb().max - m.aabb().min).max_element();
-            m.transformed(&glam::Mat4::from_scale(Vec3::splat(k)))
-        };
         // Sphere and cylinder have curved walls, the cone and wedge slanted ones; a sharp
         // convex tip (the cone's apex) rounds the cavity there, so a bit thicker (k is the fraction of a voxel allowed).
         let shapes = [
             (Primitive::Cube, 0.4),
             (Primitive::Sphere, 0.4),
-            (Primitive::Cylinder, 0.4),
+            (Primitive::Cylinder, 0.75),
             (Primitive::Cone, 0.75),
             (Primitive::Wedge, 0.75),
         ];
-        for (p, k) in shapes.map(|(p, k): (Primitive, f32)| (p, k)) {
-            for (size, wall) in [(30.0, 1.0), (30.0, 2.0), (40.0, 5.0), (60.0, 2.0)] {
-                let (lo, hi) = wall_range(&scaled(p, size), wall);
+        for (p, k) in shapes {
+            for (size, wall) in [(30.0f32, 1.0f32), (30.0, 2.0), (40.0, 5.0), (60.0, 2.0)] {
                 // Allowed excess: 0.25 mm, or a fraction k of a voxel on coarse grids.
                 let h = (wall / 4.0).max(size / MAX_CELLS);
                 let extra = (k * h).max(0.25);
-                assert!(
-                    lo >= wall - 0.01 * wall && hi <= wall + extra,
-                    "{p:?} {size} mm, wall {wall}: {lo}..{hi}"
-                );
+                let mesh = scaled(p.build(), size);
+                check_wall(&format!("{p:?} {size} mm"), &mesh, wall, extra, 7);
             }
         }
     }
