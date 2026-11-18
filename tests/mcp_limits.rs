@@ -385,14 +385,17 @@ fn a_missing_picture_and_an_unwritable_folder_say_what_to_do() {
         assert!(english(&e));
     }
     // A folder that exists but cannot be written in says so, not that it is missing.
-    let e = buildcraft3d::io::save(
-        std::path::Path::new("/proc/x.3mf"),
-        std::slice::from_ref(&object),
-        &Default::default(),
-    )
-    .unwrap_err();
-    let e = format!("{e:#}");
-    assert!(e.contains("/proc is not writable for the app"), "{e}");
+    #[cfg(target_os = "linux")]
+    {
+        let e = buildcraft3d::io::save(
+            std::path::Path::new("/proc/x.3mf"),
+            std::slice::from_ref(&object),
+            &Default::default(),
+        )
+        .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("/proc is not writable for the app"), "{e}");
+    }
 }
 
 #[test]
@@ -402,11 +405,15 @@ fn save_takes_only_an_absolute_file_path_with_an_extension() {
     assert!(err("box.3mf").contains("give an absolute path"));
     assert!(err("relative/box.stl").contains("give an absolute path"));
     // A folder is not a file, and is not turned into "/tmp.3mf".
-    for folder in [dir.to_str().unwrap(), "/", "/tmp/"] {
+    let root = dir.ancestors().last().unwrap().to_str().unwrap().to_owned();
+    let with_slash = format!("{}{}", dir.to_str().unwrap(), std::path::MAIN_SEPARATOR);
+    for folder in [dir.to_str().unwrap(), root.as_str(), with_slash.as_str()] {
         assert!(err(folder).contains("is a folder"), "{folder}");
     }
-    assert!(err("/no/such/folder/box").contains("has no extension"));
-    assert!(err("/no/such/folder/box.svg").contains("cannot be saved"));
+    let missing = dir.join("no-such-folder").join("box");
+    let missing = missing.to_str().unwrap();
+    assert!(err(missing).contains("has no extension"));
+    assert!(err(&format!("{missing}.svg")).contains("cannot be saved"));
     assert!(args::save_path(&json!({}))
         .unwrap_err()
         .contains("path is missing"));
