@@ -48,3 +48,20 @@ fn mesh_hot_paths() {
         buildcraft3d::thumbnail::render(&m, DEFAULT_COLOR, 256)
     });
 }
+
+#[test]
+#[ignore]
+fn boolean_and_cut() {
+    use buildcraft3d::boolean::{apply, Op};
+    use glam::Vec3;
+    let a = primitives::sphere(10.0, 200, 200);
+    let b = a.transformed(&Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0)));
+    println!("BENCH boolean triangles each: {}", a.triangles.len());
+    let r = time("boolean_subtract", || {
+        apply(Op::Subtract, &[a.clone(), b.clone()]).unwrap()
+    });
+    println!("BENCH boolean result triangles: {}", r.triangles.len());
+    time("boolean_union", || {
+        apply(Op::Union, &[a.clone(), b.clone()]).unwrap()
+    });
+}
