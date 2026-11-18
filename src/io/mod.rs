@@ -228,8 +228,24 @@ pub(crate) fn fan(idx: &[u32], out: &mut Vec<[u32; 3]>) {
 pub fn color_name(c: Rgba) -> String {
     match crate::scene::PALETTE.iter().find(|(_, rgba)| *rgba == c) {
         Some((name, _)) => (*name).to_string(),
-        None => format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2]),
+        None => format!("Color_{}", hex6(c)),
     }
+}
+
+/// "DC4E62": a colour's red, green and blue as hex digits.
+pub fn hex6(c: Rgba) -> String {
+    format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+}
+
+/// "DC4E62" or "#dc4e62" as an opaque colour.
+pub fn parse_hex(s: &str) -> Option<Rgba> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xFF])
 }
 
 pub fn srgb_to_linear(c: u8) -> f32 {
@@ -256,6 +272,15 @@ mod tests {
     use super::*;
     use crate::primitives::Primitive;
     use glam::Vec3;
+
+    #[test]
+    fn hex_round_trip() {
+        assert_eq!(parse_hex("#DC4E62"), Some([0xDC, 0x4E, 0x62, 0xFF]));
+        assert_eq!(parse_hex(" dc4e62 "), Some([0xDC, 0x4E, 0x62, 0xFF]));
+        assert_eq!(parse_hex("dc4e6"), None);
+        assert_eq!(parse_hex("+c4e62"), None);
+        assert_eq!(hex6([0xDC, 0x4E, 0x62, 0xFF]), "DC4E62");
+    }
 
     fn sample() -> Vec<ModelObject> {
         vec![

@@ -3,9 +3,10 @@
 //! Each one sets up the same tool or action the UI uses and applies it, so it is one undo
 //! step and fails with the message the UI would show. Schemas: `crate::mcp::model_tools`.
 
-use super::agent::{parse_hex, positive, vec3};
+use super::agent::{positive, vec3};
 use super::tool_bar::{custom_mesh, CUSTOM_SHAPES, SEGMENTS};
 use super::*;
+use crate::io::parse_hex;
 use crate::texture_gen::Kind;
 use serde_json::Value;
 use std::ops::RangeInclusive;

@@ -2,8 +2,8 @@
 //! and printing: each goes through the same state and actions as the print view, the
 //! "About the model" panel and "Print on paper".
 
-use super::agent::parse_hex;
 use super::*;
+use crate::io::parse_hex;
 use crate::mcp::{self, Reply};
 use serde_json::{json, Value};
 
@@ -340,7 +340,7 @@ fn status_json(i: usize, p: &crate::slicer::Printer, s: &crate::slicer::Status) 
 }
 
 fn hex(c: Rgba) -> String {
-    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+    format!("#{}", crate::io::hex6(c))
 }
 
 #[cfg(test)]

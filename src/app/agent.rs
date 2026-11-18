@@ -248,7 +248,7 @@ impl App {
                 self.wait_jobs();
             }
             "set_color" => {
-                let c = a["color"].as_str().and_then(parse_hex);
+                let c = a["color"].as_str().and_then(crate::io::parse_hex);
                 let c = c.ok_or("color must be #RRGGBB, e.g. #FF8000")?;
                 self.apply(Action::SetColor(c), ctx);
             }
@@ -404,15 +404,6 @@ pub(super) fn positive(v: &Value, name: &str) -> Result<f32, String> {
         Some(x) if x.is_finite() && x > 0.0 => Ok(x as f32),
         _ => Err(format!("{name} must be a number greater than 0")),
     }
-}
-
-pub(super) fn parse_hex(s: &str) -> Option<Rgba> {
-    let h = s.strip_prefix('#').unwrap_or(s);
-    if h.len() != 6 || !h.is_ascii() {
-        return None;
-    }
-    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
-    Some([byte(0)?, byte(2)?, byte(4)?, 0xFF])
 }
 
 impl App {

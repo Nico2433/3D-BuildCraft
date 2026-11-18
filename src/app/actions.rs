@@ -331,7 +331,7 @@ impl App {
                     *menu = if more {
                         paint_menu::PaintMenu::More {
                             hsv: [h.h, h.s, h.v],
-                            hex: format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2]),
+                            hex: crate::io::hex6(*color),
                         }
                     } else {
                         paint_menu::PaintMenu::Swatches

@@ -7,6 +7,7 @@ use super::flyout::{Flyout, Grid, Mark, Menu, BUTTON, ROW};
 use super::icons::Icon;
 use super::style;
 use super::*;
+use crate::io::{hex6, parse_hex};
 use eframe::egui::ecolor::Hsva;
 
 /// Which colour menu is open under Paint's "Selected" swatch.
@@ -86,10 +87,6 @@ const KNOB: Color32 = Color32::from_rgb(0x88, 0x17, 0x98);
 
 fn rgb(c: Rgba) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
-}
-
-fn hex(c: Rgba) -> String {
-    format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2])
 }
 
 fn from_hsv(hsv: [f32; 3]) -> Rgba {
@@ -226,7 +223,7 @@ pub(super) fn color_menu(
                     let h = Hsva::from_srgb([color[0], color[1], color[2]]);
                     *menu = PaintMenu::More {
                         hsv: [h.h, h.s, h.v],
-                        hex: hex(*color),
+                        hex: hex6(*color),
                     };
                 }
                 Some(p) => {
@@ -372,7 +369,7 @@ pub(super) fn color_menu(
                         moved |= gradient_slider(ui, k, track(row), stops, &mut hsv[k]);
                     }
                     if moved {
-                        *text = hex(from_hsv(*hsv));
+                        *text = hex6(from_hsv(*hsv));
                     }
                 },
             );
@@ -434,16 +431,6 @@ fn swatch_list(m: &mut Menu, lang: Lang, color: &mut Rgba, look: &MenuLook) -> O
     swatches(m, &STANDARD);
     m.band(1.0, super::flyout::ROW_DARK);
     picked
-}
-
-/// "DC4E62" or "#dc4e62" as a colour.
-fn parse_hex(s: &str) -> Option<Rgba> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let v = u32::from_str_radix(s, 16).ok()?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xFF])
 }
 
 /// A thin track coloured through `stops` with the original's purple pill as the handle.
@@ -582,12 +569,5 @@ mod tests {
             (0..sphere.triangles.len()).filter(|f| near(*f)).count()
         );
         assert!(count > 1 && count < sphere.triangles.len() / 2, "{count}");
-    }
-
-    #[test]
-    fn hex_round_trip() {
-        assert_eq!(super::parse_hex("#DC4E62"), Some([0xDC, 0x4E, 0x62, 0xFF]));
-        assert_eq!(super::parse_hex("dc4e6"), None);
-        assert_eq!(super::hex([0xDC, 0x4E, 0x62, 0xFF]), "DC4E62");
     }
 }
