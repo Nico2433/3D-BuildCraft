@@ -360,8 +360,7 @@ pub fn revolve(profile: &[(f32, f32)], n: usize) -> Mesh {
 }
 
 /// A hollow flower pot for tests: 80 mm across the mouth, 90 high, 3 mm walls, 4 mm floor,
-/// the rim rounded over by a half circle of the wall's thickness in 16 steps (no crease
-/// reaches 40°, so it has no sharp rim edge).
+/// the rim rounded over by a half circle of the wall's thickness in 16 steps (no flat top).
 #[cfg(test)]
 pub(crate) fn rounded_pot() -> Mesh {
     let (ro, wall, h) = (40.0f32, 3.0f32, 90.0f32);

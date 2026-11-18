@@ -1,10 +1,9 @@
 //! The Measure tool's model, independent of the UI: radius and diameter of round geometry
 //! (a circle through three points, a curved face, a whole object) and the picked points with
 //! their snapping. The Measure tool in `app` and the MCP `measure` tool share it.
-use crate::edge_loops::{EdgeLoop, FeatureEdges};
 use crate::mesh::Mesh;
-use crate::scene::{Scene, WorkCache};
-use crate::section::{section_at_height, Section};
+use crate::scene::Scene;
+use crate::section::{section, Outline, Section};
 use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap, SnapKind};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
@@ -308,22 +307,6 @@ pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<PointSnap
         .map(|(_, s)| s)
 }
 
-/// The edge loop nearest to `p` over all objects (object id and loop) within `tolerance`
-/// mm, waiting for the feature edges when they are not known yet.
-pub fn nearest_edge_loop(scene: &Scene, p: Vec3, tolerance: f32) -> Option<(u64, EdgeLoop)> {
-    scene
-        .objects
-        .iter()
-        .filter_map(|o| {
-            let model = o.matrix();
-            let feats = crate::edge_loops::feature_edges(&o.mesh);
-            let (chain, d) = feats.nearest_chain(&model, p, tolerance)?;
-            Some((d, o.id, feats.edge_loop(chain, &model)))
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, id, l)| (id, l))
-}
-
 /// What the Measure tool measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -333,10 +316,8 @@ pub enum Mode {
     Surface,
     /// The radius of the circle through three points.
     Circle,
-    /// The diameter, radius and centre of the circular edge under a click.
-    Edge,
-    /// The diameter, radius and centre of the horizontal cross-section at a click's height,
-    /// and the wall thickness of a hollow object there.
+    /// The diameter, radius and centre of the horizontal cross-section at a click's height
+    /// (the contour nearest to the click), and the wall thickness of a hollow object there.
     Section,
 }
 
@@ -364,11 +345,6 @@ impl Spot {
 /// A face's snapping info with what it was built from: object id, triangle, mesh, placement.
 type CachedFace = (u64, usize, Arc<Mesh>, Mat4, Option<FaceInfo>);
 
-/// The edge loop under the cursor and what it was found from: object id, chain, whether it
-/// is a soft edge, mesh and placement, so a moving cursor on the same edge does not fit it
-/// again.
-type HoverKey = (u64, usize, bool, Arc<Mesh>, Mat4);
-
 /// Section mode's result: the object that was cut, its contours and the one that was clicked.
 #[derive(Clone, Debug)]
 pub struct SectionPick {
@@ -385,21 +361,8 @@ pub struct Measure {
     pub hover: Option<Spot>,
     /// Surface mode's result.
     pub round: Option<Round>,
-    /// Edge mode's result: the circular (or not) edge loop that was clicked.
-    pub edge: Option<EdgeLoop>,
-    /// The edge loop under the cursor, highlighted before a click.
-    pub edge_hover: Option<EdgeLoop>,
-    /// Whether `edge` / `edge_hover` came from the soft pass (rounded rims), used when the
-    /// sharp edges near the cursor are not circular.
-    pub edge_soft: bool,
-    pub edge_hover_soft: bool,
     /// Section mode's result.
     pub section: Option<SectionPick>,
-    edge_key: Option<HoverKey>,
-    /// Sharp feature edges per mesh, found on a worker (a big mesh takes a moment).
-    edges: WorkCache<Arc<FeatureEdges>>,
-    /// The same for the soft threshold, only asked for when the sharp ones are not round.
-    soft_edges: WorkCache<Arc<FeatureEdges>>,
     /// The face last snapped on, so a moving cursor does not rebuild it.
     face: Option<CachedFace>,
 }
@@ -411,28 +374,19 @@ impl Measure {
             points: vec![],
             hover: None,
             round: None,
-            edge: None,
-            edge_hover: None,
-            edge_soft: false,
-            edge_hover_soft: false,
             section: None,
-            edge_key: None,
-            edges: WorkCache::default(),
-            soft_edges: WorkCache::default(),
             face: None,
         }
     }
 
     /// A measurement with its points preset, for screenshots: `[mode:]point;point;…`, mode
-    /// `distance`, `surface`, `circle`, `edge` or `section`; a point is `x,y,z` (mm) with `~` in front for
+    /// `distance`, `surface`, `circle` or `section`; a point is `x,y,z` (mm) with `~` in front for
     /// the cursor point and `@vertex`, `@midpoint`, `@edge`, `@face` or `@plane` behind it
-    /// for the snap marker. Surface mode fits the face nearest its point; edge mode takes the edge loop nearest
-    /// to its point; section mode cuts the object nearest to its point at that point's height.
+    /// for the snap marker. Surface mode fits the face nearest its point; section mode cuts the object nearest to its point at that point's height.
     pub fn preset(spec: &str, scene: &Scene) -> Self {
         let (mode, rest) = match spec.split_once(':') {
             Some(("surface", rest)) => (Mode::Surface, rest),
             Some(("circle", rest)) => (Mode::Circle, rest),
-            Some(("edge", rest)) => (Mode::Edge, rest),
             Some(("section", rest)) => (Mode::Section, rest),
             Some((_, rest)) => (Mode::Distance, rest),
             None => (Mode::Distance, spec),
@@ -467,9 +421,6 @@ impl Measure {
                 m.points.push(spot);
             }
         }
-        if let (Mode::Edge, Some(first)) = (mode, m.points.first()) {
-            m.edge = nearest_edge_loop(scene, first.point, f32::INFINITY).map(|(_, l)| l);
-        }
         if let (Mode::Section, Some(first)) = (mode, m.points.first()) {
             let nearest = scene.objects.iter().min_by(|a, b| {
                 let d = |o: &crate::scene::Object| {
@@ -492,16 +443,13 @@ impl Measure {
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
-        let edges = std::mem::take(&mut self.edges);
-        let soft = std::mem::take(&mut self.soft_edges);
         *self = Measure::new(mode);
-        self.edges = edges;
-        self.soft_edges = soft;
     }
 
     /// The horizontal section of `o` through `p`, with the contour passing closest to `p`.
+    /// When `p` is on a flat face (a rim, a base) the cut goes a hair inside the material.
     fn cut(&self, o: &crate::scene::Object, p: Vec3) -> SectionPick {
-        let section = section_at_height(&o.mesh, &o.matrix(), p.z);
+        let section = section(&o.mesh, &o.matrix(), p, Vec3::Z, Some(p));
         let chosen = section.nearest(p);
         SectionPick {
             object: o.id,
@@ -510,26 +458,13 @@ impl Measure {
         }
     }
 
-    /// The circular edge or section outline being measured, chosen or under the cursor.
-    pub fn outline(&self) -> Option<&EdgeLoop> {
-        match self.mode {
-            Mode::Edge => self.edge.as_ref().or(self.edge_hover.as_ref()),
-            Mode::Section => {
-                let s = self.section.as_ref()?;
-                Some(&s.section.contours.get(s.chosen?)?.outline)
-            }
-            _ => None,
-        }
-    }
-
-    /// Whether the edge being measured came from the soft pass.
-    pub fn is_soft(&self) -> bool {
-        self.mode == Mode::Edge
-            && if self.edge.is_some() {
-                self.edge_soft
-            } else {
-                self.edge_hover_soft
-            }
+    /// The section contour that was clicked.
+    pub fn outline(&self) -> Option<&Outline> {
+        let s = self
+            .section
+            .as_ref()
+            .filter(|_| self.mode == Mode::Section)?;
+        Some(&s.section.contours.get(s.chosen?)?.outline)
     }
 
     /// Section mode: the wall (outer and inner contour) the chosen contour belongs to.
@@ -538,14 +473,27 @@ impl Measure {
         s.section.wall_of(s.chosen?)
     }
 
+    /// Section mode: the diameter of every round contour of the cut, outer ones (true) and
+    /// inner ones (holes, cavities), largest first.
+    pub fn section_diameters(&self) -> Vec<(bool, f32)> {
+        let Some(s) = self.section.as_ref().filter(|_| self.mode == Mode::Section) else {
+            return vec![];
+        };
+        s.section
+            .contours
+            .iter()
+            .filter_map(|c| Some((c.depth % 2 == 0, c.outline.round()?.diameter())))
+            .collect()
+    }
+
     /// Points the mode takes before it starts over.
     pub fn capacity(&self) -> usize {
         match self.mode {
             Mode::Distance => 2,
             Mode::Surface => 1,
             Mode::Circle => 3,
-            // Edge and Section modes place no points: the result is what the click found.
-            Mode::Edge | Mode::Section => 0,
+            // Section mode places no points: the result is what the click found.
+            Mode::Section => 0,
         }
     }
 
@@ -565,7 +513,7 @@ impl Measure {
         match self.mode {
             Mode::Distance => None,
             Mode::Surface => self.round,
-            Mode::Edge | Mode::Section => self.outline().and_then(EdgeLoop::round),
+            Mode::Section => self.outline().and_then(Outline::round),
             Mode::Circle => {
                 let live = if self.points.len() < 3 {
                     self.hover
@@ -641,62 +589,9 @@ impl Measure {
         Some(spot)
     }
 
-    /// Finds the edge loop under the cursor for Edge mode: `hit` is the picked object and
-    /// the surface point, `tolerance` how far (mm) an edge may be from it. The edges of a
-    /// big mesh are found on a worker (`repaint` runs when they are ready); until then
-    /// nothing is under the cursor. When the sharp edge nearest the cursor is not circular
-    /// the soft ones (rounded rims, [`crate::edge_loops::SOFT_DEG`]) are tried, on their own
-    /// worker the first time.
-    pub fn hover_edge(
-        &mut self,
-        scene: &Scene,
-        hit: Option<(u64, Vec3)>,
-        tolerance: f32,
-        repaint: impl FnOnce() + Send + Clone + 'static,
-    ) {
-        let found = hit.and_then(|(id, p)| {
-            let o = scene.get(id)?;
-            let model = o.matrix();
-            let nearest = |feats: &Arc<FeatureEdges>, soft: bool| {
-                let (chain, _) = feats.nearest_chain(&model, p, tolerance)?;
-                Some((soft, chain, feats.edge_loop(chain, &model)))
-            };
-            let sharp = self
-                .edges
-                .get(&o.mesh, FeatureEdges::compute, repaint.clone())?;
-            let sharp = nearest(&sharp, false);
-            if sharp.as_ref().is_some_and(|(_, _, l)| l.is_circular()) {
-                return Some((id, sharp?, o.mesh.clone(), model));
-            }
-            let soft = self
-                .soft_edges
-                .get(&o.mesh, FeatureEdges::compute_soft, repaint)
-                .and_then(|f| nearest(&f, true))
-                .filter(|(_, _, l)| l.is_circular());
-            Some((id, soft.or(sharp)?, o.mesh.clone(), model))
-        });
-        let Some((id, (soft, chain, l), mesh, model)) = found else {
-            self.edge_hover = None;
-            self.edge_key = None;
-            return;
-        };
-        let same = matches!(&self.edge_key, Some((i, c, s, m, mat))
-            if *i == id && *c == chain && *s == soft && Arc::ptr_eq(m, &mesh) && *mat == model);
-        if !same {
-            self.edge_hover = Some(l);
-            self.edge_hover_soft = soft;
-            self.edge_key = Some((id, chain, soft, mesh, model));
-        }
-    }
-
     /// A click: place `spot`, starting over when the mode's points are all placed; in
     /// Surface mode, fit the curved face `face` (object, triangle) that was clicked.
     pub fn click(&mut self, scene: &Scene, spot: Spot, face: Option<(u64, usize)>) {
-        if self.mode == Mode::Edge {
-            self.edge = self.edge_hover.clone();
-            self.edge_soft = self.edge_hover_soft;
-            return;
-        }
         if self.mode == Mode::Section {
             self.section = face.and_then(|(id, _)| Some(self.cut(scene.get(id)?, spot.point)));
             return;
@@ -887,82 +782,17 @@ mod tests {
     }
 
     #[test]
-    fn edge_mode_selects_the_loop_under_the_cursor_and_gives_its_circle() {
-        let mut scene = Scene::default();
-        let id = scene.add(Object::new(
-            "pot",
-            Primitive::Cylinder.build(),
-            DEFAULT_COLOR,
-        ));
-        let b = scene.get(id).unwrap().world_aabb();
-        let r = b.size().x / 2.0;
-        let rim = Vec3::new(b.center().x + r, b.center().y, b.max.z);
-        let mut m = Measure::new(Mode::Edge);
-        assert_eq!(m.capacity(), 0);
-        m.hover_edge(&scene, Some((id, rim - Vec3::Z * 0.3)), 1.0, || {});
-        // The worker may not be done yet; wait for it like the UI's next frame would.
-        for _ in 0..200 {
-            if m.edge_hover.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            m.hover_edge(&scene, Some((id, rim - Vec3::Z * 0.3)), 1.0, || {});
-        }
-        let hover = m.current_round().unwrap();
-        assert!(near(hover.diameter(), 2.0 * r, 0.02));
-        assert!(m.edge.is_none());
-        m.click(&scene, Spot::free(rim), None);
-        assert!(m.edge.is_some());
-        let c = m.current_round().unwrap();
-        assert!(
-            c.center
-                .distance(Vec3::new(b.center().x, b.center().y, b.max.z))
-                < 1e-2
-        );
-        // Far from any edge nothing is under the cursor; a click there clears the choice.
-        m.hover_edge(
-            &scene,
-            Some((id, Vec3::new(b.center().x, b.center().y, b.max.z))),
-            1.0,
-            || {},
-        );
-        assert!(m.edge_hover.is_none());
-        m.click(&scene, Spot::free(rim), None);
-        assert!(m.edge.is_none() && m.current_round().is_none());
-        // Changing the mode keeps nothing of the result.
-        m.set_mode(Mode::Distance);
-        assert!(m.edge.is_none());
-        let p = Measure::preset("edge:0,0,0", &scene);
-        assert_eq!(p.mode, Mode::Edge);
-        assert!(p.current_round().is_some());
-    }
-
-    #[test]
-    fn a_rounded_rim_falls_back_to_soft_edges_and_a_click_cuts_a_section() {
+    fn a_section_click_picks_the_nearest_contour_and_lists_them_all() {
         let mut scene = Scene::default();
         let id = scene.add(Object::new(
             "pot",
             crate::primitives::rounded_pot(),
             DEFAULT_COLOR,
         ));
-        let top = scene.get(id).unwrap().world_aabb().max.z;
-        let on_rim = Vec3::new(38.5, 0.0, top - 0.2);
-        let mut m = Measure::new(Mode::Edge);
-        for _ in 0..400 {
-            m.hover_edge(&scene, Some((id, on_rim)), 1.0, || {});
-            if m.edge_hover.is_some() && m.edge_hover_soft {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(m.is_soft() && m.current_round().is_some());
-        let d = m.current_round().unwrap().diameter();
-        assert!((74.0..=80.1).contains(&d), "{d}");
-        m.click(&scene, Spot::free(on_rim), None);
-        assert!(m.edge_soft && m.is_soft());
-        // Section mode: a click on the outer wall cuts at its height and picks the outer
-        // contour; the flared wall is 2.4 mm thick there.
         let mut s = Measure::new(Mode::Section);
+        assert_eq!(s.capacity(), 0);
+        // A click on the outer wall cuts at its height and picks the outer contour; the
+        // flared wall is 2.4 mm thick there.
         s.click(
             &scene,
             Spot::free(Vec3::new(40.0, 0.0, 85.0)),
@@ -970,18 +800,49 @@ mod tests {
         );
         let r = s.current_round().unwrap();
         assert!(near(r.center.z, 85.0, 1e-3) && near(r.diameter(), 78.81, 0.1));
-        let wall = s.section_wall().unwrap();
-        assert!(near(wall.thickness, 2.4, 0.1));
+        assert!(near(s.section_wall().unwrap().thickness, 2.4, 0.1));
+        let all = s.section_diameters();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].0 && !all[1].0 && all[0].1 > all[1].1);
+        // A click nearer the inner wall picks the inner contour.
+        s.click(
+            &scene,
+            Spot::free(Vec3::new(r.radius - 1.9, 0.0, 85.0)),
+            Some((id, 0)),
+        );
+        assert!(s.current_round().unwrap().diameter() < all[0].1 - 4.0);
         let p = Measure::preset("section:40,0,85", &scene);
         assert_eq!(p.mode, Mode::Section);
-        assert!(near(
-            p.current_round().unwrap().diameter(),
-            r.diameter(),
-            1e-3
-        ));
-        // Clicking on nothing clears it.
+        assert!(near(p.current_round().unwrap().diameter(), all[0].1, 1e-3));
+        // Clicking on nothing clears it, and so does changing the mode.
         s.click(&scene, Spot::free(Vec3::ZERO), None);
         assert!(s.section.is_none() && s.current_round().is_none());
+        s.click(
+            &scene,
+            Spot::free(Vec3::new(40.0, 0.0, 85.0)),
+            Some((id, 0)),
+        );
+        s.set_mode(Mode::Distance);
+        assert!(s.section.is_none());
+    }
+
+    #[test]
+    fn a_click_on_a_cylinders_top_rim_gives_its_diameter() {
+        let mut scene = Scene::default();
+        let id = scene.add(Object::new(
+            "can",
+            Primitive::Cylinder.build(),
+            DEFAULT_COLOR,
+        ));
+        let b = scene.get(id).unwrap().world_aabb();
+        let r = b.size().x / 2.0;
+        for z in [b.min.z, b.max.z] {
+            let mut m = Measure::new(Mode::Section);
+            let rim = Vec3::new(b.center().x + r, b.center().y, z);
+            m.click(&scene, Spot::free(rim), Some((id, 0)));
+            assert!(near(m.current_round().unwrap().diameter(), 2.0 * r, 0.05));
+            assert!(m.section.as_ref().unwrap().section.shift != 0.0);
+        }
     }
 
     #[test]

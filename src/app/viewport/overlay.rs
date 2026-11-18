@@ -162,7 +162,7 @@ fn measure_overlay(
                 Stroke::new(1.5 / ppp, MEASURE_GREEN),
             ));
         }
-        // Radius line to the rim (the whole diameter for a circular edge or section, to
+        // Radius line to the rim (the whole diameter for a section, to
         // the outline's first vertex), the centre as a dot with a small cross.
         let outline = m.outline();
         let on_outline = outline.is_some();
@@ -187,8 +187,8 @@ fn measure_overlay(
             painter.circle_filled(c, 3.0 / ppp, MEASURE_GREEN);
         }
     }
-    // The edge loop under the cursor (yellow, like the snap indicator) and the chosen one.
-    let loop_line = |l: &crate::edge_loops::EdgeLoop, color: Color32| {
+    // The section's contours in yellow, like the snap indicator; the one clicked in green.
+    let loop_line = |l: &crate::section::Outline, color: Color32| {
         let mut line: Vec<Pos2> = l.points.iter().filter_map(|p| to_screen(*p)).collect();
         if l.closed {
             line.extend(line.first().copied());
@@ -198,20 +198,6 @@ fn measure_overlay(
         }
         painter.add(egui::Shape::line(line, Stroke::new(2.5 / ppp, color)));
     };
-    if m.mode == Mode::Edge {
-        let chosen = m.edge.as_ref().map(|l| (l.chain, m.edge_soft));
-        let hover = m
-            .edge_hover
-            .as_ref()
-            .map(|l| (l, (l.chain, m.edge_hover_soft)));
-        if let Some((l, _)) = hover.filter(|(_, key)| Some(*key) != chosen) {
-            loop_line(l, SNAP_YELLOW);
-        }
-        if let Some(l) = &m.edge {
-            loop_line(l, MEASURE_GREEN);
-        }
-    }
-    // The section: every contour of the cut, the clicked one in green.
     if let Some(s) = m.section.as_ref().filter(|_| m.mode == Mode::Section) {
         for (i, c) in s.section.contours.iter().enumerate() {
             if Some(i) != s.chosen {
