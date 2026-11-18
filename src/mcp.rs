@@ -122,8 +122,10 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 const INSTRUCTIONS: &str = concat!(
-    "Open 3D BuildCraft and enable external agents to use the tools. Every change shows in the app and can be undone. ",
-    "Call screenshot to see the result; give it a view (front, top, iso...) and focus ids to look from another angle without moving the user's camera.\n",
+    "These tools work on the scene open in 3D BuildCraft, a 3D modelling app for 3D printing (the app must be open, with external agents on in its AI assistant settings). ",
+    "Every change shows in the app and is one undo step. Tools that change the scene reply with the scene as get_scene lists it. ",
+    "Call screenshot to see the result; give it a view (front, top, iso...) and focus ids to look from another angle without moving the user's camera. ",
+    "If unsure whether a format or argument works, try it: the error says what is accepted and what to use instead.\n",
     crate::rules!()
 );
 
@@ -152,68 +154,125 @@ transform size [50, 50, 30], position [0, 0, 0], bottom 40. The roof now sits on
     };
 }
 
-/// The tools, with their JSON schemas.
+/// The files a tool takes, for the inline-file fields' descriptions.
+struct Files {
+    /// A file name to show in `file_name`.
+    example: &'static str,
+    /// The formats `file_text` carries.
+    text: &'static str,
+    /// The formats `file_base64` carries.
+    base64: &'static str,
+}
+
+/// Model files: `open` and `import`.
+const MODEL_FILES: Files = Files {
+    example: "part.stl",
+    text: "SVG, OBJ, ASCII STL or PLY",
+    base64: "3MF, STL, OBJ, PLY, GLB or SVG (glTF only with its data embedded)",
+};
+
+/// Pictures: Load image, Emboss's image pattern, textures and stickers.
+const PICTURE_FILES: Files = Files {
+    example: "logo.svg",
+    text: "SVG",
+    base64: "PNG, JPEG or SVG",
+};
+
 /// Adds `file_name`, `file_text` and `file_base64` to a tool's schema: an agent
 /// on another machine or in a sandbox sends the file itself instead of `key`.
-fn with_file(mut schema: Value, key: &str) -> Value {
+fn with_file(mut schema: Value, key: &str, files: &Files) -> Value {
     let text = |what: String| json!({ "type": "string", "description": what });
     let props = schema["properties"]
         .as_object_mut()
         .expect("an object schema");
-    props.insert("file_name".into(), text(format!("instead of {key}, when the agent runs where the app cannot read its files: the file name with extension, e.g. logo.svg, sent with file_text or file_base64")));
+    props.insert(
+        "file_name".into(),
+        text(format!(
+            "instead of {key}, when the app cannot read the agent's files: the file's name with extension (it gives the format), e.g. {}; send its content in file_text or file_base64",
+            files.example
+        )),
+    );
     props.insert(
         "file_text".into(),
-        text("the whole file as text (SVG, OBJ, ASCII STL or PLY)".into()),
+        text(format!("the whole file as text: {}", files.text)),
     );
     props.insert(
         "file_base64".into(),
         text(format!(
-            "the whole file in base64 (3MF, binary STL, GLB, PNG, JPEG), up to {} MB",
+            "the whole file in base64: {}; up to {} MB",
+            files.base64,
             INLINE_MAX >> 20
         )),
     );
     schema
 }
 
+/// `edit`'s operations.
+pub const EDIT_OPERATIONS: [&str; 14] = [
+    "delete",
+    "duplicate",
+    "merge",
+    "subtract",
+    "intersect",
+    "repair",
+    "smooth",
+    "extrude_down",
+    "settle",
+    "mirror_x",
+    "mirror_y",
+    "mirror_z",
+    "undo",
+    "redo",
+];
+
+/// The tools, with their JSON schemas.
 pub fn tools() -> Vec<Value> {
     let vec3 = |what: &str| json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": what });
     let none = json!({ "type": "object", "properties": {} });
     let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
     vec![
-        tool("measure", "Read-only measurements in mm, mm² and mm³. Selection statistics, point distance, or gaps between two object bounds.", json!({"type":"object","properties":{"from":vec3("Start"),"to":vec3("End"),"ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2}}})),
+        tool(
+            "measure",
+            "Read-only measurements. No arguments: min, max, size (mm), volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 where they overlap) and the distance between their centres.",
+            json!({"type":"object","properties":{
+                "from":vec3("first point [x, y, z], mm; needs to"),
+                "to":vec3("second point [x, y, z], mm"),
+                "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"}
+            }}),
+        ),
         tool(
             "get_scene",
-            "List the objects: id, name, colour, centre, center_of_mass (volume centroid, or bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, whether the mesh is valid (closed) and whether it is selected; plus the chosen slicer.",
+            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh) and selected; plus the chosen slicer and can_undo/can_redo. Units mm and degrees.",
             none.clone(),
         ),
         tool(
             "select",
-            "Select objects by id; an empty list selects nothing.",
-            json!({ "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "integer" } } }, "required": ["ids"] }),
+            "Replace the selection with the objects whose ids are given (ids from get_scene); [] selects nothing. transform, set_color, edit and the other editing tools act on the selection.",
+            json!({ "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "integer" }, "description": "object ids" } }, "required": ["ids"] }),
         ),
         tool(
             "transform",
             "Move, rotate or resize the selection. position is the centre of its bounding box; bottom sets min Z, left/right set min/max X, front/back set min/max Y, after position (left then right, front then back). To stack on an object, bottom = that object's top. rotation is degrees about X, Y, Z (each selected object), size is the bounding box in mm (the bottom stays where it was unless position or bottom is given).",
-            json!({ "type": "object", "properties": { "position": vec3("centre, mm"), "rotation": vec3("degrees"), "size": vec3("mm, all > 0"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
+            json!({ "type": "object", "properties": { "position": vec3("centre, mm"), "rotation": vec3("degrees about X, Y, Z"), "size": vec3("bounding box, mm, all > 0"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
         ),
         tool(
             "edit",
-            "Apply an operation to the selection. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. settle drops objects onto the floor. repair fixes invalid meshes. undo and redo step through history.",
-            json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": ["delete", "duplicate", "merge", "subtract", "intersect", "repair", "smooth", "extrude_down", "settle", "mirror_x", "mirror_y", "mirror_z", "undo", "redo"] } }, "required": ["operation"] }),
+            "Apply an operation to the selection. delete removes it. duplicate adds copies to its right and selects them. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
+            json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": EDIT_OPERATIONS } }, "required": ["operation"] }),
         ),
         tool(
             "set_color",
-            "Colour the selection.",
+            "Give each selected object this colour.",
             json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB" } }, "required": ["color"] }),
         ),
         tool(
             "hollow",
-            "Hollow the selection, keeping walls of the given thickness.",
-            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "mm, > 0" } }, "required": ["wall"] }),
+            "Hollow each selected object, keeping walls of the given thickness.",
+            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "wall thickness, mm, > 0" } }, "required": ["wall"] }),
         ),
         tool(
             "smooth",
-            "Smooth the selection, as the Smooth tool: passes 0..6 (default 3, the tool's default). Without edges each pass splits faces while the model is small and relaxes the surface, keeping its size; with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
+            "Smooth the selection, as the Smooth tool. Without edges each pass splits faces while the model is small and relaxes the surface, keeping its size; with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
             json!({ "type": "object", "properties": {
                 "passes": { "type": "integer", "description": "0..6, default 3" },
                 "edges": { "type": "boolean", "description": "smooth sharp edges too, default false" }
@@ -221,18 +280,24 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "simplify",
-            "Reduce the faces of the selection.",
-            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of faces to remove, 0..1 (the Simplify tool goes in whole percents, at most 0.99)" } }, "required": ["remove"] }),
+            "Reduce the number of triangles of the selection, keeping its shape as well as it can.",
+            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of the triangles to remove, 0..1 (0.5 halves them)" } }, "required": ["remove"] }),
         ),
         tool(
             "open",
-            "Open a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour), replacing the scene. Fails if the scene has unsaved changes unless discard_changes is true.",
-            with_file(json!({ "type": "object", "properties": { "path": { "type": "string" }, "discard_changes": { "type": "boolean" } } }), "path"),
+            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
+            with_file(json!({ "type": "object", "properties": {
+                "path": { "type": "string", "description": "model file path on the app's computer" },
+                "discard_changes": { "type": "boolean", "description": "drop the scene's unsaved changes; default false" }
+            } }), "path", &MODEL_FILES),
         ),
         tool(
             "save",
-            "Save the scene; the format follows the extension (3MF by default). Fails if the file exists unless overwrite is true.",
-            json!({ "type": "object", "properties": { "path": { "type": "string" }, "overwrite": { "type": "boolean" } }, "required": ["path"] }),
+            "Save the whole scene to a file on the app's computer. The extension picks the format: 3MF (keeps colours, materials and the model's details), STL, OBJ, PLY, GLB or glTF; a path without one gets .3mf. Fails if the file exists unless overwrite is true.",
+            json!({ "type": "object", "properties": {
+                "path": { "type": "string", "description": "file path, e.g. /home/me/box.3mf" },
+                "overwrite": { "type": "boolean", "description": "replace an existing file; default false" }
+            }, "required": ["path"] }),
         ),
         tool(
             "print",
@@ -241,7 +306,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "screenshot",
-            "A picture of the app window as it is now. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, scene colours, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
+            "A PNG picture of the app window as it is now. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours but no textures or stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
             json!({ "type": "object", "properties": {
                 "view": { "type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"], "description": "front looks from -Y towards +Y (X to the right), left from -X, right from +X, top down from +Z with the front at the bottom of the picture; iso is from the front right and above. Not with azimuth/elevation" },
                 "azimuth": { "type": "number", "description": "degrees around the vertical, 0 = front, 90 = right, 180 = back, 270 = left; default 45. Not with view" },
@@ -257,6 +322,9 @@ pub fn tools() -> Vec<Value> {
     .chain(print_tools())
     .collect()
 }
+
+/// What the picture tools say about an SVG picture.
+const SVG_PICTURE: &str = "an SVG is drawn as a picture (its filled and stroked shapes in their colours, transparent elsewhere)";
 
 /// Modelling tools: shapes, painting, textures, materials, Split, Emboss and adding files.
 fn model_tools() -> Vec<Value> {
@@ -277,10 +345,14 @@ fn model_tools() -> Vec<Value> {
         .collect();
     let textures: Vec<&str> = textures.iter().map(String::as_str).collect();
     let point = "a world point in mm on (or within 5 mm of) the surface; the nearest triangle is used. Points from get_scene bounds work, e.g. [center x, center y, top] is the middle of a flat top";
+    let picture = format!(
+        "picture file path on the app's computer: {}; {SVG_PICTURE}",
+        crate::picture::FORMATS
+    );
     vec![
         tool(
             "insert_shape",
-            "Add a shape on the floor at the centre; it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness. One undo step.",
+            "Add a shape on the floor at the centre; it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
             json!({ "type": "object", "properties": {
                 "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"] },
                 "size": vec3("bounding box [x, y, z] in mm, all > 0; applied last, the bottom stays on the floor"),
@@ -308,28 +380,28 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the original's shapes (named in pattern), or the dark areas of a picture. planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
             with_file(json!({ "type": "object", "properties": {
                 "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text("the text, for pattern text"),
-                "image": text("PNG or JPEG path, for pattern image"),
-                "font": text("installed font family; default the bundled font"),
+                "image": text(&format!("for pattern image, {picture}. Its dark, opaque areas are embossed")),
+                "font": text("installed font family (see list_fonts); default the bundled font"),
                 "size": num("capital letter height for text, overall height for shapes and images, mm, default 10; the width follows in proportion unless width is given"),
                 "width": num("overall width of the pattern, mm, stretching it sideways without changing its height; default: in proportion to size"),
                 "depth": num("height above the surface (or depth when engraving), mm, default 1"),
-                "engrave": flag("cut into the surface instead of raising"),
-                "bevel": flag("slope the edges"),
-                "angle": num("turn in its own plane, degrees"),
+                "engrave": flag("cut into the surface instead of raising; default false"),
+                "bevel": flag("slope the edges; default false"),
+                "angle": num("turn in its own plane, degrees, default 0"),
                 "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
                 "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical)" },
                 "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face there, facing out"),
-                "top_color": color("colour of the top layer"),
-                "side_color": color("colour of the sides of a raised pattern"),
-            } }), "image"),
+                "top_color": color("colour of the top layer; default the object's"),
+                "side_color": color("colour of the sides of a raised pattern; default the object's"),
+            } }), "image", &PICTURE_FILES),
         ),
         tool(
             "paint_area",
-            "Paint the surface region around a point, as the Color tool's click. coverage 0 paints the flat face there; higher values spread across edges that bend up to coverage × 180 degrees, so 1 paints the whole connected surface. Does not change the selection. One undo step.",
+            "Paint the surface region around a point, as the Color tool's click. coverage 0 paints the flat face there; higher values spread across edges that bend up to coverage × 180 degrees, so 1 paints the whole connected surface. Works on any object; does not change the selection.",
             json!({ "type": "object", "properties": {
                 "point": vec3(point),
                 "color": color("the paint"),
@@ -339,7 +411,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "set_material",
-            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through), with a colour that replaces any painted areas. One undo step.",
+            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through), with a colour that replaces any painted areas.",
             json!({ "type": "object", "properties": {
                 "type": one_of(&["none", "simple", "realistic", "translucent"], "the material"),
                 "color": color("default the first selected object's colour; not used with none"),
@@ -347,29 +419,29 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "apply_texture",
-            "Put a built-in texture or a picture on the selection, as Paint → Texture. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker projects it once at point, facing out of the surface. One undo step.",
+            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker places it once at point, facing out of the surface.",
             with_file(json!({ "type": "object", "properties": {
-                "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes)"),
-                "image": text("PNG or JPEG path, instead of texture"),
-                "mode": one_of(&["brush", "sticker"], "default brush"),
+                "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes); give this or image"),
+                "image": text(&format!("{picture}; give this or texture")),
+                "mode": one_of(&["brush", "sticker"], "default brush; sticker needs point"),
                 "point": vec3(point),
                 "coverage": num("brush with point: 0..1, default 1 (the whole connected surface)"),
                 "id": int("a selected object to use; default the selected object nearest to point"),
                 "size": num("sticker width, mm; default 40% of the object's longest side"),
-                "angle": num("sticker turn about the surface normal, degrees"),
-            } }), "image"),
+                "angle": num("sticker turn about the surface normal, degrees, default 0"),
+            } }), "image", &PICTURE_FILES),
         ),
         tool(
             "import",
-            "Add a model file (3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing extruded 3 mm, one object per colour) to the scene without replacing it, as Add → Import model. It lands centred on the floor and its objects become the selection. One undo step.",
+            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor and its objects become the selection. For a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
-                "path": text("model file path"),
+                "path": text("model file path on the app's computer"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
-            } }), "path"),
+            } }), "path", &MODEL_FILES),
         ),
         tool(
             "extrude_outline",
-            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a keychain or badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection. One undo step.",
+            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a keychain or badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection.",
             json!({ "type": "object", "properties": {
                 "side": one_of(&["outside", "inside"], "outside: a ring around the outline; inside: a band just within its edge. Default outside"),
                 "width": num("border width, mm, default 2"),
@@ -381,17 +453,17 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "load_image",
-            "Turn a picture into a solid, as Load image, added on the floor at the centre and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert. One undo step.",
+            "Turn a picture (PNG, JPEG or SVG) into a new solid, as Load image, added on the floor at the centre and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert; transparent counts as white. For a solid made of an SVG's own shapes at their real size, use import instead.",
             with_file(json!({ "type": "object", "properties": {
-                "path": text("PNG or JPEG path"),
+                "path": text(&picture),
                 "method": one_of(&["contour", "height_map", "edge", "stamp"], "default contour"),
                 "size": num("mm along the longer side (the height for edge), default 80"),
                 "depth": num("most relief, mm, default 3"),
                 "levels": int("contour steps, 2..8, default 8"),
                 "smooth": num("blur before sampling, 0..1, default 1"),
-                "invert": flag("light is high instead of dark"),
+                "invert": flag("light is high instead of dark; default false"),
                 "textures": flag("colour the top with the picture, default true"),
-            } }), "path"),
+            } }), "path", &PICTURE_FILES),
         ),
     ]
 }
@@ -404,7 +476,7 @@ fn print_tools() -> Vec<Value> {
     vec![
         tool(
             "model_info",
-            "Read or set the model's metadata (\"About the model\"), saved in 3MF files and sent to the slicer. With no arguments it only reads. Given fields replace those fields; an empty string clears one. The title also names the window and the print file.",
+            "Read or set the model's metadata (\"About the model\"), saved in 3MF files and sent to the slicer. With no arguments it only reads. Given fields replace those fields; an empty string clears one. The title also names the window and the print file. Replies with all the fields.",
             json!({ "type": "object", "properties": {
                 "title": field("model title"),
                 "designer": field("who designed it"),
@@ -426,7 +498,7 @@ fn print_tools() -> Vec<Value> {
         ),
         tool(
             "list_fonts",
-            "Read-only: the installed font families that emboss_text accepts in font. Without font, emboss_text uses the bundled font.",
+            "Read-only: the installed font families that emboss_text accepts in font, as count and fonts. Without font, emboss_text uses the bundled font.",
             json!({ "type": "object", "properties": { "filter": field("only families whose name contains this text, ignoring case") } }),
         ),
         tool(
@@ -629,19 +701,26 @@ pub fn inline_file(
         return Ok(None);
     }
     if !args[key].is_null() {
-        return Err(format!("send either {key} or the file inline, not both"));
+        return Err(format!(
+            "send either {key} or the file inline (file_name with file_text or file_base64), not both"
+        ));
     }
     let bytes = match (text, data) {
         (Some(t), None) => t.as_bytes().to_vec(),
-        (None, Some(d)) => unbase64(d).ok_or("file_base64 is not valid base64")?,
-        _ => return Err("send file_text or file_base64, not both".into()),
+        (None, Some(d)) => unbase64(d).ok_or(
+            "file_base64 is not valid base64; send a text format (SVG, OBJ, ASCII STL, PLY) as file_text instead",
+        )?,
+        _ => return Err("send file_text or file_base64, not both: file_text for a text file, file_base64 for any file".into()),
     };
     if bytes.len() > INLINE_MAX {
-        return Err(format!("the file is over {} MB", INLINE_MAX >> 20));
+        return Err(format!(
+            "the file is over {} MB; make it smaller, or put it where the app can read it and give its path",
+            INLINE_MAX >> 20
+        ));
     }
     let name: String = args["file_name"]
         .as_str()
-        .ok_or("file_name is missing (the name with extension, e.g. logo.svg)")?
+        .ok_or("file_name is missing: the file's name with its extension, which gives the format")?
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or_default()
@@ -650,7 +729,10 @@ pub fn inline_file(
         .collect();
     let name = name.trim().trim_start_matches('.');
     if !name.contains('.') {
-        return Err("file_name needs an extension, e.g. logo.svg".into());
+        return Err(
+            "file_name needs an extension, which gives the format, e.g. logo.svg or part.stl"
+                .into(),
+        );
     }
     // A folder per file: an earlier one may still be in use (an emboss picture).
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -736,10 +818,13 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
             let a = args[key]
                 .as_array()
                 .filter(|a| a.len() == 3)
-                .ok_or("points need three numbers")?;
+                .ok_or("from and to must both be points [x, y, z] in mm")?;
             let mut p = [0.0; 3];
             for i in 0..3 {
-                p[i] = a[i].as_f64().ok_or("points need numbers")? as f32;
+                p[i] = a[i]
+                    .as_f64()
+                    .ok_or("from and to must both be points [x, y, z] in mm")?
+                    as f32;
             }
             Ok(glam::Vec3::from_array(p))
         };
@@ -750,11 +835,11 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         let ids = ids
             .as_array()
             .filter(|a| a.len() == 2)
-            .ok_or("ids needs two object IDs")?;
+            .ok_or("ids must be two object ids from get_scene")?;
         let object = |i: usize| {
             scene
                 .get(ids[i].as_u64().unwrap_or(u64::MAX))
-                .ok_or_else(|| "unknown object ID".to_owned())
+                .ok_or_else(|| format!("no object with id {}; get_scene lists the ids", ids[i]))
         };
         let a = object(0)?.world_aabb();
         let b = object(1)?.world_aabb();

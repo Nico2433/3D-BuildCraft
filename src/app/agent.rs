@@ -110,7 +110,9 @@ impl App {
             "transform"
                 | "set_color"
                 | "hollow"
+                | "smooth"
                 | "simplify"
+                | "extrude_outline"
                 | "split"
                 | "emboss_text"
                 | "set_material"
@@ -118,7 +120,9 @@ impl App {
         ) || (tool == "edit"
             && !matches!(a["operation"].as_str(), Some("undo" | "redo")));
         if selection_needed && self.scene.selection.is_empty() {
-            return Err("nothing is selected; call select first".into());
+            return Err(format!(
+                "{tool} acts on the selection, and nothing is selected; call select with ids from get_scene first"
+            ));
         }
         // A tool left open by the user would catch the edit; the agent's call wins.
         if tool == "measure" {
@@ -144,22 +148,25 @@ impl App {
             "select" => {
                 let ids: Vec<u64> = a["ids"]
                     .as_array()
-                    .ok_or("ids must be a list")?
+                    .ok_or("ids must be a list of object ids, e.g. [1, 2]")?
                     .iter()
-                    .map(|v| v.as_u64().ok_or("ids must be integers"))
+                    .map(|v| {
+                        v.as_u64()
+                            .ok_or("ids must be whole numbers, the ids from get_scene")
+                    })
                     .collect::<Result<_, _>>()?;
                 if let Some(id) = ids.iter().find(|id| self.scene.get(**id).is_none()) {
-                    return Err(format!("no object with id {id}"));
+                    return Err(format!("no object with id {id}; get_scene lists the ids"));
                 }
                 self.scene.selection = ids.into_iter().collect();
             }
             "insert_shape" => self.agent_insert_shape(a, ctx)?,
             "transform" => {
-                let rotation = vec3(&a["rotation"])?;
-                let size = vec3(&a["size"])?;
-                let position = vec3(&a["position"])?;
+                let rotation = vec3(a, "rotation")?;
+                let size = vec3(a, "size")?;
+                let position = vec3(a, "position")?;
                 if size.is_some_and(|s| s.min_element() <= 0.0) {
-                    return Err("size must be greater than 0".into());
+                    return Err("size must be [x, y, z] in mm, all greater than 0".into());
                 }
                 self.apply(Action::BeginEdit, ctx);
                 // Rotation first: it changes the bounding box the others are about.
@@ -218,14 +225,19 @@ impl App {
                     "mirror_z" => Action::Mirror(Axis::Z),
                     "undo" => Action::Undo,
                     "redo" => Action::Redo,
-                    _ => return Err(format!("unknown operation: {op}")),
+                    _ => {
+                        return Err(format!(
+                            "unknown operation: {op}; one of {}",
+                            mcp::EDIT_OPERATIONS.join(", ")
+                        ))
+                    }
                 };
                 self.apply(action, ctx);
                 self.wait_jobs();
             }
             "set_color" => {
                 let c = a["color"].as_str().and_then(parse_hex);
-                let c = c.ok_or("color must look like #RRGGBB")?;
+                let c = c.ok_or("color must be #RRGGBB, e.g. #FF8000")?;
                 self.apply(Action::SetColor(c), ctx);
             }
             "smooth" => {
@@ -239,7 +251,7 @@ impl App {
                 let amount = passes as f32 / crate::solid::SMOOTH_STEPS as f32;
                 let edges = a["edges"].as_bool().unwrap_or(false);
                 if !self.modify_selected(|m| crate::solid::smooth_by(m, amount, edges)) {
-                    return Err("nothing selected, or smoothing failed".into());
+                    return Err("smoothing failed".into());
                 }
             }
             "hollow" => {
@@ -248,9 +260,12 @@ impl App {
                 self.apply(Action::ApplyHollow, ctx);
             }
             "simplify" => {
-                let level = a["remove"].as_f64().ok_or("remove must be a number")? as f32;
+                let level = a["remove"].as_f64().unwrap_or(-1.0) as f32;
                 if !(0.0..=1.0).contains(&level) {
-                    return Err("remove must be between 0 and 1".into());
+                    return Err(
+                        "remove must be a number from 0 to 1, the fraction of triangles to remove"
+                            .into(),
+                    );
                 }
                 self.start_simplify(1.0 - level, ctx);
                 self.wait_jobs();
@@ -264,13 +279,10 @@ impl App {
             "load_image" => self.agent_load_image(a, ctx)?,
             "extrude_outline" => self.agent_extrude_outline(a)?,
             "open" => {
-                let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
-                if !path.is_file() {
-                    return Err(format!("no such file: {}", path.display()));
-                }
+                let path = super::agent_model::model_file(a)?;
                 if self.scene.dirty && a["discard_changes"].as_bool() != Some(true) {
                     return Err(
-                        "the scene has unsaved changes; save it or pass discard_changes".into(),
+                        "the scene has unsaved changes; save it first, pass discard_changes true to drop them, or use import to add the file to the scene".into(),
                     );
                 }
                 self.scene.dirty = false;
@@ -282,7 +294,20 @@ impl App {
                 }
             }
             "save" => {
-                let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
+                let mut path = PathBuf::from(
+                    a["path"]
+                        .as_str()
+                        .ok_or("path is missing: the file to write, e.g. /home/me/box.3mf")?,
+                );
+                if path.extension().is_none() {
+                    path.set_extension("3mf");
+                }
+                if !Format::from_path(&path).is_some_and(|f| Format::SAVE.contains(&f)) {
+                    return Err(format!(
+                        "save writes {}, chosen by the path's extension; SVG and pictures cannot be saved",
+                        io::SAVE_FORMATS
+                    ));
+                }
                 if path.exists() && a["overwrite"].as_bool() != Some(true) {
                     return Err(format!(
                         "{} exists; pass overwrite to replace it",
@@ -292,7 +317,7 @@ impl App {
                 self.save_to(path);
             }
             "print" => self.agent_print(ctx)?,
-            other => return Err(format!("unknown tool: {other}")),
+            other => return Err(format!("unknown tool: {other}; tools/list lists the tools")),
         }
         // A tool that failed stays open in the UI; close it, the agent gets the error.
         if edits {
@@ -340,8 +365,9 @@ impl App {
     }
 }
 
-/// An optional `[x, y, z]`; anything else is an error.
-pub(super) fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
+/// The optional `[x, y, z]` under `key`; anything else is an error.
+pub(super) fn vec3(a: &Value, key: &str) -> Result<Option<Vec3>, String> {
+    let v = &a[key];
     if v.is_null() {
         return Ok(None);
     }
@@ -353,7 +379,7 @@ pub(super) fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
     });
     match xs.as_deref() {
         Some(&[x, y, z]) => Ok(Some(Vec3::new(x, y, z))),
-        _ => Err("expected [x, y, z] with three numbers".into()),
+        _ => Err(format!("{key} must be [x, y, z], three numbers")),
     }
 }
 

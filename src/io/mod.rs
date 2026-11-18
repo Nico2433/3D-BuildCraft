@@ -127,6 +127,10 @@ impl Format {
 }
 
 pub const OPEN_EXTENSIONS: [&str; 7] = ["3mf", "stl", "obj", "ply", "gltf", "glb", "svg"];
+/// The model formats that open, for messages.
+pub const OPEN_FORMATS: &str = "3MF, STL, OBJ, PLY, glTF, GLB or SVG";
+/// The formats a scene saves as ([`Format::SAVE`]), for messages.
+pub const SAVE_FORMATS: &str = "3MF, STL, OBJ, PLY, GLB or glTF";
 
 /// The file name without extension, "Object" when it has none.
 pub fn file_stem(path: &Path) -> &str {
@@ -137,7 +141,10 @@ pub fn file_stem(path: &Path) -> &str {
 
 pub fn load(path: &Path) -> Result<LoadedModel> {
     let Some(format) = Format::from_path(path) else {
-        bail!("Unsupported format: {}", path.display());
+        bail!(
+            "Unsupported format: {}. Models open as {OPEN_FORMATS}",
+            path.display()
+        );
     };
     let stem = file_stem(path).to_string();
     let mut info = ModelInfo::default();
@@ -166,7 +173,10 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
 
 pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()> {
     let Some(format) = Format::from_path(path) else {
-        bail!("Unsupported format: {}", path.display());
+        bail!(
+            "Unsupported format: {}. Scenes save as {SAVE_FORMATS}",
+            path.display()
+        );
     };
     match format {
         Format::ThreeMf => threemf::write(path, objects, info),
@@ -175,7 +185,7 @@ pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()
         Format::Ply => ply::write(path, objects),
         Format::Gltf => gltf_io::write(path, objects, false),
         Format::Glb => gltf_io::write(path, objects, true),
-        Format::Svg => bail!("SVG files can only be imported"),
+        Format::Svg => bail!("SVG files can only be imported; save as {SAVE_FORMATS}"),
     }
 }
 

@@ -25,20 +25,28 @@ impl App {
         let shape = Primitive::ALL
             .into_iter()
             .find(|p| p.label().eq_ignore_ascii_case(name))
-            .ok_or_else(|| format!("unknown shape: {name}"))?;
-        let size = vec3(&a["size"])?;
+            .ok_or_else(|| {
+                let names: Vec<String> = Primitive::ALL
+                    .iter()
+                    .map(|p| p.label().to_lowercase())
+                    .collect();
+                format!("unknown shape: {name}; one of {}", names.join(", "))
+            })?;
+        let size = vec3(a, "size")?;
         if size.is_some_and(|s| s.min_element() <= 0.0) {
-            return Err("size must be greater than 0".into());
+            return Err("size must be [x, y, z] in mm, all greater than 0".into());
         }
         let c = &a["custom"];
         if c.is_null() {
             self.apply(Action::Insert(shape), ctx);
         } else {
             if !c.is_object() {
-                return Err("custom must be an object".into());
+                return Err("custom must be an object, e.g. {\"roundness\": 5}".into());
             }
             if !CUSTOM_SHAPES.contains(&shape) {
-                return Err("custom works with cube, sphere, cone, torus and cylinder".into());
+                return Err(format!(
+                    "custom works with cube, sphere, cone, torus and cylinder, not {name}; leave custom out for a plain {name}"
+                ));
             }
             let steps = SEGMENTS[0] as u32..=SEGMENTS[SEGMENTS.len() - 1] as u32;
             let key = (
@@ -82,7 +90,7 @@ impl App {
         a: &Value,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        let color = color(a, "color")?.ok_or("color must look like #RRGGBB")?;
+        let color = color(a, "color")?.ok_or("color is missing: #RRGGBB, e.g. #FF8000")?;
         let coverage = number(a, "coverage", 0.0, 0.0..=1.0)?;
         let ids = match object_id(a)? {
             Some(id) => vec![id],
@@ -126,10 +134,14 @@ impl App {
         let layer = texture_layer(a)?;
         let ids = match object_id(a)? {
             Some(id) if self.scene.selection.contains(&id) => vec![id],
-            Some(id) => return Err(format!("object {id} is not selected")),
+            Some(id) => {
+                return Err(format!(
+                    "object {id} is not selected; select it first, or leave id out"
+                ))
+            }
             None => self.scene.selected_ids(),
         };
-        let at = vec3(&a["point"])?;
+        let at = vec3(a, "point")?;
         match choice(
             a,
             "mode",
@@ -152,7 +164,7 @@ impl App {
                 }
             }
             _ => {
-                let p = at.ok_or("a sticker needs point")?;
+                let p = at.ok_or("a sticker needs point, a surface point [x, y, z] in mm")?;
                 let hit = self.surface_at(&ids, p)?;
                 // No viewing direction: the sticker faces out of the triangle.
                 let mut decal = self
@@ -179,13 +191,16 @@ impl App {
                     .ok_or("z must be a number")? as f32,
             ),
         };
-        let at = vec3(&a["point"])?;
-        let (normal, rotation) = (vec3(&a["normal"])?, vec3(&a["rotation"])?);
+        let at = vec3(a, "point")?;
+        let (normal, rotation) = (vec3(a, "normal")?, vec3(a, "rotation")?);
         if normal.is_some() && rotation.is_some() {
-            return Err("give normal or rotation, not both".into());
+            return Err("give normal or rotation, not both; they both turn the plane".into());
         }
         if z.is_none() && at.is_none() && normal.is_none() && rotation.is_none() {
-            return Err("give z, point, normal or rotation".into());
+            return Err(
+                "give z for a level cut at that height, or point with normal or rotation for a slanted one"
+                    .into(),
+            );
         }
         let mut centre = at.unwrap_or(self.scene.selection_aabb().center());
         if let Some(z) = z {
@@ -226,13 +241,24 @@ impl App {
         };
         params.pattern = match a["pattern"].as_str().unwrap_or("text") {
             "text" => Pattern::Text,
-            "image" => Pattern::Image(file(a, "image")?),
-            p => {
-                Pattern::Shape(Shape::from_name(p).ok_or_else(|| format!("unknown pattern: {p}"))?)
-            }
+            "image" => Pattern::Image(picture_file(a, "image")?),
+            p => Pattern::Shape(Shape::from_name(p).ok_or_else(|| {
+                let shapes: Vec<String> = Shape::ALL.iter().map(|s| s.name()).collect();
+                format!(
+                    "unknown pattern: {p}; one of text, image, {}",
+                    shapes.join(", ")
+                )
+            })?),
         };
+        if !a["image"].is_null() && !matches!(params.pattern, Pattern::Image(_)) {
+            return Err(
+                "a picture is used only with pattern image; add \"pattern\": \"image\"".into(),
+            );
+        }
         if params.pattern == Pattern::Text && params.text.trim().is_empty() {
-            return Err("text is empty".into());
+            return Err(
+                "text is empty; give text, or pattern image with a picture, or a shape name".into(),
+            );
         }
         for (key, value) in [("size", &mut params.size), ("depth", &mut params.depth)] {
             if !a[key].is_null() {
@@ -269,12 +295,13 @@ impl App {
                 _ => return Err("offset must be [x, y]".into()),
             }
         }
-        if let Some(p) = vec3(&a["at"])? {
+        if let Some(p) = vec3(a, "at")? {
             let target = match self.scene.selection.len() {
                 1 => self.scene.selected().next(),
                 _ => None,
             };
-            let target = target.ok_or("emboss needs exactly one selected object")?;
+            let target = target
+                .ok_or("emboss_text needs exactly one selected object; select the one to emboss")?;
             crate::emboss::place_at(&target.world_mesh(), &mut params, p);
         }
         if !a["width"].is_null() {
@@ -290,7 +317,7 @@ impl App {
 
     /// `import`: adds a model file to the scene, as Add → Import model with its units.
     pub(super) fn agent_import(&mut self, a: &Value, ctx: &egui::Context) -> Result<(), String> {
-        let path = file(a, "path")?;
+        let path = model_file(a)?;
         let mut units = choice(
             a,
             "units",
@@ -359,11 +386,7 @@ impl App {
         a: &Value,
         ctx: &egui::Context,
     ) -> Result<(), String> {
-        let path = file(a, "path")?;
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !crate::image3d::EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) {
-            return Err("the picture must be PNG or JPEG".into());
-        }
+        let path = picture_file(a, "path")?;
         use crate::image3d::Mode;
         let mut opts = crate::image3d::Options::new(path);
         opts.mode = choice(
@@ -423,18 +446,32 @@ impl App {
 fn texture_layer(a: &Value) -> Result<u16, String> {
     let layer = match (a["texture"].as_str(), a["image"].is_null()) {
         (Some(name), true) => {
-            let kind = Kind::from_name(name).ok_or_else(|| format!("unknown texture: {name}"))?;
+            let kind = Kind::from_name(name).ok_or_else(|| {
+                let names: Vec<String> = Kind::all().map(|k| k.name()).collect();
+                format!(
+                    "unknown texture: {name}; one of {}, or a picture in image",
+                    names.join(", ")
+                )
+            })?;
             crate::texture::layer_of(kind)
         }
         (None, false) => {
-            let path = file(a, "image")?;
-            let img = image::open(&path)
-                .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+            let path = picture_file(a, "image")?;
+            let img = crate::picture::open(&path).map_err(|e| format!("{e:#}"))?;
             crate::texture::register_image(&img.into_rgba8())
         }
-        _ => return Err("give either texture or image".into()),
+        (Some(_), false) => return Err("give texture or image, not both".into()),
+        (None, _) => {
+            return Err(format!(
+                "give texture (a built-in texture's name) or image (a picture: {})",
+                crate::picture::FORMATS
+            ))
+        }
     };
-    layer.ok_or_else(|| "there are too many pictures loaded".into())
+    layer.ok_or_else(|| {
+        "there are too many pictures loaded; reuse a picture already used, or a built-in texture"
+            .into()
+    })
 }
 
 /// The optional object `id`; it must exist.
@@ -444,22 +481,67 @@ fn object_id(a: &Value) -> Result<Option<u64>, String> {
         v => v
             .as_u64()
             .map(Some)
-            .ok_or_else(|| "id must be an integer".into()),
+            .ok_or_else(|| "id must be an object id from get_scene".into()),
     }
 }
 
 /// The required `point`.
 fn point(a: &Value) -> Result<Vec3, String> {
-    vec3(&a["point"])?.ok_or_else(|| "point is missing".into())
+    vec3(a, "point")?.ok_or_else(|| "point is missing: a surface point [x, y, z] in mm".into())
 }
 
-/// A path to an existing file under `key`.
+/// A path to an existing file under `key`; tools that take one also take it inline.
 fn file(a: &Value, key: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(a[key].as_str().ok_or_else(|| format!("{key} is missing"))?);
+    let inline = "or send the file itself as file_name with file_text or file_base64";
+    let path = PathBuf::from(
+        a[key]
+            .as_str()
+            .ok_or_else(|| format!("{key} is missing: give the file's path, {inline}"))?,
+    );
     if !path.is_file() {
-        return Err(format!("no such file: {}", path.display()));
+        return Err(format!(
+            "no such file on the app's computer: {}; check the path, {inline}",
+            path.display()
+        ));
     }
     Ok(path)
+}
+
+/// The model file `path` for open and import; a picture gets pointed to the picture tools.
+pub(super) fn model_file(a: &Value) -> Result<PathBuf, String> {
+    let path = file(a, "path")?;
+    if Format::from_path(&path).is_some() {
+        return Ok(path);
+    }
+    let instead = if crate::picture::is_picture(&path) {
+        "; it is a picture: load_image makes a solid of it, emboss_text (pattern image) or apply_texture puts it on an object"
+    } else {
+        ""
+    };
+    Err(format!(
+        "{} is not a model; models can be {}{instead}",
+        path.display(),
+        io::OPEN_FORMATS
+    ))
+}
+
+/// The picture file under `key` for Load image, Emboss and textures; a model gets
+/// pointed to import.
+fn picture_file(a: &Value, key: &str) -> Result<PathBuf, String> {
+    let path = file(a, key)?;
+    if crate::picture::is_picture(&path) {
+        return Ok(path);
+    }
+    let instead = if Format::from_path(&path).is_some() {
+        "; it is a 3D model: add it with import"
+    } else {
+        "; convert it to one of those first"
+    };
+    Err(format!(
+        "{} is not a picture; pictures can be {}{instead}",
+        path.display(),
+        crate::picture::FORMATS
+    ))
 }
 
 /// An optional `#RRGGBB` colour.
@@ -470,7 +552,7 @@ fn color(a: &Value, key: &str) -> Result<Option<Rgba>, String> {
             .as_str()
             .and_then(parse_hex)
             .map(Some)
-            .ok_or_else(|| format!("{key} must look like #RRGGBB")),
+            .ok_or_else(|| format!("{key} must be #RRGGBB, e.g. #FF8000")),
     }
 }
 

@@ -1,7 +1,8 @@
 //! SVG import, as Tinkercad does it: filled areas are extruded, stroked paths are extruded
 //! as the band their stroke covers. One object per paint colour; where shapes overlap, the
 //! one drawn later wins, so the objects do not overlap. usvg resolves transforms, shapes,
-//! styles and units; text must be converted to paths first.
+//! styles and units; text must be converted to paths first. The same outlines also draw
+//! the SVG as a picture ([`rasterize`]) for the tools that take one.
 
 use super::ModelObject;
 use crate::outline::{self, TOLERANCE};
@@ -23,23 +24,38 @@ const MM_PER_PX: f64 = 25.4 / 96.0;
 const PRECISION: i32 = 6;
 
 pub fn read(path: &Path) -> Result<Vec<ModelObject>> {
+    let (data, opt) = load(path)?;
+    parse(&data, &opt, super::file_stem(path))
+}
+
+/// The file's bytes, with options that find the files it links to beside it.
+fn load(path: &Path) -> Result<(Vec<u8>, usvg::Options<'static>)> {
     let data = std::fs::read(path).with_context(|| format!("Could not read {}", path.display()))?;
     let opt = usvg::Options {
         resources_dir: path.parent().map(Path::to_path_buf),
         ..Default::default()
     };
-    parse(&data, &opt, super::file_stem(path))
+    Ok((data, opt))
 }
 
-/// The drawing's solids, named after `name`.
-pub fn parse(data: &[u8], opt: &usvg::Options, name: &str) -> Result<Vec<ModelObject>> {
-    let tree = usvg::Tree::from_data(data, opt).context("Not a valid SVG file")?;
+fn tree(data: &[u8], opt: &usvg::Options) -> Result<usvg::Tree> {
+    usvg::Tree::from_data(data, opt).context("Not a valid SVG file")
+}
+
+/// The drawing's layers, `unit` output units per SVG pixel, y flipped up.
+fn layers(tree: &usvg::Tree, unit: f64) -> Result<Layers> {
     let mut layers = Vec::new();
-    collect(tree.root(), &mut layers);
+    collect(tree.root(), &mut layers, unit);
     layers.retain(|(_, area)| !area.is_empty());
     if layers.is_empty() {
         bail!("The SVG has no filled or stroked shapes (convert text to paths first)");
     }
+    Ok(layers)
+}
+
+/// The drawing's solids, named after `name`.
+pub fn parse(data: &[u8], opt: &usvg::Options, name: &str) -> Result<Vec<ModelObject>> {
+    let layers = layers(&tree(data, opt)?, MM_PER_PX)?;
     let many = layers.len() > 1;
     Ok(layers
         .into_iter()
@@ -60,19 +76,19 @@ pub fn parse(data: &[u8], opt: &usvg::Options, name: &str) -> Result<Vec<ModelOb
 /// The area each colour covers, in drawing order; None is a gradient or pattern.
 type Layers = Vec<(Option<super::Rgba>, CrossSection)>;
 
-fn collect(group: &usvg::Group, layers: &mut Layers) {
+fn collect(group: &usvg::Group, layers: &mut Layers, unit: f64) {
     for node in group.children() {
         match node {
-            usvg::Node::Group(g) => collect(g, layers),
+            usvg::Node::Group(g) => collect(g, layers, unit),
             usvg::Node::Path(p) if p.is_visible() => {
                 let ts = p.abs_transform();
-                let contours = flatten(p.data(), ts);
+                let contours = flatten(p.data(), ts, unit);
                 let fill = p
                     .fill()
                     .map(|f| (paint_color(f.paint()), fill_area(&contours, f.rule())));
                 let stroke = p
                     .stroke()
-                    .map(|s| (paint_color(s.paint()), stroke_area(&contours, s, ts)));
+                    .map(|s| (paint_color(s.paint()), stroke_area(&contours, s, ts, unit)));
                 let painted = match p.paint_order() {
                     usvg::PaintOrder::FillAndStroke => [fill, stroke],
                     usvg::PaintOrder::StrokeAndFill => [stroke, fill],
@@ -107,19 +123,20 @@ fn paint_color(p: &usvg::Paint) -> Option<super::Rgba> {
     }
 }
 
-/// One subpath in mm, y up, and whether it was closed.
+/// One subpath in output units (mm for a model), y up, and whether it was closed.
 struct Contour {
     points: Vec<[f64; 2]>,
     closed: bool,
 }
 
-/// The path's subpaths as polylines in mm, curves flattened within [`TOLERANCE`]. The
-/// drawing's y goes down; the floor's goes up, so it is flipped to read the same from above.
-fn flatten(path: &usvg::tiny_skia_path::Path, ts: Transform) -> Vec<Contour> {
+/// The path's subpaths as polylines, `unit` per SVG pixel, curves flattened within
+/// [`TOLERANCE`]. The drawing's y goes down; the floor's goes up, so it is flipped to read
+/// the same from above.
+fn flatten(path: &usvg::tiny_skia_path::Path, ts: Transform, unit: f64) -> Vec<Contour> {
     let mm = |p: SvgPoint| {
         let mut p = p;
         ts.map_point(&mut p);
-        [p.x as f64 * MM_PER_PX, -(p.y as f64) * MM_PER_PX]
+        [p.x as f64 * unit, -(p.y as f64) * unit]
     };
     let mut out: Vec<Contour> = Vec::new();
     let mut current: Vec<[f64; 2]> = Vec::new();
@@ -217,10 +234,10 @@ fn fill_area(contours: &[Contour], rule: usvg::FillRule) -> CrossSection {
 }
 
 /// The band a stroke covers, with its joins and caps; dashes are drawn solid.
-fn stroke_area(contours: &[Contour], s: &usvg::Stroke, ts: Transform) -> CrossSection {
+fn stroke_area(contours: &[Contour], s: &usvg::Stroke, ts: Transform, unit: f64) -> CrossSection {
     // A transform that scales unevenly gets its average scale.
     let scale = ((ts.sx * ts.sy - ts.kx * ts.ky) as f64).abs().sqrt();
-    let half = s.width().get() as f64 * scale * MM_PER_PX / 2.0;
+    let half = s.width().get() as f64 * scale * unit / 2.0;
     let join = match s.linejoin() {
         usvg::LineJoin::Miter | usvg::LineJoin::MiterClip => JoinType::Miter,
         usvg::LineJoin::Round => JoinType::Round,
@@ -247,6 +264,104 @@ fn stroke_area(contours: &[Contour], s: &usvg::Stroke, ts: Transform) -> CrossSe
         }
     }
     to_section(&union_subjects_d(&bands, FillRule::NonZero, PRECISION))
+}
+
+/// Pixels along the longer side of an SVG drawn as a picture.
+pub const RASTER_SIZE: u32 = 1024;
+/// Rows sampled per pixel row when drawing, for smooth edges.
+const SUBROWS: usize = 4;
+
+/// The SVG file drawn as a picture: see [`rasterize`].
+pub fn rasterize_file(path: &Path) -> Result<image::RgbaImage> {
+    let (data, opt) = load(path)?;
+    rasterize(&data, &opt)
+}
+
+/// The drawing on a transparent canvas, [`RASTER_SIZE`] pixels along its longer side,
+/// with smooth edges. Each area is filled with its colour (gradients and patterns black);
+/// the fill rules and later shapes covering earlier ones are already resolved in the
+/// layers, so filling their outlines nonzero is exact.
+pub fn rasterize(data: &[u8], opt: &usvg::Options) -> Result<image::RgbaImage> {
+    let tree = tree(data, opt)?;
+    let size = tree.size();
+    let unit = RASTER_SIZE as f64 / size.width().max(size.height()) as f64;
+    let layers = layers(&tree, unit)?;
+    let w = ((size.width() as f64 * unit).round() as usize).max(1);
+    let h = ((size.height() as f64 * unit).round() as usize).max(1);
+    // Premultiplied colour and coverage per pixel; the layers do not overlap, so they add.
+    let mut sum = vec![[0f32; 4]; w * h];
+    let mut cover = vec![0f32; w * h];
+    for (color, area) in &layers {
+        let [r, g, b, _] = color.unwrap_or([0, 0, 0, 255]);
+        cover.iter_mut().for_each(|c| *c = 0.0);
+        fill(&area.to_polygons(), w, h, &mut cover);
+        for (s, c) in sum.iter_mut().zip(&cover) {
+            for (k, v) in [r, g, b, 255].into_iter().enumerate() {
+                s[k] += v as f32 * c;
+            }
+        }
+    }
+    let pixels = sum.iter().flat_map(|s| {
+        let a = (s[3] / 255.0).min(1.0);
+        let channel = |k: usize| {
+            if a > 0.0 {
+                (s[k] / s[3] * 255.0).round()
+            } else {
+                0.0
+            }
+        };
+        [channel(0), channel(1), channel(2), a * 255.0].map(|v| v.round().clamp(0.0, 255.0) as u8)
+    });
+    Ok(image::RgbaImage::from_raw(w as u32, h as u32, pixels.collect()).expect("w × h pixels"))
+}
+
+/// Adds the coverage (0..1) of `polygons` (x right, y up from the top edge, in pixels) to
+/// `cover`, `w`×`h` pixels, filling nonzero by scanlines [`SUBROWS`] to a pixel row, each
+/// span covering the columns it crosses in proportion.
+fn fill(polygons: &manifold_rust::types::Polygons, w: usize, h: usize, cover: &mut [f32]) {
+    // Crossings of each sample row: x and the edge's direction.
+    let mut rows: Vec<Vec<(f64, i32)>> = vec![Vec::new(); h * SUBROWS];
+    let sample = |k: usize| (k as f64 + 0.5) / SUBROWS as f64;
+    for poly in polygons {
+        for (i, a) in poly.iter().enumerate() {
+            let b = poly[(i + 1) % poly.len()];
+            let ((x0, y0), (x1, y1)) = ((a.x, -a.y), (b.x, -b.y));
+            if y0 == y1 {
+                continue;
+            }
+            let (dir, top, bottom) = if y0 < y1 { (1, y0, y1) } else { (-1, y1, y0) };
+            // Sample rows k with top <= sample(k) < bottom.
+            let first = ((top * SUBROWS as f64 - 0.5).ceil().max(0.0)) as usize;
+            let mut k = first;
+            while k < rows.len() && sample(k) < bottom {
+                let y = sample(k);
+                rows[k].push((x0 + (x1 - x0) * (y - y0) / (y1 - y0), dir));
+                k += 1;
+            }
+        }
+    }
+    let weight = 1.0 / SUBROWS as f64;
+    for (k, crossings) in rows.iter_mut().enumerate() {
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let row = &mut cover[k / SUBROWS * w..][..w];
+        let mut winding = 0;
+        for pair in crossings.windows(2) {
+            winding += pair[0].1;
+            if winding == 0 {
+                continue;
+            }
+            let (from, to) = (
+                pair[0].0.clamp(0.0, w as f64),
+                pair[1].0.clamp(0.0, w as f64),
+            );
+            let mut x = from.floor() as usize;
+            while (x as f64) < to && x < w {
+                let part = (to.min(x as f64 + 1.0) - from.max(x as f64)).max(0.0);
+                row[x] += (part * weight) as f32;
+                x += 1;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +505,41 @@ mod tests {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>"#;
         assert!(parse(svg.as_bytes(), &usvg::Options::default(), "x").is_err());
         assert!(parse(b"not svg", &usvg::Options::default(), "x").is_err());
+    }
+
+    #[test]
+    fn a_black_square_on_white_rasterizes_dark_in_its_place() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+            <rect width="200" height="100" fill="#ffffff"/>
+            <rect x="100" y="25" width="50" height="50" fill="#000000"/></svg>"##;
+        let img = rasterize(svg.as_bytes(), &usvg::Options::default()).unwrap();
+        // 1024 px along the longer side, the aspect kept: 5.12 px per SVG pixel.
+        assert_eq!(img.dimensions(), (1024, 512));
+        let at = |x: f32, y: f32| *img.get_pixel((x * 5.12) as u32, (y * 5.12) as u32);
+        assert_eq!(at(125.0, 50.0), image::Rgba([0, 0, 0, 255]));
+        for (x, y) in [(50.0, 50.0), (175.0, 50.0), (125.0, 10.0), (125.0, 90.0)] {
+            assert_eq!(at(x, y), image::Rgba([255, 255, 255, 255]), "({x}, {y})");
+        }
+        // Edges are smooth: the pixel half covered by a 100.5 px wide rect is half opaque.
+        let half = rasterize(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="10"><rect width="100.5" height="10"/></svg>"#,
+            &usvg::Options::default(),
+        )
+        .unwrap();
+        assert_eq!(half.get_pixel(99, 5)[3], 255);
+        let p = half.get_pixel(100, 5);
+        assert!(p[3] > 120 && p[3] < 135, "{p:?}");
+        // Nothing drawn is transparent.
+        assert_eq!(half.get_pixel(101, 5)[3], 0);
+    }
+
+    #[test]
+    fn an_svg_ring_rasterizes_with_its_hole() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+            <path fill-rule="evenodd" d="M 0 0 H 100 V 100 H 0 Z M 25 25 H 75 V 75 H 25 Z"/></svg>"#;
+        let img = rasterize(svg.as_bytes(), &usvg::Options::default()).unwrap();
+        assert_eq!(img.get_pixel(100, 100)[3], 255);
+        assert_eq!(img.get_pixel(512, 512)[3], 0);
     }
 
     #[test]

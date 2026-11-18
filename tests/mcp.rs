@@ -224,3 +224,44 @@ fn inline_files_land_in_their_own_folder() {
         assert!(t["inputSchema"]["required"].is_null(), "{name}");
     }
 }
+
+#[test]
+fn inline_svg_pictures_open_for_the_picture_tools() {
+    use buildcraft3d::mcp::inline_file;
+    let dir = tempfile::tempdir().unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="white"/><rect x="50" width="50" height="50"/></svg>"#;
+    for (tool, key) in [
+        ("emboss_text", "image"),
+        ("apply_texture", "image"),
+        ("load_image", "path"),
+    ] {
+        let a = inline_file(
+            &json!({"file_name": "logo.svg", "file_text": svg}),
+            key,
+            dir.path(),
+        )
+        .unwrap()
+        .unwrap();
+        let path = std::path::PathBuf::from(a[key].as_str().unwrap());
+        let img = buildcraft3d::picture::open(&path).unwrap().to_rgba8();
+        // The black square is the top right quarter; the rest is white.
+        assert_eq!(img.get_pixel(768, 256).0, [0, 0, 0, 255], "{tool}");
+        assert_eq!(img.get_pixel(256, 768).0, [255, 255, 255, 255], "{tool}");
+        // The tool's inline fields name the formats it takes.
+        let t = tools().into_iter().find(|t| t["name"] == tool).unwrap();
+        let props = &t["inputSchema"]["properties"];
+        assert_eq!(
+            props["file_text"]["description"], "the whole file as text: SVG",
+            "{tool}"
+        );
+        assert!(props[key]["description"]
+            .as_str()
+            .unwrap()
+            .contains("PNG, JPEG or SVG"));
+    }
+    let open = tools().into_iter().find(|t| t["name"] == "open").unwrap();
+    let text = open["inputSchema"]["properties"]["file_text"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("OBJ") && text.contains("SVG"), "{text}");
+}

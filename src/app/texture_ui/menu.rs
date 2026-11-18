@@ -196,16 +196,14 @@ impl App {
             Pick::Layer(l) => Some(l),
             Pick::Load => {
                 let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                    .add_filter(tr(lang, "Image"), &crate::picture::EXTENSIONS)
                     .pick_file()
                 else {
                     return;
                 };
-                match image::open(&path) {
+                match crate::picture::open(&path) {
                     Ok(img) => texture::register_image(&img.into_rgba8()),
-                    Err(e) => {
-                        return self.toast(format!("{} {e}", tr(lang, "Could not open:")), true)
-                    }
+                    Err(e) => return self.toast(format!("{e:#}"), true),
                 }
             }
             Pick::Qr => {

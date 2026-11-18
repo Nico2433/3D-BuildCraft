@@ -372,7 +372,7 @@ impl App {
             }
             Action::StartImage => {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                    .add_filter(tr(lang, "Image"), &crate::picture::EXTENSIONS)
                     .pick_file()
                 {
                     self.tool = Some(Tool::image(path));

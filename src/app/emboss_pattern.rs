@@ -100,7 +100,7 @@ fn pattern_button(ui: &mut egui::Ui, lang: Lang, params: &mut Emboss, open: &mut
         Some(Choice::Shape(s)) => params.pattern = Pattern::Shape(s),
         Some(Choice::Load) => {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                .add_filter(tr(lang, "Image"), &crate::picture::EXTENSIONS)
                 .pick_file()
             {
                 params.pattern = Pattern::Image(path);

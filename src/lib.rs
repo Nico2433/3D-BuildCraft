@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod mesh;
 pub mod outline;
 pub mod paper;
+pub mod picture;
 pub mod primitives;
 pub mod repair;
 pub mod scene;

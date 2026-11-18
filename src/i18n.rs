@@ -189,7 +189,6 @@ const ES: &[(&str, &str)] = &[
     ("On", "Activado"),
     ("Off", "Desactivado"),
     ("Selected", "Seleccionado"),
-    ("Could not open:", "No se pudo abrir:"),
     ("Sticker", "Adhesivo"),
     ("Brush", "Pincel"),
     ("Edit sticker", "Editar adhesivo"),

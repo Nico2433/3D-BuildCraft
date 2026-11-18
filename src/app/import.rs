@@ -155,14 +155,10 @@ pub(super) fn add_imported(
     ids
 }
 
-/// True for a picture that Load image opens.
+/// True for a dropped or pasted picture that opens Load image. An SVG is imported as a
+/// model instead, as Open does; Load image's own file dialog takes it as a picture.
 pub(super) fn is_image(path: &Path) -> bool {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    crate::image3d::EXTENSIONS.contains(&ext.as_str())
+    crate::picture::is_picture(path) && !crate::picture::is_svg(path)
 }
 
 impl App {
@@ -449,5 +445,7 @@ mod tests {
         assert!(is_image(Path::new("/x/photo.PNG")));
         assert!(!is_image(Path::new("/x/part.stl")));
         assert!(!is_image(Path::new("/x/noext")));
+        // A dropped SVG is a model, as Open takes it.
+        assert!(!is_image(Path::new("/x/logo.svg")));
     }
 }
