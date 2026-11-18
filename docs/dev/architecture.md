@@ -58,13 +58,27 @@ Screenshots of a known state: `cargo run --release -- --screenshot out.png` with
 - Print on paper: the XDG print portal on Linux.
 - Native file dialogs through `rfd`; config and data folders through `directories`.
 
+## Performance
+
+- Timings of the mesh hot paths live in `tests/perf_bench.rs` (ignored tests):
+  `cargo test --offline --release -j 4 --test perf_bench -- --ignored --nocapture`; the
+  picking BVH has its own in `src/app/picking.rs`. Measure before and after any change
+  that claims to be faster, on the 319k-triangle sphere they build.
+- Mesh topology maps (`stats`, `shading`, welding, repair, face regions, OBJ remap) use
+  `rustc_hash` (small integer keys; SipHash was the cost), and repair keeps an edge's two
+  faces inline (`smallvec`). 3MF is deflated at level 3: three times faster to save for a
+  file 4% bigger than the default.
+- Per-frame work is cached by mesh identity (`Arc<Mesh>`): GPU uploads, world boxes, stats,
+  the picking BVH and the measure face. A change that rebuilds a mesh pays `Mesh::shading`
+  once (about 65 ms at 320k triangles, on the UI thread).
+
 ## Hubs
 
 `Scene`/`Object`, `Mesh` and `io::ModelObject` are what every part touches.
 
 ## Risks and constraints
 
-- Picking is a brute-force ray test per triangle; fine on click, slow for drag-hovering big meshes. A BVH is still missing.
+- Picking uses a per-mesh BVH built on a worker thread (`src/app/picking.rs`); until it is ready a click falls back to a brute-force ray test per triangle.
 - egui 0.31 is pinned on purpose; upgrading needs API changes in `src/app/` and `render.rs`.
 - Repair result on the camel sample (1.39M triangles; 20 open, 20 non-manifold, 24 misoriented edges before): none after, volume change 1e-5 % (original app 1.6e-3 %), +8 vertices (original +16).
 - Booleans depend on manifold-rust, a young pure-Rust port; inputs must be repaired first.
