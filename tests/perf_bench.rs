@@ -140,7 +140,7 @@ fn shading_upload_hitch() {
 }
 
 /// `Mesh::shading` and the provisional shading per triangle count, to choose
-/// `render::SYNC_SHADING_TRIANGLES` (the largest mesh shaded on the UI thread).
+/// `mesh_cache::SYNC_SHADING_TRIANGLES` (the largest mesh shaded on the UI thread).
 #[test]
 #[ignore]
 fn shading_cost_by_size() {

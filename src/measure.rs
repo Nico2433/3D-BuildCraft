@@ -4,7 +4,7 @@
 use crate::mesh::Mesh;
 use crate::scene::{Object, Scene};
 use crate::section::{section_tilted, Outline, Section, Tilt};
-use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap, SnapKind};
+use crate::snapping::{align, snap_point, Alignment, FaceInfo, PointSnap};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
 
@@ -362,13 +362,38 @@ pub enum Mode {
     Section,
 }
 
-/// A picked point: where, the surface normal there, what it snapped to and how it was
-/// lined up with the first point.
+impl Mode {
+    /// The diameter variants, in the order the toolbar lists them.
+    pub const ROUND: [Mode; 3] = [Mode::Section, Mode::Surface, Mode::Circle];
+    /// The diameter variant a fresh tool starts on.
+    pub const DEFAULT_ROUND: Mode = Mode::Section;
+
+    /// `mode` when it is a diameter variant, otherwise `fallback`.
+    fn round_or(mode: Mode, fallback: Mode) -> Mode {
+        if mode == Mode::Distance {
+            fallback
+        } else {
+            mode
+        }
+    }
+
+    /// The toolbar's English label for a diameter variant (translated by the UI).
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Distance => "Distance",
+            Mode::Surface => "Curved surface",
+            Mode::Circle => "3 points",
+            Mode::Section => "Section at height",
+        }
+    }
+}
+
+/// A picked point: where, the surface normal there and how it was lined up with the first
+/// point.
 #[derive(Clone, Copy, Debug)]
 pub struct Spot {
     pub point: Vec3,
     pub normal: Option<Vec3>,
-    pub kind: Option<SnapKind>,
     pub aligned: Option<Alignment>,
 }
 
@@ -377,7 +402,6 @@ impl Spot {
         Spot {
             point,
             normal: None,
-            kind: None,
             aligned: None,
         }
     }
@@ -421,11 +445,7 @@ impl Measure {
             round: None,
             section: None,
             tilt: Tilt::Auto,
-            round_mode: if mode == Mode::Distance {
-                Mode::Section
-            } else {
-                mode
-            },
+            round_mode: Mode::round_or(mode, Mode::DEFAULT_ROUND),
             face: None,
         }
     }
@@ -485,12 +505,22 @@ impl Measure {
         }
     }
 
-    pub fn set_mode(&mut self, mode: Mode) {
-        let round_mode = if mode == Mode::Distance {
+    /// Whether a diameter variant is active rather than the distance.
+    pub fn is_round(&self) -> bool {
+        self.mode != Mode::Distance
+    }
+
+    /// Switches between the distance and the last diameter variant used.
+    pub fn set_round(&mut self, round: bool) {
+        self.set_mode(if round {
             self.round_mode
         } else {
-            mode
-        };
+            Mode::Distance
+        });
+    }
+
+    pub fn set_mode(&mut self, mode: Mode) {
+        let round_mode = Mode::round_or(mode, self.round_mode);
         *self = Measure {
             tilt: self.tilt,
             round_mode,
@@ -626,7 +656,6 @@ impl Measure {
                         point: s.point,
                         // A facet of a curved surface has no normal to line up along.
                         normal: (!s.curved).then_some(s.normal),
-                        kind: Some(s.kind),
                         aligned: None,
                     }
                 }
@@ -635,7 +664,6 @@ impl Measure {
             None if snap => Spot {
                 point: (floor? * 10.0).round() / 10.0,
                 normal: Some(Vec3::Z),
-                kind: Some(SnapKind::Plane),
                 aligned: None,
             },
             None => Spot::free(floor?),
@@ -662,7 +690,7 @@ impl Measure {
             self.section = face.and_then(|(id, _)| Some(self.cut(scene.get(id)?, spot.point)));
             return;
         }
-        if self.points.len() >= self.capacity() {
+        if !self.picking() {
             self.points.clear();
         }
         self.points.push(spot);
@@ -804,13 +832,12 @@ mod tests {
         let s = m
             .spot(&scene, Some((id, tri, near_corner)), None, 1.0, true)
             .unwrap();
-        assert_eq!(s.kind, Some(SnapKind::Vertex));
         assert!(s.point.distance(corner) < 1e-3);
         // Snapping off keeps the exact point.
         let free = m
             .spot(&scene, Some((id, tri, near_corner)), None, 1.0, false)
             .unwrap();
-        assert_eq!((free.point, free.kind), (near_corner, None));
+        assert_eq!(free.point, near_corner);
         // The floor under the cube is a plane, so a top-to-floor distance is perpendicular when
         // the cursor is near the line down from the point; further away it keeps its own point.
         m.click(&scene, s, None);
@@ -855,7 +882,7 @@ mod tests {
         let id = scene.add(Object::new("cube", Primitive::Cube.build(), DEFAULT_COLOR));
         let max = scene.get(id).unwrap().world_aabb().max;
         let (found, s) = snap_to_scene(&scene, max + Vec3::new(0.3, 0.0, 0.2), 1.0).unwrap();
-        assert_eq!((found, s.kind), (id, SnapKind::Vertex));
+        assert_eq!((found, s.kind), (id, crate::snapping::SnapKind::Vertex));
         assert!(s.point.distance(max) < 1e-3);
         assert!(snap_to_scene(&scene, max + Vec3::splat(50.0), 1.0).is_none());
         // A tolerance of 0 snaps nothing, not even a point on the surface.

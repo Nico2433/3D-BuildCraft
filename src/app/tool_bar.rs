@@ -297,25 +297,17 @@ impl App {
             }
             Some(Tool::Measure(m)) => {
                 ui.add_space(12.0);
-                let mut kind = usize::from(m.mode != Mode::Distance);
-                if style::segmented(ui, &[tr(lang, "Distance"), tr(lang, "Diameter")], &mut kind) {
-                    m.set_mode(if kind == 0 {
-                        Mode::Distance
-                    } else {
-                        m.round_mode
-                    });
+                let distance = tr(lang, Mode::Distance.label());
+                let mut kind = usize::from(m.is_round());
+                if style::segmented(ui, &[distance, tr(lang, "Diameter")], &mut kind) {
+                    m.set_round(kind == 1);
                 }
-                if m.mode != Mode::Distance {
+                if m.is_round() {
                     ui.add_space(8.0);
-                    let modes = [Mode::Section, Mode::Surface, Mode::Circle];
-                    let names = [
-                        tr(lang, "Section at height"),
-                        tr(lang, "Curved surface"),
-                        tr(lang, "3 points"),
-                    ];
-                    let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
+                    let names = Mode::ROUND.map(|x| tr(lang, x.label()));
+                    let mut k = Mode::ROUND.iter().position(|x| *x == m.mode).unwrap_or(0);
                     if style::dropdown(ui, "measure_mode", 215.0, &names, &mut k) {
-                        m.set_mode(modes[k]);
+                        m.set_mode(Mode::ROUND[k]);
                     }
                 }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
@@ -328,7 +320,7 @@ impl App {
                             ui,
                             &format!(
                                 "{}    {:.2}    {unit}",
-                                tr(lang, "Distance"),
+                                tr(lang, Mode::Distance.label()),
                                 m.distance() / units.to_mm()
                             ),
                         );

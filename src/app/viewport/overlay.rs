@@ -179,7 +179,7 @@ fn measure_overlay(
     if let Some(s) = m.section.as_ref().filter(|_| m.mode == Mode::Section) {
         for (i, c) in s.section.contours.iter().enumerate() {
             if Some(i) != s.chosen {
-                loop_line(&c.outline, SNAP_YELLOW);
+                loop_line(&c.outline, SECTION_YELLOW);
             }
         }
         if let Some(c) = s.chosen.and_then(|i| s.section.contours.get(i)) {
@@ -246,7 +246,7 @@ pub(super) fn camera_feed(
 
 const MEASURE_GREEN: Color32 = Color32::from_rgb(0x50, 0xE8, 0x28);
 const MEASURE_BLUE: Color32 = Color32::from_rgb(0x20, 0xA8, 0xF0);
-const SNAP_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD8, 0x3C);
+const SECTION_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD8, 0x3C);
 
 /// The measure marker: a thick downward arrow about 25 px tall whose tip is `tip`, with a
 /// small red dot on the tip.

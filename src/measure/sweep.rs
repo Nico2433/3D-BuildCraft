@@ -113,7 +113,6 @@ pub fn first_on_vertex(scene: &Scene, corner: Vec3, face_normal: Option<Vec3>) -
     let spot = m
         .spot(scene, Some((o.id, tri, corner)), None, 1.0, true)
         .unwrap();
-    assert_eq!(spot.kind, Some(SnapKind::Vertex));
     m.click(scene, spot, None);
     m
 }
@@ -203,11 +202,12 @@ fn faults_for(scene: &Scene, corner: Vec3, normal: Option<Vec3>) -> Vec<String> 
         }
         for row in &rows {
             for w in row.windows(3) {
-                let kind = |s: &Sample| s.spot.and_then(|s| s.kind);
+                // Whether the point snapped to a flat face (has a normal) or not.
+                let kind = |s: &Sample| s.spot.map(|s| s.normal.is_some());
                 let same = w.iter().all(|s| s.face == w[0].face && s.face.is_some());
                 if same && kind(&w[0]) == kind(&w[2]) && kind(&w[0]) != kind(&w[1]) {
                     out.push(format!(
-                        "view {c} kind flips {:?} {:?} {:?} at ({}, {})",
+                        "view {c} snap flips {:?} {:?} {:?} at ({}, {})",
                         kind(&w[0]),
                         kind(&w[1]),
                         kind(&w[2]),
@@ -216,9 +216,10 @@ fn faults_for(scene: &Scene, corner: Vec3, normal: Option<Vec3>) -> Vec<String> 
                     ));
                 }
                 if same
-                    && w[1]
-                        .spot
-                        .is_some_and(|s| s.kind == Some(SnapKind::Plane) && s.aligned.is_none())
+                    && w[1].spot.is_some_and(|s| {
+                        // The floor plane: its point is the cursor's, rounded.
+                        s.normal == Some(Vec3::Z) && s.point.z == 0.0 && s.aligned.is_none()
+                    })
                     && w[1].spot.unwrap().point.distance(w[1].hit) > 1e-3
                 {
                     out.push(format!(
