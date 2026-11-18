@@ -414,6 +414,10 @@ pub fn round(mesh: &Mesh, amount: f32) -> Result<Mesh> {
 
 /// Removes the inside of `mesh`, leaving a closed wall at least `wall` thick.
 pub fn hollow(mesh: &Mesh, wall: f32) -> Result<Mesh> {
+    // No ball of radius `wall` fits inside an object thinner than twice the wall.
+    if mesh.aabb().size().min_element() <= 2.0 * wall {
+        bail!("The object is too thin to hollow with a {wall} mm wall");
+    }
     let solid = to_manifold(mesh)?;
     let inside = inner(mesh, wall)?;
     if inside.is_empty() {

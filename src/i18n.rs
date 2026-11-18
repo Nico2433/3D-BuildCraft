@@ -65,11 +65,24 @@ fn environment_locale(mut get: impl FnMut(&str) -> Option<String>) -> Option<Str
         .find_map(|key| get(key).filter(|locale| !locale.is_empty()))
 }
 
+thread_local! {
+    static ENGLISH_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with every [`tr`] answering in English, whatever the language: the notices an
+/// agent's tool call raises go back to it as errors, and agents read English only.
+pub fn in_english<T>(f: impl FnOnce() -> T) -> T {
+    let before = ENGLISH_ONLY.with(|e| e.replace(true));
+    let out = f();
+    ENGLISH_ONLY.with(|e| e.set(before));
+    out
+}
+
 /// `en` in `lang`; text without a translation stays in English.
 pub fn tr(lang: Lang, en: &'static str) -> &'static str {
     match lang {
-        Lang::En => en,
-        Lang::Es => spanish().get(en).copied().unwrap_or(en),
+        Lang::Es if !ENGLISH_ONLY.with(|e| e.get()) => spanish().get(en).copied().unwrap_or(en),
+        _ => en,
     }
 }
 

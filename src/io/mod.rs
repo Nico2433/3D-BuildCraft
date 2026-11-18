@@ -178,7 +178,7 @@ pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()
             path.display()
         );
     };
-    match format {
+    let written = match format {
         Format::ThreeMf => threemf::write(path, objects, info),
         Format::Stl => stl::write(path, objects),
         Format::Obj => obj::write(path, objects),
@@ -186,7 +186,23 @@ pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()
         Format::Gltf => gltf_io::write(path, objects, false),
         Format::Glb => gltf_io::write(path, objects, true),
         Format::Svg => bail!("SVG files can only be imported; save as {SAVE_FORMATS}"),
-    }
+    };
+    written.map_err(|e| {
+        let denied = e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            )
+        });
+        if !denied {
+            return e;
+        }
+        let folder = path.parent().unwrap_or(Path::new("."));
+        anyhow::anyhow!(
+            "{e:#}. The folder {} does not exist or is not writable for the app (a sandboxed app, such as the Flatpak, sees only some folders); save in an existing folder, e.g. the home folder",
+            folder.display()
+        )
+    })
 }
 
 /// Objects with their transforms applied, for formats that store world coordinates.

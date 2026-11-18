@@ -777,11 +777,11 @@ impl Outline {
         let (rms, max) = (fit.rms as f64, fit.max as f64);
         if self.closed && n < MIN_CLOSED {
             Some(format!(
-                "a closed contour of {n} points is a polygon, not round (needs {MIN_CLOSED})"
+                "a closed contour of {n} vertices is a polygon, not round (a cube gives a square); a round one needs at least {MIN_CLOSED} vertices"
             ))
         } else if self.closed && fit.fill < MIN_FILL {
             Some(format!(
-                "it encloses only {:.0}% of its circle's area, a sliver (needs {:.0}%)",
+                "it encloses {:.0}% of its fitted circle, a sliver; a round contour needs at least {:.0}%",
                 fit.fill * 100.0,
                 MIN_FILL * 100.0
             ))
