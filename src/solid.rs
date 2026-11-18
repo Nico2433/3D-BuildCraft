@@ -455,10 +455,9 @@ pub fn extrude_down(mesh: &Mesh, floor: f32) -> Result<Mesh> {
 /// Most voxels along the longest side; keeps memory and time bounded on big models.
 const MAX_CELLS: f32 = 160.0;
 
-/// Voxels the inner surface is pulled in by: the distance to the nearest outside voxel
-/// centre overshoots the true depth by about √3 voxels, the trilinear sample by up to
-/// √3/2 more, and the line jitter by a little.
-const MARGIN: f32 = 2.7;
+/// Voxels the inner surface is pulled in by, a safety for the trilinear sample, which
+/// can overshoot the true depth a little where the surface is concave.
+const SAFETY: f32 = 0.1;
 
 const JITTER: (f32, f32) = (0.013_7, 0.029_1);
 
@@ -466,9 +465,8 @@ const JITTER: (f32, f32) = (0.013_7, 0.029_1);
 fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     let b = mesh.aabb();
     let size = b.max - b.min;
-    // shortcut: the inner surface is only as exact as the grid, so it is pulled in by
-    // MARGIN voxels and the wall comes out up to that much thicker, never thinner; big
-    // models get coarse voxels and thick walls until there is a sparse grid.
+    // Depths are exact distances to the surface near the wall, so the wall is within
+    // SAFETY voxels of the request; big models get coarse voxels and so a coarser surface.
     let h = (wall / 4.0).max(size.max_element() / MAX_CELLS);
     // One outside voxel on every side, so every line starts and ends outside.
     let cells = (size / h).ceil().as_uvec3() + 2;
@@ -485,10 +483,11 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
         let [a, b2, c] = t.map(|i| mesh.positions[i as usize]);
         let lo = a.min(b2).min(c);
         let hi = a.max(b2).max(c);
-        let x0 = (((lo.x - origin.x) / h - 0.5).ceil().max(0.0)) as usize;
-        let y0 = (((lo.y - origin.y) / h - 0.5).ceil().max(0.0)) as usize;
-        let x1 = ((((hi.x - origin.x) / h - 0.5).floor()) as usize).min(n[0] - 1);
-        let y1 = ((((hi.y - origin.y) / h - 0.5).floor()) as usize).min(n[1] - 1);
+        // Lines sit a jitter past the voxel centres, so the range shifts back by it.
+        let x0 = (((lo.x - origin.x) / h - 0.5 - JITTER.0).ceil().max(0.0)) as usize;
+        let y0 = (((lo.y - origin.y) / h - 0.5 - JITTER.1).ceil().max(0.0)) as usize;
+        let x1 = ((((hi.x - origin.x) / h - 0.5 - JITTER.0).floor()) as usize).min(n[0] - 1);
+        let y1 = ((((hi.y - origin.y) / h - 0.5 - JITTER.1).floor()) as usize).min(n[1] - 1);
         let d = (b2.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b2.y - a.y);
         if d.abs() < 1e-12 {
             continue;
@@ -508,9 +507,12 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
         }
     }
 
-    // Squared distance in voxels to the nearest outside voxel.
-    const FAR: f32 = 1e10;
-    let mut dist = vec![0.0f32; n[0] * n[1] * n[2]];
+    // Signed distance (mm, > 0 inside) to the surface, exact within `reach` of it and
+    // clamped beyond: only the level `wall` matters, and its trilinear cell lies within
+    // √3 voxels of it.
+    let reach = wall + 2.0 * h;
+    let mut sdist = vec![reach; n[0] * n[1] * n[2]];
+    let mut inside = vec![false; sdist.len()];
     for y in 0..n[1] {
         for x in 0..n[0] {
             let zs = &mut cross[y * n[0] + x];
@@ -518,38 +520,39 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
             for pair in zs.chunks_exact(2) {
                 for z in 0..n[2] {
                     let pz = center(z, 2);
-                    if pz > pair[0] && pz < pair[1] {
-                        dist[idx(x, y, z)] = FAR;
-                    }
+                    inside[idx(x, y, z)] |= pz > pair[0] && pz < pair[1];
                 }
             }
         }
     }
-    for axis in 0..3 {
-        let (len, stride) = match axis {
-            0 => (n[0], 1),
-            1 => (n[1], n[0]),
-            _ => (n[2], n[0] * n[1]),
-        };
-        let mut line = vec![0.0f32; len];
-        let mut out = vec![0.0f32; len];
-        for start in 0..dist.len() {
-            // Visit each line once, from its first voxel.
-            if (start / stride) % len != 0 {
-                continue;
+    let range = |lo: f32, hi: f32, axis: usize| {
+        let cell = |v: f32| (v - origin[axis]) / h - 0.5;
+        let first = cell(lo - reach).ceil().max(0.0) as usize;
+        let last = (cell(hi + reach).floor().max(-1.0) + 1.0) as usize;
+        first..last.min(n[axis])
+    };
+    for t in &mesh.triangles {
+        let [a, b2, c] = t.map(|i| mesh.positions[i as usize]);
+        let (lo, hi) = (a.min(b2).min(c), a.max(b2).max(c));
+        for z in range(lo.z, hi.z, 2) {
+            for y in range(lo.y, hi.y, 1) {
+                for x in range(lo.x, hi.x, 0) {
+                    let p = Vec3::new(center(x, 0), center(y, 1), center(z, 2));
+                    let d = dist_to_triangle(p, a, b2, c);
+                    let cell = &mut sdist[idx(x, y, z)];
+                    *cell = cell.min(d);
+                }
             }
-            for i in 0..len {
-                line[i] = dist[start + i * stride];
-            }
-            edt_1d(&line, &mut out);
-            for i in 0..len {
-                dist[start + i * stride] = out[i];
-            }
+        }
+    }
+    for (d, &i) in sdist.iter_mut().zip(&inside) {
+        if !i {
+            *d = -*d;
         }
     }
 
     let sdf = |p: MVec3| -> f64 {
-        // Trilinear sample of the distance (mm), minus the wall.
+        // Trilinear sample of the signed distance (mm), minus the wall.
         let g = [
             (p.x as f32 - origin.x) / h - 0.5,
             (p.y as f32 - origin.y) / h - 0.5,
@@ -569,9 +572,9 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
                     }
                 })
                 .product();
-            acc += wgt * dist[idx(i[0], i[1], i[2])].sqrt() * h;
+            acc += wgt * sdist[idx(i[0], i[1], i[2])];
         }
-        (acc - wall - h * MARGIN) as f64
+        (acc - wall - h * SAFETY) as f64
     };
     level_set(&sdf, b.min, b.max, h)
 }
@@ -610,34 +613,38 @@ fn level_set(
     bail!("Could not build the inner surface; try another wall thickness")
 }
 
-/// Felzenszwalb–Huttenlocher squared distance transform of one line.
-fn edt_1d(f: &[f32], d: &mut [f32]) {
-    let n = f.len();
-    let mut v = vec![0usize; n];
-    let mut z = vec![0.0f64; n + 1];
-    let (mut k, f) = (0, |i: usize| f[i] as f64);
-    z[0] = f64::NEG_INFINITY;
-    z[1] = f64::INFINITY;
-    let s = |q: usize, p: usize| {
-        ((f(q) + (q * q) as f64) - (f(p) + (p * p) as f64)) / (2 * (q - p)) as f64
+/// Distance from `p` to the triangle `abc` (closest point by Ericson's region tests).
+pub(crate) fn dist_to_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    let q = if d1 <= 0.0 && d2 <= 0.0 {
+        a
+    } else {
+        let bp = p - b;
+        let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+        let cp = p - c;
+        let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+        let (vc, vb, va) = (d1 * d4 - d3 * d2, d5 * d2 - d1 * d6, d3 * d6 - d5 * d4);
+        if d3 >= 0.0 && d4 <= d3 {
+            b
+        } else if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+            a + ab * (d1 / (d1 - d3))
+        } else if d6 >= 0.0 && d5 <= d6 {
+            c
+        } else if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+            a + ac * (d2 / (d2 - d6))
+        } else if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+            b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+        } else {
+            let sum = va + vb + vc;
+            if sum.abs() < 1e-20 {
+                a
+            } else {
+                a + ab * (vb / sum) + ac * (vc / sum)
+            }
+        }
     };
-    for q in 1..n {
-        while s(q, v[k]) <= z[k] {
-            k -= 1;
-        }
-        k += 1;
-        v[k] = q;
-        z[k] = s(q, v[k - 1]);
-        z[k + 1] = f64::INFINITY;
-    }
-    k = 0;
-    for (q, out) in d.iter_mut().enumerate() {
-        while z[k + 1] < q as f64 {
-            k += 1;
-        }
-        let p = v[k];
-        *out = ((q as f64 - p as f64).powi(2) + f(p)) as f32;
-    }
+    (p - q).length()
 }
 
 /// One closed solid per connected patch of downward faces: the patch on top, its
@@ -845,8 +852,7 @@ mod tests {
 
     #[test]
     fn hollow_cube_cavity_is_centred() {
-        // The wall comes out thicker than asked by the grid margin, but the same on all
-        // six sides.
+        // The same wall, within the tolerance, on all six sides.
         for size in [30.0, 40.0, 25.3] {
             let w = walls(size, 2.0);
             for axis in 0..3 {
@@ -856,7 +862,63 @@ mod tests {
             let (min, max) = w
                 .iter()
                 .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-            assert!(min >= 2.0 && max - min < 0.02, "{size} mm cube: {w:?}");
+            assert!(min >= 2.0 - 1e-3 && max <= 2.25, "{size} mm cube: {w:?}");
+        }
+    }
+
+    /// Smallest and largest wall of `hollow(mesh, wall)`: the distance from each cavity
+    /// vertex (one off the original surface) to the original surface.
+    fn wall_range(mesh: &Mesh, wall: f32) -> (f32, f32) {
+        let out = hollow(mesh, wall).unwrap();
+        let near = |p: Vec3| {
+            mesh.triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                    dist_to_triangle(p, a, b, c)
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        // Every seventh vertex keeps the brute-force distance affordable.
+        for &p in out.positions.iter().step_by(7) {
+            let d = near(p);
+            if d > 1e-3 {
+                lo = lo.min(d);
+                hi = hi.max(d);
+            }
+        }
+        assert!(lo <= hi, "no cavity");
+        (lo, hi)
+    }
+
+    #[test]
+    fn hollow_wall_is_never_thinner_and_close_to_asked() {
+        let scaled = |p: Primitive, size: f32| {
+            let m = p.build();
+            let k = size / (m.aabb().max - m.aabb().min).max_element();
+            m.transformed(&glam::Mat4::from_scale(Vec3::splat(k)))
+        };
+        // Sphere and cylinder have curved walls, the cone and wedge slanted ones; a sharp
+        // convex tip (the cone's apex) rounds the cavity there, so a bit thicker (k is the fraction of a voxel allowed).
+        let shapes = [
+            (Primitive::Cube, 0.4),
+            (Primitive::Sphere, 0.4),
+            (Primitive::Cylinder, 0.4),
+            (Primitive::Cone, 0.75),
+            (Primitive::Wedge, 0.75),
+        ];
+        for (p, k) in shapes.map(|(p, k): (Primitive, f32)| (p, k)) {
+            for (size, wall) in [(30.0, 1.0), (30.0, 2.0), (40.0, 5.0), (60.0, 2.0)] {
+                let (lo, hi) = wall_range(&scaled(p, size), wall);
+                // Allowed excess: 0.25 mm, or a fraction k of a voxel on coarse grids.
+                let h = (wall / 4.0).max(size / MAX_CELLS);
+                let extra = (k * h).max(0.25);
+                assert!(
+                    lo >= wall - 0.01 * wall && hi <= wall + extra,
+                    "{p:?} {size} mm, wall {wall}: {lo}..{hi}"
+                );
+            }
         }
     }
 }
