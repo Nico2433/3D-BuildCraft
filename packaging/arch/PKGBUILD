@@ -2,7 +2,7 @@
 # packaging/arch/build-pkg.sh builds the same package from the local checkout instead.
 # After bumping pkgver for a published tag, run updpkgsums to fill in the checksum.
 pkgname=buildcraft3d
-pkgver=0.1.16
+pkgver=0.1.17
 pkgrel=1
 pkgdesc='Build, repair and prepare 3D models for printing'
 arch=('x86_64')
