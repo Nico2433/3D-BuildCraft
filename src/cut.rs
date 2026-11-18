@@ -130,6 +130,44 @@ pub fn cut_plane(mesh: &Mesh, plane: &CutPlane) -> (Mesh, Mesh) {
     )
 }
 
+/// Why `plane` cuts nothing of `mesh` (world coordinates), when the whole mesh lies on
+/// one side of it; `name` names the object in the message.
+pub fn misses(mesh: &Mesh, plane: &CutPlane, name: &str) -> Option<String> {
+    let (n, p) = (plane.normal(), plane.point());
+    let (lo, hi) = mesh
+        .positions
+        .iter()
+        .map(|v| n.dot(*v - p))
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d), hi.max(d))
+        });
+    // A hair inside still cuts nothing worth keeping.
+    const EPS: f32 = 1e-4;
+    if mesh.positions.is_empty() || (lo < -EPS && hi > EPS) {
+        return None;
+    }
+    let below = hi <= EPS;
+    let b = mesh.aabb();
+    Some(
+        if n.abs_diff_eq(Vec3::Z, 1e-4) || n.abs_diff_eq(-Vec3::Z, 1e-4) {
+            // Level: in heights, as the agent and the panel give them.
+            let (side, z) = if p.z >= b.max.z - EPS {
+                ("above", b.max.z)
+            } else {
+                ("below", b.min.z)
+            };
+            let edge = if side == "above" { "top" } else { "bottom" };
+            format!(
+                "z {} is {side} the {edge} of {name} ({z:.2} mm); nothing to cut",
+                (p.z * 100.0).round() / 100.0
+            )
+        } else {
+            let side = if below { "below" } else { "above" };
+            format!("the plane misses {name}, which lies wholly {side} it; nothing to cut")
+        },
+    )
+}
+
 /// The pieces of `mesh` (world coordinates) that "Split" keeps, empty ones left out. An
 /// infinite plane cuts exactly with `cut_plane`. A finite one only cuts inside the prism
 /// its rectangle sweeps along the normal: Top removes the part of the prism below the

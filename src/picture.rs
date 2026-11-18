@@ -23,6 +23,18 @@ pub fn is_picture(path: &Path) -> bool {
     EXTENSIONS.contains(&extension(path).as_str())
 }
 
+/// The format's name for a picture file the picture tools do not take (GIF, BMP,
+/// WebP, TIFF), by its extension, so the error can say to convert it.
+pub fn unsupported(path: &Path) -> Option<&'static str> {
+    match extension(path).as_str() {
+        "gif" => Some("GIF"),
+        "bmp" => Some("BMP"),
+        "webp" => Some("WebP"),
+        "tif" | "tiff" => Some("TIFF"),
+        _ => None,
+    }
+}
+
 /// True for an SVG drawing, which is also a model format.
 pub fn is_svg(path: &Path) -> bool {
     extension(path) == "svg"

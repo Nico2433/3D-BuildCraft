@@ -69,8 +69,9 @@ pub(super) enum Action {
     StartCamera,
     /// Saves the camera's picture and opens it in "Load image".
     Capture,
-    /// Paints the area around a triangle of an object: (object, triangle, colour, coverage).
-    PaintArea(u64, usize, Rgba, f32),
+    /// Paints the area around a triangle of an object: (object, triangle, colour, coverage,
+    /// and optionally a world point and radius in mm the painted triangles' centres stay within).
+    PaintArea(u64, usize, Rgba, f32, Option<(Vec3, f32)>),
     /// Adds a file to the scene (from the Add dialog's recent files).
     AddPath(PathBuf),
     OpenPrint,
@@ -442,8 +443,8 @@ impl App {
                 self.toggle_flyout(side_menu::Flyout::About);
             }
             Action::OpenPaper => self.print_on_paper(ctx),
-            Action::PaintArea(id, tri, color, coverage) => {
-                self.paint_area(id, tri, color, coverage)
+            Action::PaintArea(id, tri, color, coverage, near) => {
+                self.paint_area(id, tri, color, coverage, near)
             }
             Action::CancelTool => self.cancel_tool(),
             Action::BeginEdit => self.history.push(self.snapshot()),

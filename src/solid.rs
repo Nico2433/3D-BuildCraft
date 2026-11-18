@@ -415,7 +415,7 @@ pub fn round(mesh: &Mesh, amount: f32) -> Result<Mesh> {
 /// Removes the inside of `mesh`, leaving a closed wall at least `wall` thick.
 pub fn hollow(mesh: &Mesh, wall: f32) -> Result<Mesh> {
     let solid = to_manifold(mesh)?;
-    let inside = inner(mesh, wall);
+    let inside = inner(mesh, wall)?;
     if inside.is_empty() {
         bail!("The object is too thin to hollow with a {wall} mm wall");
     }
@@ -463,7 +463,7 @@ const MARGIN: f32 = 2.7;
 const JITTER: (f32, f32) = (0.013_7, 0.029_1);
 
 /// The region deeper than `wall` inside `mesh`, as a solid.
-fn inner(mesh: &Mesh, wall: f32) -> Manifold {
+fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     let b = mesh.aabb();
     let size = b.max - b.min;
     // shortcut: the inner surface is only as exact as the grid, so it is pulled in by
@@ -572,11 +572,41 @@ fn inner(mesh: &Mesh, wall: f32) -> Manifold {
         }
         (acc - wall - h * MARGIN) as f64
     };
-    let bounds = MBox {
-        min: MVec3::new(b.min.x as f64, b.min.y as f64, b.min.z as f64),
-        max: MVec3::new(b.max.x as f64, b.max.y as f64, b.max.z as f64),
-    };
-    Manifold::level_set(sdf, bounds, h as f64)
+    level_set(&sdf, b.min, b.max, h)
+}
+
+/// Grid shifts (in cells) [`level_set`] tries; between them every face offset lies
+/// within a quarter cell of a grid point in one of them.
+const GRID_SHIFTS: [f32; 3] = [0.0, 0.5, 0.25];
+
+/// The solid where `sdf` > 0 between `min` and `max`, meshed on a grid of `h` cells.
+/// manifold-rust's level set panics ("table full before any vert") when its first hash
+/// table fills before any grid point lies within a quarter cell of the surface and snaps
+/// to it. That happens when big flat faces parallel to the grid sit between grid planes
+/// (a 30 mm cube hollowed with a 2 mm wall): their crossings fill the table and none
+/// snaps. Shifting the grid by a fraction of a cell moves those faces onto grid points,
+/// so the next shift succeeds.
+fn level_set(
+    sdf: &(impl Fn(MVec3) -> f64 + Sync),
+    min: Vec3,
+    max: Vec3,
+    h: f32,
+) -> Result<Manifold> {
+    for shift in GRID_SHIFTS {
+        // Whole cells from a shifted corner, one spare cell outside on every side.
+        let lo = min - Vec3::splat(h * (1.0 + shift));
+        let hi = lo + ((max - lo) / h + 1.0).ceil() * h;
+        let bounds = MBox {
+            min: MVec3::new(lo.x as f64, lo.y as f64, lo.z as f64),
+            max: MVec3::new(hi.x as f64, hi.y as f64, hi.z as f64),
+        };
+        // A hair under h, so rounding never drops the last grid plane.
+        let edge = h as f64 * (1.0 - 1e-6);
+        if let Ok(solid) = crate::no_panic(|| Ok(Manifold::level_set(sdf, bounds, edge))) {
+            return Ok(solid);
+        }
+    }
+    bail!("Could not build the inner surface; try another wall thickness")
 }
 
 /// Felzenszwalb–Huttenlocher squared distance transform of one line.

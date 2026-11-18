@@ -96,24 +96,21 @@ impl App {
             Some(id) => vec![id],
             None => self.scene.objects.iter().map(|o| o.id).collect(),
         };
-        let (id, tri, _) = self.surface_at(&ids, point(a)?)?;
-        self.apply(Action::PaintArea(id, tri, color, coverage), ctx);
+        let at = point(a)?;
+        let radius = match &a["radius"] {
+            Value::Null => None,
+            v => Some(positive(v, "radius")?),
+        };
+        let (id, tri, _) = self.surface_at(&ids, at)?;
+        let near = radius.map(|r| (at, r));
+        self.apply(Action::PaintArea(id, tri, color, coverage, near), ctx);
         Ok(())
     }
 
     /// `set_material`: Paint → Material's type and colour on the selection.
     pub(super) fn agent_material(&mut self, a: &Value, ctx: &egui::Context) -> Result<(), String> {
-        let kind = choice(
-            a,
-            "type",
-            None,
-            &[
-                ("none", Material::None),
-                ("simple", Material::Simple),
-                ("realistic", Material::Realistic),
-                ("translucent", Material::Translucent),
-            ],
-        )?;
+        let kinds = Material::ALL.map(|m| (m.name(), m));
+        let kind = choice(a, "type", None, &kinds)?;
         let new_color = color(a, "color")?;
         self.apply(Action::StartMaterial, ctx);
         if let Some(Tool::Material {
@@ -235,6 +232,12 @@ impl App {
 
     /// `emboss_text`: the Emboss tool with every setting it has.
     pub(super) fn agent_emboss(&mut self, a: &Value, ctx: &egui::Context) -> Result<(), String> {
+        let selected = self.scene.selection.len();
+        if selected != 1 {
+            return Err(format!(
+                "emboss_text needs exactly one selected object; {selected} are selected"
+            ));
+        }
         let mut params = Emboss {
             text: a["text"].as_str().unwrap_or("").to_owned(),
             ..Emboss::default()
@@ -296,12 +299,7 @@ impl App {
             }
         }
         if let Some(p) = vec3(a, "at")? {
-            let target = match self.scene.selection.len() {
-                1 => self.scene.selected().next(),
-                _ => None,
-            };
-            let target = target
-                .ok_or("emboss_text needs exactly one selected object; select the one to emboss")?;
+            let target = self.scene.selected().next().ok_or("the object is gone")?;
             crate::emboss::place_at(&target.world_mesh(), &mut params, p);
         }
         if !a["width"].is_null() {
@@ -513,10 +511,17 @@ pub(super) fn model_file(a: &Value) -> Result<PathBuf, String> {
     if Format::from_path(&path).is_some() {
         return Ok(path);
     }
+    let picture = "load_image makes a solid of a picture, emboss_text (pattern image) or apply_texture puts it on an object";
+    if let Some(kind) = crate::picture::unsupported(&path) {
+        return Err(format!(
+            "{} is a {kind} picture, which isn't supported; convert it to PNG, then {picture}",
+            path.display()
+        ));
+    }
     let instead = if crate::picture::is_picture(&path) {
-        "; it is a picture: load_image makes a solid of it, emboss_text (pattern image) or apply_texture puts it on an object"
+        format!("; it is a picture: {picture}")
     } else {
-        ""
+        String::new()
     };
     Err(format!(
         "{} is not a model; models can be {}{instead}",
@@ -531,6 +536,12 @@ fn picture_file(a: &Value, key: &str) -> Result<PathBuf, String> {
     let path = file(a, key)?;
     if crate::picture::is_picture(&path) {
         return Ok(path);
+    }
+    if let Some(kind) = crate::picture::unsupported(&path) {
+        return Err(format!(
+            "{kind} isn't supported; convert {} to PNG",
+            path.display()
+        ));
     }
     let instead = if Format::from_path(&path).is_some() {
         "; it is a 3D model: add it with import"

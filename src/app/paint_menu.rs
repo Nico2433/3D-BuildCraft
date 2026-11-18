@@ -484,12 +484,28 @@ fn gradient_slider(
 }
 
 impl App {
-    /// Paints the connected region around triangle `tri` of object `id`.
-    pub(super) fn paint_area(&mut self, id: u64, tri: usize, color: Rgba, coverage: f32) {
+    /// Paints the connected region around triangle `tri` of object `id`; with `near`
+    /// (a world point and radius, mm) only triangles whose centres lie within it.
+    pub(super) fn paint_area(
+        &mut self,
+        id: u64,
+        tri: usize,
+        color: Rgba,
+        coverage: f32,
+        near: Option<(Vec3, f32)>,
+    ) {
         self.remember_color(color);
         self.edit(|s| {
             if let Some(o) = s.get_mut(id) {
-                o.mesh = std::sync::Arc::new(paint_region(&o.mesh, tri, color, coverage));
+                let matrix = o.matrix();
+                let mesh = &o.mesh;
+                let within = |f: usize| {
+                    near.is_none_or(|(at, r)| {
+                        let [a, b, c] = mesh.triangles[f].map(|v| mesh.positions[v as usize]);
+                        matrix.transform_point3((a + b + c) / 3.0).distance(at) <= r
+                    })
+                };
+                o.mesh = std::sync::Arc::new(paint_region(mesh, tri, color, coverage, within));
             }
         });
     }
@@ -504,9 +520,17 @@ impl App {
     }
 }
 
-fn paint_region(mesh: &Mesh, tri: usize, color: Rgba, coverage: f32) -> Mesh {
+/// `mesh` with the region `face_region` finds from `tri` painted, keeping to the
+/// triangles `within` accepts (the start triangle always).
+fn paint_region(
+    mesh: &Mesh,
+    tri: usize,
+    color: Rgba,
+    coverage: f32,
+    within: impl Fn(usize) -> bool,
+) -> Mesh {
+    let area = mesh.face_region_within(tri, coverage.clamp(0.0, 1.0) * 180.0, within);
     let mut mesh = mesh.clone();
-    let area = mesh.face_region(tri, coverage.clamp(0.0, 1.0) * 180.0);
     mesh.colors.resize(mesh.triangles.len(), [0; 4]);
     for face in area {
         mesh.colors[face] = color;
@@ -522,7 +546,7 @@ mod tests {
         let old_color = [0, 0, 255, 255];
         let new_color = [255, 0, 0, 255];
         cube.colors = vec![old_color; cube.triangles.len()];
-        let painted = super::paint_region(&cube, 0, new_color, 0.0);
+        let painted = super::paint_region(&cube, 0, new_color, 0.0, |_| true);
         assert_eq!(
             painted.colors.iter().filter(|&&c| c == new_color).count(),
             2
@@ -542,9 +566,28 @@ mod tests {
         ] {
             let mesh = primitive.build();
             let color = [255, 0, 0, 255];
-            let painted = super::paint_region(&mesh, 0, color, 1.0);
+            let painted = super::paint_region(&mesh, 0, color, 1.0, |_| true);
             assert!(painted.colors.iter().all(|&c| c == color));
         }
+    }
+
+    #[test]
+    fn a_radius_limits_paint_on_a_smooth_sphere() {
+        let sphere = crate::primitives::Primitive::Sphere.build();
+        let color = [255, 0, 0, 255];
+        let [a, b, c] = sphere.triangles[0].map(|v| sphere.positions[v as usize]);
+        let at = (a + b + c) / 3.0;
+        let near = |f: usize| {
+            let [a, b, c] = sphere.triangles[f].map(|v| sphere.positions[v as usize]);
+            ((a + b + c) / 3.0).distance(at) <= 10.0
+        };
+        let painted = super::paint_region(&sphere, 0, color, 1.0, near);
+        let count = painted.colors.iter().filter(|&&c| c == color).count();
+        assert_eq!(
+            count,
+            (0..sphere.triangles.len()).filter(|f| near(*f)).count()
+        );
+        assert!(count > 1 && count < sphere.triangles.len() / 2, "{count}");
     }
 
     #[test]

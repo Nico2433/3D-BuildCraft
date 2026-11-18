@@ -208,9 +208,11 @@ fn with_file(mut schema: Value, key: &str, files: &Files) -> Value {
 }
 
 /// `edit`'s operations.
-pub const EDIT_OPERATIONS: [&str; 14] = [
+pub const EDIT_OPERATIONS: [&str; 16] = [
     "delete",
     "duplicate",
+    "group",
+    "ungroup",
     "merge",
     "subtract",
     "intersect",
@@ -233,7 +235,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "measure",
-            "Read-only measurements. No arguments: min, max, size (mm), volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 where they overlap) and the distance between their centres.",
+            "Read-only measurements. No arguments: min, max, size (mm), volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. Without from/to or ids it needs a selection.",
             json!({"type":"object","properties":{
                 "from":vec3("first point [x, y, z], mm; needs to"),
                 "to":vec3("second point [x, y, z], mm"),
@@ -242,7 +244,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "get_scene",
-            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh) and selected; plus the chosen slicer and can_undo/can_redo. Units mm and degrees.",
+            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh), selected, material (none, simple, realistic or translucent) and the surface's extras as true/false: painted (areas painted with paint_area), textured (a texture brushed on) and stickers; plus the chosen slicer and can_undo/can_redo. Units mm and degrees.",
             none.clone(),
         ),
         tool(
@@ -257,7 +259,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "edit",
-            "Apply an operation to the selection. delete removes it. duplicate adds copies to its right and selects them. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
+            "Apply an operation to the selection. delete removes it. duplicate adds copies to its right and selects them. group joins two or more objects into one without merging their shapes (each keeps its colour); ungroup splits an object made of separate solids into one object per solid. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults (3 passes, edges false); use the smooth tool for other settings. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
             json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": EDIT_OPERATIONS } }, "required": ["operation"] }),
         ),
         tool(
@@ -272,7 +274,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "smooth",
-            "Smooth the selection, as the Smooth tool. Without edges each pass splits faces while the model is small and relaxes the surface, keeping its size; with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
+            "Smooth the selection, as the Smooth tool. Without edges each pass splits faces while the model is small and relaxes the surface, keeping about its size (it shrinks slightly); with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
             json!({ "type": "object", "properties": {
                 "passes": { "type": "integer", "description": "0..6, default 3" },
                 "edges": { "type": "boolean", "description": "smooth sharp edges too, default false" }
@@ -285,7 +287,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "open",
-            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
+            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. The opened objects get new ids and are all selected; the undo history is cleared. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
                 "path": { "type": "string", "description": "model file path on the app's computer" },
                 "discard_changes": { "type": "boolean", "description": "drop the scene's unsaved changes; default false" }
@@ -306,7 +308,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "screenshot",
-            "A PNG picture of the app window as it is now. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours but no textures or stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
+            "A PNG picture of the app window as it is now, with any dialog that is open. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours but no textures or stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
             json!({ "type": "object", "properties": {
                 "view": { "type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"], "description": "front looks from -Y towards +Y (X to the right), left from -X, right from +X, top down from +Z with the front at the bottom of the picture; iso is from the front right and above. Not with azimuth/elevation" },
                 "azimuth": { "type": "number", "description": "degrees around the vertical, 0 = front, 90 = right, 180 = back, 270 = left; default 45. Not with view" },
@@ -352,7 +354,7 @@ fn model_tools() -> Vec<Value> {
     vec![
         tool(
             "insert_shape",
-            "Add a shape on the floor at the centre; it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
+            "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
             json!({ "type": "object", "properties": {
                 "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"] },
                 "size": vec3("bounding box [x, y, z] in mm, all > 0; applied last, the bottom stays on the floor"),
@@ -367,7 +369,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "split",
-            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). width and length give the plane a finite size (along its own X and Y); then only the part of the object inside the box that rectangle sweeps along the normal is cut (needs a closed, manifold object). The kept pieces stay in place and become the selection.",
+            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). width and length give the plane a finite size (along its own X and Y); then only the part of the object inside the box that rectangle sweeps along the normal is cut (needs a closed, manifold object). The kept pieces stay in place, replace the cut objects with new ids (call get_scene) and become the selection. Fails, changing nothing, when the plane misses a selected object.",
             json!({ "type": "object", "properties": {
                 "z": num("height of a horizontal plane, mm"),
                 "point": vec3("a point the plane passes through, mm"),
@@ -380,7 +382,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as a sticker on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as raised lettering on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
             with_file(json!({ "type": "object", "properties": {
                 "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text("the text, for pattern text"),
@@ -401,17 +403,18 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "paint_area",
-            "Paint the surface region around a point, as the Color tool's click. coverage 0 paints the flat face there; higher values spread across edges that bend up to coverage × 180 degrees, so 1 paints the whole connected surface. Works on any object; does not change the selection.",
+            "Paint the surface region around a point, as the Color tool's click. The paint spreads from the triangle at point to neighbouring triangles across edges that bend by at most coverage × 180 degrees: 0 paints the flat face there, 0.5 stops at a box's 90-degree edges, 1 paints the whole connected surface. On curved meshes every edge bends a little, so even a small coverage can cover the whole curved surface; give radius to limit it. Works on any object; does not change the selection.",
             json!({ "type": "object", "properties": {
                 "point": vec3(point),
                 "color": color("the paint"),
                 "coverage": num("0..1, default 0"),
+                "radius": num("paint only triangles whose centre is within this many mm of point (the triangle at point always); default no limit"),
                 "id": int("object to paint; default the object nearest to point"),
             }, "required": ["point", "color"] }),
         ),
         tool(
             "set_material",
-            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through), with a colour that replaces any painted areas.",
+            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through). Any type but none also gives each object the colour and clears its painted areas; textures and stickers stay. none only removes the material, keeping colour and paint.",
             json!({ "type": "object", "properties": {
                 "type": one_of(&["none", "simple", "realistic", "translucent"], "the material"),
                 "color": color("default the first selected object's colour; not used with none"),
@@ -419,7 +422,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "apply_texture",
-            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker places it once at point, facing out of the surface.",
+            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker prints it once at point as a flat picture facing out of the surface (no geometry; for raised lettering or shapes use emboss_text).",
             with_file(json!({ "type": "object", "properties": {
                 "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes); give this or image"),
                 "image": text(&format!("{picture}; give this or texture")),
@@ -433,7 +436,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "import",
-            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor and its objects become the selection. For a picture (PNG, JPEG) use load_image.",
+            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (call get_scene) and become the selection. For a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
                 "path": text("model file path on the app's computer"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
@@ -441,7 +444,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "extrude_outline",
-            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a keychain or badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection.",
+            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection.",
             json!({ "type": "object", "properties": {
                 "side": one_of(&["outside", "inside"], "outside: a ring around the outline; inside: a band just within its edge. Default outside"),
                 "width": num("border width, mm, default 2"),
@@ -453,12 +456,12 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "load_image",
-            "Turn a picture (PNG, JPEG or SVG) into a new solid, as Load image, added on the floor at the centre and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert; transparent counts as white. For a solid made of an SVG's own shapes at their real size, use import instead.",
+            "Turn a picture (PNG, JPEG or SVG) into a new solid, as Load image, added on the floor at the centre (it may overlap objects already there; move it with transform) and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert; transparent counts as white. For a solid made of an SVG's own shapes at their real size, use import instead.",
             with_file(json!({ "type": "object", "properties": {
                 "path": text(&picture),
                 "method": one_of(&["contour", "height_map", "edge", "stamp"], "default contour"),
                 "size": num("mm along the longer side (the height for edge), default 80"),
-                "depth": num("most relief, mm, default 3"),
+                "depth": num("most relief, mm, default 3; contour, height_map and stamp stand on a 0.6 mm base, so depth 3 is 3.6 mm tall"),
                 "levels": int("contour steps, 2..8, default 8"),
                 "smooth": num("blur before sampling, 0..1, default 1"),
                 "invert": flag("light is high instead of dark; default false"),
@@ -661,6 +664,148 @@ pub fn call_app(file: &std::path::Path, name: &str, args: Value) -> Reply {
     forward().unwrap_or_else(|_| Err(NOT_OPEN.into()))
 }
 
+/// The error a tool that acts on the selection gives when nothing is selected.
+pub fn nothing_selected(tool: &str) -> String {
+    format!("{tool} acts on the selection, and nothing is selected; call select with ids from get_scene first")
+}
+
+/// Checks a call's arguments against the tool's own `inputSchema` from [`tools`]: every
+/// argument must be one the tool has, with the JSON type its schema gives (null counts
+/// as left out) and one of its `enum` names if it lists them. Ranges are left to the
+/// tool, whose errors say more.
+pub fn check_args(tool: &str, args: &Value) -> Result<(), String> {
+    let Some(t) = tools().into_iter().find(|t| t["name"] == tool) else {
+        return Err(format!("unknown tool: {tool}; tools/list lists the tools"));
+    };
+    if args.is_null() {
+        return Ok(());
+    }
+    check_object(tool, "", &t["inputSchema"], args)
+}
+
+/// `value` against the object `schema`; `path` names it in errors ("custom." inside).
+fn check_object(tool: &str, path: &str, schema: &Value, value: &Value) -> Result<(), String> {
+    let Some(given) = value.as_object() else {
+        return Err(format!("{tool}'s arguments must be an object, e.g. {{}}"));
+    };
+    let props = schema["properties"].as_object();
+    for (key, v) in given {
+        let Some(prop) = props.and_then(|p| p.get(key)) else {
+            let names: Vec<&str> = props
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let what = if path.is_empty() {
+                tool.to_owned()
+            } else {
+                format!("{tool} {}", path.trim_end_matches('.'))
+            };
+            return Err(if names.is_empty() {
+                format!("unknown argument {path}{key}: {what} takes no arguments")
+            } else {
+                format!(
+                    "unknown argument {path}{key}: {what} takes {}",
+                    names.join(", ")
+                )
+            });
+        };
+        if let (Some(choices), Some(name)) = (prop["enum"].as_array(), v.as_str()) {
+            if !choices.iter().any(|c| c == name) {
+                let names: Vec<&str> = choices.iter().filter_map(Value::as_str).collect();
+                return Err(format!(
+                    "unknown {path}{key}: {name}; one of {}",
+                    names.join(", ")
+                ));
+            }
+        }
+        if v.is_null() || fits(prop, v) {
+            if prop["type"] == "object" {
+                check_object(tool, &format!("{path}{key}."), prop, v)?;
+            }
+            continue;
+        }
+        return Err(format!("{path}{key} must be {}", expected(prop)));
+    }
+    Ok(())
+}
+
+/// Whether `v` has the JSON type `schema` asks for (any of `oneOf`).
+fn fits(schema: &Value, v: &Value) -> bool {
+    if let Some(options) = schema["oneOf"].as_array() {
+        return options.iter().any(|o| fits(o, v));
+    }
+    match schema["type"].as_str() {
+        Some("number") => v.is_number(),
+        Some("integer") => v.is_i64() || v.is_u64(),
+        Some("boolean") => v.is_boolean(),
+        Some("string") => v.is_string(),
+        Some("object") => v.is_object(),
+        Some("array") => v.as_array().is_some_and(|items| {
+            let len = items.len() as u64;
+            schema["minItems"].as_u64().is_none_or(|min| len >= min)
+                && schema["maxItems"].as_u64().is_none_or(|max| len <= max)
+                && items.iter().all(|i| fits(&schema["items"], i))
+        }),
+        _ => true,
+    }
+}
+
+/// What `schema` takes, for an error: its type, the unit its description names, and for
+/// lengths how to convert from centimetres.
+fn expected(schema: &Value) -> String {
+    if let Some(options) = schema["oneOf"].as_array() {
+        let all: Vec<String> = options.iter().map(expected).collect();
+        return all.join(" or ");
+    }
+    let what = schema["description"].as_str().unwrap_or("");
+    let has = |word: &str| {
+        what.split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == word)
+    };
+    let mm = has("mm");
+    let unit = if mm {
+        " in mm"
+    } else if has("degrees") {
+        " in degrees"
+    } else {
+        ""
+    };
+    let kind = match schema["type"].as_str() {
+        Some("number") => format!("a number{unit}"),
+        Some("integer") => "a whole number".to_owned(),
+        Some("boolean") => "true or false".to_owned(),
+        Some("string") => match schema["enum"].as_array() {
+            Some(names) => {
+                let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
+                format!("one of {}", names.join(", "))
+            }
+            None => "a string".to_owned(),
+        },
+        Some("object") => "an object".to_owned(),
+        Some("array") => {
+            let item = match schema["items"]["type"].as_str() {
+                Some("integer") => "whole numbers",
+                Some("number") => "numbers",
+                Some("string") => "strings",
+                _ => "items",
+            };
+            match (schema["minItems"].as_u64(), schema["maxItems"].as_u64()) {
+                (Some(2), Some(2)) if item == "numbers" => format!("[x, y]{unit}, two numbers"),
+                (Some(3), Some(3)) if item == "numbers" => {
+                    format!("[x, y, z]{unit}, three numbers")
+                }
+                (Some(a), Some(b)) if a == b => format!("a list of {a} {item}"),
+                _ => format!("a list of {item}"),
+            }
+        }
+        _ => "something else".to_owned(),
+    };
+    if mm {
+        format!("{kind}; for cm multiply by 10")
+    } else {
+        kind
+    }
+}
+
 /// The largest file an agent may send inline.
 pub const INLINE_MAX: usize = 25 << 20;
 
@@ -698,6 +843,9 @@ pub fn inline_file(
 ) -> Result<Option<Value>, String> {
     let (text, data) = (args["file_text"].as_str(), args["file_base64"].as_str());
     if text.is_none() && data.is_none() {
+        if !args["file_name"].is_null() {
+            return Err("file_name needs file_text or file_base64 with the file's content".into());
+        }
         return Ok(None);
     }
     if !args[key].is_null() {
@@ -846,6 +994,12 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         return Ok(
             json!({"gap":vector((a.min-b.max).max(b.min-a.max).max(glam::Vec3::ZERO)),"centre_distance":a.center().distance(b.center())}),
         );
+    }
+    if scene.selection.is_empty() {
+        return Err(format!(
+            "{}; or give from and to, or ids, to measure without a selection",
+            nothing_selected("measure")
+        ));
     }
     let mut bounds = crate::mesh::Aabb::empty();
     let (mut volume, mut area) = (0.0, 0.0);

@@ -105,3 +105,23 @@ fn set_world_mesh_resets_transform_and_uses_the_given_mesh() {
     assert_eq!(object.scale, Vec3::ONE);
     assert_eq!(object.world_mesh(), world);
 }
+
+/// Flat faces between the level-set grid planes made manifold-rust panic ("table full
+/// before any vert") and took the app down; these sizes all did before the grid shifts.
+#[test]
+fn hollow_cubes_whose_walls_fall_between_grid_planes() {
+    for (size, wall) in [(30.0, 2.0), (27.0, 1.0), (45.0, 3.0), (57.0, 3.0)] {
+        let cube = primitives::cube(size);
+        let hollow = solid::hollow(&cube, wall).unwrap();
+        assert_closed(&hollow);
+        // The cavity is a cube whose wall is `wall` plus up to the grid margin.
+        let cavity = (size as f64).powi(3) - hollow.stats().volume;
+        let side = |w: f64| (size as f64 - 2.0 * w).powi(3);
+        assert!(cavity < side(wall as f64), "{size} {wall}: {cavity}");
+        assert!(cavity > side(wall as f64 + 2.0), "{size} {wall}: {cavity}");
+        println!(
+            "{size} {wall}: cavity {cavity:.0} of {:.0}",
+            side(wall as f64)
+        );
+    }
+}

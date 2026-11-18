@@ -684,7 +684,7 @@ impl App {
         let done: anyhow::Result<Vec<(u64, Mesh)>> = self
             .scene
             .selected()
-            .map(|o| Ok((o.id, f(&o.world_mesh())?)))
+            .map(|o| Ok((o.id, crate::no_panic(|| f(&o.world_mesh()))?)))
             .collect();
         match done {
             Ok(meshes) if meshes.is_empty() => return false,

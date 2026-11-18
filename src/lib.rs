@@ -28,3 +28,19 @@ pub mod texture_gen;
 pub mod thumbnail;
 pub mod update;
 pub mod webcam;
+
+/// Runs `f`, turning a panic inside it into an error, so a bug in a geometry library
+/// fails that one operation instead of closing the app. `f` must leave nothing half
+/// changed when it panics: compute first, then change the scene.
+pub fn no_panic<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let why = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown error".into());
+        Err(anyhow::anyhow!(
+            "The operation failed inside the geometry code ({why})"
+        ))
+    })
+}

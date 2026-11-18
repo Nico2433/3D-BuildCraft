@@ -714,7 +714,7 @@ impl App {
                                 *dropper = false;
                             } else {
                                 self.actions
-                                    .push(Action::PaintArea(id, tri, *color, *coverage));
+                                    .push(Action::PaintArea(id, tri, *color, *coverage, None));
                             }
                         }
                     }

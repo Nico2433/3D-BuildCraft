@@ -46,6 +46,16 @@ impl Material {
         Material::Translucent,
     ];
 
+    /// Its name for agents and files: none, simple, realistic or translucent.
+    pub fn name(self) -> &'static str {
+        match self {
+            Material::None => "none",
+            Material::Simple => "simple",
+            Material::Realistic => "realistic",
+            Material::Translucent => "translucent",
+        }
+    }
+
     /// The i18n key of its name.
     pub fn label(self) -> &'static str {
         match self {
@@ -475,7 +485,8 @@ impl Scene {
     }
 
     /// "Split": the pieces `keep` keeps of the selected objects cut by `plane`, in place.
-    /// A finite plane cuts with booleans, which fail on a mesh that needs repair.
+    /// A finite plane cuts with booleans, which fail on a mesh that needs repair. Fails
+    /// when the plane misses a selected object, which cutting would delete or copy.
     pub fn cut_pieces(
         &self,
         plane: &crate::cut::CutPlane,
@@ -483,8 +494,19 @@ impl Scene {
     ) -> anyhow::Result<Vec<Object>> {
         let mut pieces = Vec::new();
         for o in self.selected() {
-            for piece in crate::cut::split(&o.world_mesh(), plane, keep)? {
-                pieces.push(Object::new(o.name.clone(), piece, o.color));
+            let mesh = o.world_mesh();
+            // Cutting beside an object would delete it (or copy it, keeping both).
+            let name = match self.selection.len() {
+                1 => "the object".to_owned(),
+                _ => format!("object {} ({})", o.id, o.name),
+            };
+            if let Some(why) = crate::cut::misses(&mesh, plane, &name) {
+                anyhow::bail!("{why}");
+            }
+            for piece in crate::cut::split(&mesh, plane, keep)? {
+                let mut piece = Object::new(o.name.clone(), piece, o.color);
+                piece.material = o.material;
+                pieces.push(piece);
             }
         }
         Ok(pieces)

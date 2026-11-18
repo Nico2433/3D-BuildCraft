@@ -81,7 +81,62 @@ fn measurements_are_read_only() {
     assert_eq!(result["differences"], json!([3.0, 4.0, 0.0]));
     assert!(measure(&scene, &json!({"ids":[1,2]})).is_err());
     assert!(measure(&scene, &json!({"from":[1]})).is_err());
+    // The selection's measurements need one, rather than nulls and a volume of 0.
+    assert!(measure(&scene, &json!({}))
+        .unwrap_err()
+        .contains("nothing is selected"));
     assert!(scene.objects.is_empty());
+}
+
+#[test]
+fn arguments_are_checked_against_the_tool_schema() {
+    use buildcraft3d::mcp::check_args;
+    assert!(check_args("transform", &json!({"size": [10, 20, 30], "bottom": 0})).is_ok());
+    assert!(check_args("get_scene", &json!(null)).is_ok());
+    // Null counts as left out.
+    assert!(check_args("transform", &json!({"position": null})).is_ok());
+    let bad_op = check_args("edit", &json!({"operation": "select_all"})).unwrap_err();
+    assert!(
+        bad_op.starts_with("unknown operation: select_all; one of"),
+        "{bad_op}"
+    );
+    let unknown = check_args("transform", &json!({"size": [1, 2, 3], "units": "cm"})).unwrap_err();
+    assert!(
+        unknown.starts_with(
+            "unknown argument units: transform takes back, bottom, front, left, position"
+        ),
+        "{unknown}"
+    );
+    assert!(check_args("get_scene", &json!({"verbose": true}))
+        .unwrap_err()
+        .contains("takes no arguments"));
+    assert_eq!(
+        check_args("transform", &json!({"size": "3cm"})).unwrap_err(),
+        "size must be [x, y, z] in mm, three numbers; for cm multiply by 10"
+    );
+    assert!(check_args("transform", &json!({"bottom": "2cm"}))
+        .unwrap_err()
+        .contains("a number in mm"));
+    assert!(check_args("transform", &json!({"rotation": [0, 90]}))
+        .unwrap_err()
+        .contains("in degrees"));
+    // Nested objects and alternatives.
+    assert!(check_args(
+        "insert_shape",
+        &json!({"shape": "cube", "custom": {"roundness": 3}})
+    )
+    .is_ok());
+    assert!(check_args(
+        "insert_shape",
+        &json!({"shape": "cube", "custom": {"round": 3}})
+    )
+    .unwrap_err()
+    .contains("custom.round"));
+    assert!(check_args("screenshot", &json!({"focus": "all"})).is_ok());
+    assert!(check_args("screenshot", &json!({"focus": [1, 2]})).is_ok());
+    assert!(check_args("screenshot", &json!({"focus": 3})).is_err());
+    assert!(check_args("smooth", &json!({"passes": 2.5})).is_err());
+    assert!(check_args("no_such_tool", &json!({})).is_err());
 }
 
 #[test]

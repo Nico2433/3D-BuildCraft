@@ -285,6 +285,17 @@ impl Mesh {
     /// Triangles that touch `start` through shared edges and bend no more than `max_deg`
     /// between adjacent faces: the area "Color" paints with a given coverage.
     pub fn face_region(&self, start: usize, max_deg: f32) -> Vec<usize> {
+        self.face_region_within(start, max_deg, |_| true)
+    }
+
+    /// [`Mesh::face_region`], spreading only through triangles `within` accepts; `start`
+    /// is always in it.
+    pub fn face_region_within(
+        &self,
+        start: usize,
+        max_deg: f32,
+        within: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
         let unit: Vec<Vec3> = self
             .triangle_positions()
             .map(|[a, b, c]| Mesh::face_normal(a, b, c))
@@ -326,7 +337,7 @@ impl Mesh {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
                 for &g in &by_edge[&(a.min(b), a.max(b))] {
-                    if !seen[g] && unit[g].dot(unit[out[i]]) >= cos - 1e-6 {
+                    if !seen[g] && unit[g].dot(unit[out[i]]) >= cos - 1e-6 && within(g) {
                         seen[g] = true;
                         out.push(g);
                     }

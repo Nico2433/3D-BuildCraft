@@ -141,3 +141,45 @@ fn a_plane_through_a_point_faces_its_normal_and_cuts_there() {
     );
     assert!(top.aabb().max.x > 19.0 && top.aabb().min.z > -1e-3);
 }
+
+#[test]
+fn a_plane_that_misses_the_selection_cuts_nothing_and_says_why() {
+    use buildcraft3d::cut::Keep;
+    use buildcraft3d::scene::{Object, Scene, DEFAULT_COLOR};
+    let mut scene = Scene::default();
+    let id = scene.add(Object::new(
+        "Sphere",
+        primitives::Primitive::Sphere.build(),
+        DEFAULT_COLOR,
+    ));
+    scene.selection.insert(id);
+    let top = scene.get(id).unwrap().world_aabb().max.z;
+    for keep in [Keep::Top, Keep::Bottom, Keep::Both] {
+        let e = scene
+            .cut_pieces(&CutPlane::at_height(200.0), keep)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            format!("z 200 is above the top of the object ({top:.2} mm); nothing to cut")
+        );
+        assert!(scene
+            .cut_pieces(&CutPlane::at_height(-5.0), keep)
+            .unwrap_err()
+            .to_string()
+            .contains("below the bottom"));
+    }
+    let slanted = CutPlane::through(Vec3::new(0.0, 0.0, 500.0), Vec3::new(1.0, 0.0, 1.0)).unwrap();
+    assert!(scene
+        .cut_pieces(&slanted, Keep::Top)
+        .unwrap_err()
+        .to_string()
+        .contains("wholly below"));
+    assert_eq!(
+        scene
+            .cut_pieces(&CutPlane::at_height(top / 2.0), Keep::Top)
+            .unwrap()
+            .len(),
+        1
+    );
+}

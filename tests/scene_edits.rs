@@ -390,12 +390,15 @@ fn cut_selected_keeps_the_chosen_halves_selected() {
 }
 
 #[test]
-fn cut_selected_above_the_object_with_keep_top_removes_it() {
+fn cut_selected_above_the_object_refuses_and_keeps_it() {
     let (mut s, ids) = scene_with(vec![cube_at(0.0, 0.0)]);
     s.selection.insert(ids[0]);
-    s.cut_selected(&CutPlane::at_height(50.0), Keep::Top)
-        .unwrap();
-    assert!(s.objects.is_empty());
+    let e = s
+        .cut_selected(&CutPlane::at_height(50.0), Keep::Top)
+        .unwrap_err();
+    assert!(e.to_string().contains("nothing to cut"), "{e}");
+    assert_eq!(s.objects.len(), 1);
+    assert_eq!(s.objects[0].id, ids[0]);
 }
 
 #[test]

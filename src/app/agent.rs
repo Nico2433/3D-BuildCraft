@@ -65,6 +65,10 @@ impl App {
         let processed = !requests.is_empty();
         let lang = self.settings.lang();
         for r in requests {
+            if let Err(e) = mcp::check_args(&r.tool, &r.args) {
+                let _ = r.reply.send(Err(e));
+                continue;
+            }
             if r.tool == "screenshot" {
                 self.screenshot(r, ctx);
                 continue;
@@ -77,7 +81,9 @@ impl App {
             }
             // Errors the actions report as notices go back to the agent too.
             let before = self.toasts.len();
-            let mut out = self.agent_call(&r.tool, &r.args, ctx);
+            // A panic in a tool fails that call, not the app.
+            let mut out = crate::no_panic(|| Ok(self.agent_call(&r.tool, &r.args, ctx)))
+                .unwrap_or_else(|e| Err(format!("{e:#}; the scene may need undo")));
             let errors: Vec<String> = self.toasts[before.min(self.toasts.len())..]
                 .iter()
                 .filter(|t| t.error)
@@ -120,9 +126,7 @@ impl App {
         ) || (tool == "edit"
             && !matches!(a["operation"].as_str(), Some("undo" | "redo")));
         if selection_needed && self.scene.selection.is_empty() {
-            return Err(format!(
-                "{tool} acts on the selection, and nothing is selected; call select with ids from get_scene first"
-            ));
+            return Err(mcp::nothing_selected(tool));
         }
         // A tool left open by the user would catch the edit; the agent's call wins.
         if tool == "measure" {
@@ -207,12 +211,20 @@ impl App {
                 if boolean && self.scene.selection.len() < 2 {
                     return Err(format!("{op} needs two or more selected objects"));
                 }
-                if op == "subtract" && self.scene.selection.is_empty() {
-                    return Err("subtract needs a selected object".into());
+                if op == "group" && self.scene.selection.len() < 2 {
+                    return Err("group needs two or more selected objects".into());
+                }
+                if op == "ungroup" && !self.scene.selected().any(|o| o.mesh.solids().len() > 1) {
+                    return Err(
+                        "ungroup needs a selected object made of separate solids, such as a group"
+                            .into(),
+                    );
                 }
                 let action = match op {
                     "delete" => Action::Delete,
                     "duplicate" => Action::Duplicate,
+                    "group" => Action::Group,
+                    "ungroup" => Action::Ungroup,
                     "merge" => Action::Boolean(Op::Union),
                     "subtract" => Action::Boolean(Op::Subtract),
                     "intersect" => Action::Boolean(Op::Intersect),
@@ -352,6 +364,10 @@ impl App {
                     "triangles": o.mesh.triangles.len(),
                     "valid": !self.invalid.contains(&o.id),
                     "selected": self.scene.selection.contains(&o.id),
+                    "material": o.material.name(),
+                    "painted": o.mesh.colors.iter().any(|c| c[3] > 0),
+                    "textured": o.mesh.tex.iter().any(|t| t.layer != 0 && !t.decal),
+                    "stickers": o.mesh.tex.iter().any(|t| t.layer != 0 && t.decal),
                 })
             })
             .collect();
