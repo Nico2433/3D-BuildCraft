@@ -34,6 +34,19 @@ impl Limit {
     }
 }
 
+impl Limit {
+    /// What to add to the error of numbers that are out of range: a length in
+    /// centimetres is the usual cause. Only for numbers; a value of the wrong type has no
+    /// unit to convert.
+    fn hint(&self) -> &'static str {
+        if self.unit == "mm" {
+            "; for cm multiply by 10"
+        } else {
+            ""
+        }
+    }
+}
+
 /// "between 1 and 200 mm", for errors and descriptions.
 impl fmt::Display for Limit {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -84,6 +97,8 @@ pub mod limits {
     /// The reach of a paint or texture brush, and the width of a sticker.
     pub const BRUSH_RADIUS: Limit = Limit::new(0.01, 10_000.0, "mm");
     pub const STICKER_SIZE: Limit = Limit::new(0.1, 10_000.0, "mm");
+    /// A plane's normal: each number; only its direction counts.
+    pub const NORMAL: Limit = Limit::new(-1e6, 1e6, "");
     /// `measure`'s snap tolerance.
     pub const SNAP_TOLERANCE: Limit = Limit::new(0.0, 1000.0, "mm");
     /// `list_fonts`'s `limit`.
@@ -102,10 +117,11 @@ use limits::*;
 
 /// `v` as a number in `limit`; the error names `key` and the range.
 pub fn number_in(v: &Value, key: &str, limit: Limit) -> Result<f32, String> {
-    v.as_f64()
-        .filter(|x| limit.contains(*x))
-        .map(|x| x as f32)
-        .ok_or_else(|| format!("{key} must be a number {limit}"))
+    match v.as_f64() {
+        Some(x) if limit.contains(x) => Ok(x as f32),
+        Some(_) => Err(format!("{key} must be a number {limit}{}", limit.hint())),
+        None => Err(format!("{key} must be a number {limit}")),
+    }
 }
 
 /// A number in `limit`, or `default` when it is missing.
@@ -190,11 +206,11 @@ pub fn choice<T: Copy>(
 pub fn color(a: &Value, key: &str) -> Result<Option<Rgba>, String> {
     match &a[key] {
         Value::Null => Ok(None),
-        v => v
-            .as_str()
-            .and_then(parse_hex)
-            .map(Some)
-            .ok_or_else(|| format!("{key} must be #RRGGBB, e.g. #FF8000")),
+        v => {
+            v.as_str().and_then(parse_hex).map(Some).ok_or_else(|| {
+                format!("{key} must be #RRGGBB, e.g. #FF8000 (the # may be left out)")
+            })
+        }
     }
 }
 
@@ -212,10 +228,25 @@ pub fn vec3(a: &Value, key: &str, limit: Limit) -> Result<Option<Vec3>, String> 
         Some(&[x, y, z]) if [x, y, z].iter().all(|c| limit.contains(*c)) => {
             Ok(Some(Vec3::new(x as f32, y as f32, z as f32)))
         }
-        _ => Err(format!(
+        Some(_) => Err(format!(
+            "{key} must be [x, y, z], three numbers each {limit}{}",
+            limit.hint()
+        )),
+        None => Err(format!(
             "{key} must be [x, y, z], three numbers each {limit}"
         )),
     }
+}
+
+/// The optional plane normal under `key`: [x, y, z] of any length; the callers refuse a
+/// zero one.
+pub fn normal(a: &Value, key: &str) -> Result<Option<Vec3>, String> {
+    vec3(a, key, NORMAL).map_err(|e| {
+        e.replace(
+            "three numbers",
+            "three numbers, not all 0 (only the direction counts)",
+        )
+    })
 }
 
 /// The optional `[x, y]` under `key`, each in `limit`.
@@ -232,7 +263,11 @@ fn vec2(a: &Value, key: &str, limit: Limit) -> Result<Option<Vec2>, String> {
         Some(&[x, y]) if [x, y].iter().all(|c| limit.contains(*c)) => {
             Ok(Some(Vec2::new(x as f32, y as f32)))
         }
-        _ => Err(format!("{key} must be [x, y], two numbers each {limit}")),
+        Some(_) => Err(format!(
+            "{key} must be [x, y], two numbers each {limit}{}",
+            limit.hint()
+        )),
+        None => Err(format!("{key} must be [x, y], two numbers each {limit}")),
     }
 }
 
@@ -426,8 +461,7 @@ pub fn custom(c: &Value) -> Result<(usize, usize, f32, f32, u8), String> {
 pub fn split(a: &Value, centre: Vec3) -> Result<(CutPlane, Keep), String> {
     let z = optional(a, "z", COORD)?;
     let at = vec3(a, "point", COORD)?;
-    // The normal's length only has to be above zero and not absurd.
-    let normal = vec3(a, "normal", Limit::new(-1e6, 1e6, ""))?;
+    let normal = normal(a, "normal")?;
     let rotation = vec3(a, "rotation", ANGLE)?;
     if normal.is_some() && rotation.is_some() {
         return Err("give normal or rotation, not both; they both turn the plane".into());
@@ -625,6 +659,11 @@ mod tests {
     #[test]
     fn errors_name_the_range_with_its_unit() {
         let e = number(&json!({"size": 1e5}), "size", 10.0, EMBOSS_SIZE).unwrap_err();
+        assert_eq!(
+            e,
+            "size must be a number between 1 and 200 mm; for cm multiply by 10"
+        );
+        let e = number(&json!({"size": "big"}), "size", 10.0, EMBOSS_SIZE).unwrap_err();
         assert_eq!(e, "size must be a number between 1 and 200 mm");
         let e = vec3(&json!({"size": [1, 2, 1e300]}), "size", OBJECT_SIZE).unwrap_err();
         assert!(e.contains("between 0.01 and 10000 mm"), "{e}");

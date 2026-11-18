@@ -41,11 +41,23 @@ pub fn serve(
 
 /// The JSON-RPC error code for a message that is not JSON.
 const PARSE_ERROR: i32 = -32700;
+/// The code for JSON that is not a request object, such as a batch.
+const INVALID_REQUEST: i32 = -32600;
 
 /// The answer to one JSON-RPC message, or None when it needs none.
 fn reply(message: &[u8], call: &mut impl FnMut(&str, Value) -> Reply) -> Option<Value> {
     match serde_json::from_slice::<Value>(message) {
-        Ok(msg) => handle(&msg, call),
+        Ok(msg @ Value::Object(_)) => handle(&msg, call),
+        Ok(Value::Array(_)) => Some(error(
+            Value::Null,
+            INVALID_REQUEST,
+            "invalid request: batches are not supported; send one request object per message",
+        )),
+        Ok(_) => Some(error(
+            Value::Null,
+            INVALID_REQUEST,
+            "invalid request: a JSON-RPC message is an object with jsonrpc, id, method and params",
+        )),
         Err(e) => Some(error(
             Value::Null,
             PARSE_ERROR,
@@ -136,7 +148,8 @@ const INSTRUCTIONS: &str = concat!(
 macro_rules! rules {
     () => {
         "Rules:\n\
-- Units are millimetres, Z is up, the floor is Z = 0.\n\
+- Units are millimetres, Z is up, the floor is Z = 0. Colours are #RRGGBB (the # is optional). \
+An argument given as null counts as not given, in every tool.\n\
 - insert_shape puts a 40 mm shape on the floor at the centre and selects it. transform, \
 set_color, edit, hollow, smooth, simplify, split, emboss_text and the other editing tools act on the \
 CURRENT selection, which changes after insert_shape, split, emboss_text, import and load_image: \
@@ -299,7 +312,7 @@ Each argument's description says what it returns, with an example.",
         tool(
             "set_color",
             "Give each object of the CURRENT selection this colour (its whole surface; use paint_area for one region).",
-            json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB, e.g. #FF8000" } }, "required": ["color"] }),
+            json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB, e.g. #FF8000 (the # is optional, as in every colour argument)" } }, "required": ["color"] }),
         ),
         tool(
             "hollow",
@@ -349,7 +362,7 @@ Each argument's description says what it returns, with an example.",
                 "elevation": { "type": "number", "description": "degrees above the floor, -90 (from below) to 90 (from above); default 35. Not with view" },
                 "focus": { "description": "what to centre and frame: \"all\" (default), \"selection\", or a list of object ids from get_scene", "oneOf": [{ "type": "string", "enum": ["all", "selection"] }, { "type": "array", "items": { "type": "integer" }, "minItems": 1 }] },
                 "isolate": { "type": "boolean", "description": "draw only the focused objects; default false" },
-                "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, each 64..2048 (values outside are clamped); default [800, 600]" }
+                "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, whole numbers, each clamped to 64..2048 (0, a negative or 1000000000 give 64 or 2048); a decimal is an error; default [800, 600]" }
             } }),
         ),
     ]
@@ -370,7 +383,7 @@ fn model_tools() -> Vec<Value> {
     let flag = |what: &str| json!({ "type": "boolean", "description": what });
     let text = |what: &str| json!({ "type": "string", "description": what });
     let one_of = |names: &[&str], what: &str| json!({ "type": "string", "enum": names, "description": what });
-    let color = |what: &str| text(&format!("{what}, #RRGGBB"));
+    let color = |what: &str| text(&format!("{what}, #RRGGBB (the # is optional)"));
     let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
     let textures: Vec<String> = crate::texture_gen::Kind::all().map(|k| k.name()).collect();
     // Text, every built-in shape by name, and a picture.
@@ -796,8 +809,7 @@ fn fits(schema: &Value, v: &Value) -> bool {
     }
 }
 
-/// What `schema` takes, for an error: its type, the unit its description names, and for
-/// lengths how to convert from centimetres.
+/// What `schema` takes, for an error: its type and the unit its description names.
 fn expected(schema: &Value) -> String {
     if let Some(options) = schema["oneOf"].as_array() {
         let all: Vec<String> = options.iter().map(expected).collect();
@@ -808,8 +820,7 @@ fn expected(schema: &Value) -> String {
         what.split(|c: char| !c.is_alphanumeric())
             .any(|w| w == word)
     };
-    let mm = has("mm");
-    let unit = if mm {
+    let unit = if has("mm") {
         " in mm"
     } else if has("degrees") {
         " in degrees"
@@ -846,11 +857,7 @@ fn expected(schema: &Value) -> String {
         }
         _ => "something else".to_owned(),
     };
-    if mm {
-        format!("{kind}; for cm multiply by 10")
-    } else {
-        kind
-    }
+    kind
 }
 
 /// The largest file an agent may send inline.
@@ -1022,14 +1029,36 @@ fn round_json(r: &crate::measure::Round) -> Value {
     json!({"kind":r.kind.name(),"diameter":r.diameter(),"radius":r.radius,"center":r.center.to_array(),"axis":r.axis.map(|a| a.to_array())})
 }
 
-/// The object an `id` argument names.
+/// The object the `id` argument named `key` points to; it must have triangles.
 fn object_arg<'a>(
     scene: &'a crate::scene::Scene,
     id: &Value,
+    key: &str,
 ) -> Result<&'a crate::scene::Object, String> {
-    id.as_u64()
-        .and_then(|id| scene.get(id))
-        .ok_or_else(|| format!("no object with id {id}; get_scene lists the ids"))
+    if id.is_null() {
+        return Err(format!(
+            "{key} is missing: give an object id from get_scene"
+        ));
+    }
+    let o = id
+        .as_u64()
+        .ok_or_else(|| format!("{key} must be an object id from get_scene"))?;
+    let o = scene
+        .get(o)
+        .ok_or_else(|| format!("no object with id {id}; get_scene lists the ids"))?;
+    require_geometry(o)?;
+    Ok(o)
+}
+
+/// The error for an object with no triangles, which no tool can work on.
+pub fn require_geometry(o: &crate::scene::Object) -> Result<(), String> {
+    if o.mesh.is_empty() {
+        return Err(format!(
+            "object {} has no geometry (0 triangles); delete it with edit delete",
+            o.id
+        ));
+    }
+    Ok(())
 }
 
 /// The most contours `measure`'s `section` lists (`total` says how many there are).
@@ -1038,13 +1067,13 @@ const MAX_LISTED_CONTOURS: usize = 50;
 /// `measure`'s `section`: the contours a plane cuts out of an object, with circle fits.
 fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, String> {
     use crate::section::{section_tilted, Tilt};
-    let o = object_arg(scene, &spec["id"])?;
-    let normal = match spec.get("normal").filter(|n| !n.is_null()) {
-        Some(n) => point_arg(n, "section.normal")?,
+    let o = object_arg(scene, &spec["id"], "section.id")?;
+    let normal = match args::normal(spec, "normal").map_err(|e| format!("section.{e}"))? {
+        Some(n) => n,
         None => glam::Vec3::Z,
     };
     let Some(normal) = normal.try_normalize() else {
-        return Err("section.normal must be a non-zero vector".into());
+        return Err("section.normal must not be zero: give its direction, e.g. [0, 0, 1]".into());
     };
     let near = spec
         .get("near")
@@ -1212,7 +1241,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         return section_json(scene, spec);
     }
     if let Some(id) = given("diameter_of") {
-        let o = object_arg(scene, id)?;
+        let o = object_arg(scene, id, "diameter_of")?;
         let m = o.matrix();
         let axes = [m.x_axis, m.y_axis, m.z_axis].map(|a| a.truncate());
         return crate::measure::fit_object(&o.world_mesh(), axes)
@@ -1274,11 +1303,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
             .as_array()
             .filter(|a| a.len() == 2)
             .ok_or("ids must be two object ids from get_scene")?;
-        let object = |i: usize| {
-            scene
-                .get(ids[i].as_u64().unwrap_or(u64::MAX))
-                .ok_or_else(|| format!("no object with id {}; get_scene lists the ids", ids[i]))
-        };
+        let object = |i: usize| object_arg(scene, &ids[i], "ids");
         let a = object(0)?.world_aabb();
         let b = object(1)?.world_aabb();
         return Ok(
@@ -1299,6 +1324,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         .iter()
         .filter(|o| scene.selection.contains(&o.id))
     {
+        require_geometry(o)?;
         let b = o.world_aabb();
         let s = o.world_mesh().stats();
         bounds = bounds.union(b);
@@ -1508,7 +1534,7 @@ mod tests {
         let tilted = json!({"section":{"id":id,"z":1,"normal":[0,0.1,1]}});
         assert!(measure(&scene, &tilted).is_err());
         let zero = err(json!({"section":{"id":id,"point":[0,0,1],"normal":[0,0,0]}}));
-        assert!(zero.contains("non-zero"), "{zero}");
+        assert!(zero.contains("must not be zero"), "{zero}");
     }
 
     #[test]

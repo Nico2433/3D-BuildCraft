@@ -192,7 +192,13 @@ fn screen(head: &Head, port: u16, token: &str) -> Result<usize, u16> {
 fn answer(body: &[u8], call: &mut impl FnMut(&str, Value) -> Reply) -> (u16, Option<Value>) {
     match super::reply(body, call) {
         None => (202, None),
-        Some(r) if r["error"]["code"] == super::PARSE_ERROR => (400, Some(r)),
+        Some(r)
+            if [super::PARSE_ERROR, super::INVALID_REQUEST]
+                .iter()
+                .any(|c| r["error"]["code"] == *c) =>
+        {
+            (400, Some(r))
+        }
         Some(r) => (200, Some(r)),
     }
 }
@@ -374,6 +380,20 @@ mod tests {
         let (status, body) = answer(b"{not json", &mut call);
         assert_eq!(status, 400);
         assert_eq!(body.unwrap()["error"]["code"], -32700);
+        // Batches and other JSON that is not a request object are invalid requests.
+        for bad in [
+            &b"[]"[..],
+            br#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#,
+            b"5",
+            b"null",
+            br#""x""#,
+        ] {
+            let (status, body) = answer(bad, &mut call);
+            assert_eq!(status, 400);
+            let body = body.unwrap();
+            assert_eq!(body["error"]["code"], -32600);
+            assert_eq!(body["id"], Value::Null);
+        }
         assert_eq!(calls, vec![("get_scene".to_owned(), json!({}))]);
     }
 

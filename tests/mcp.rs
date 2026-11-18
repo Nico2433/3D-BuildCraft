@@ -52,7 +52,7 @@ fn speaks_the_handshake_lists_tools_and_calls_them() {
 
 #[test]
 fn unknown_versions_get_the_newest_and_bad_json_an_error() {
-    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n";
+    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n[{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}]\n7\n";
     let mut out = Vec::new();
     serve(input.as_bytes(), &mut out, |_, _| Ok(vec![])).unwrap();
     let r: Vec<Value> = String::from_utf8(out)
@@ -62,6 +62,10 @@ fn unknown_versions_get_the_newest_and_bad_json_an_error() {
         .collect();
     assert_eq!(r[0]["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(r[1]["error"]["code"], -32700);
+    // A batch or a bare value is answered, not dropped.
+    assert_eq!(r.len(), 4);
+    assert_eq!(r[2]["error"]["code"], -32600);
+    assert_eq!(r[3]["error"]["code"], -32600);
 }
 
 #[test]
@@ -112,7 +116,7 @@ fn arguments_are_checked_against_the_tool_schema() {
         .contains("takes no arguments"));
     assert_eq!(
         check_args("transform", &json!({"size": "3cm"})).unwrap_err(),
-        "size must be [x, y, z] in mm, three numbers; for cm multiply by 10"
+        "size must be [x, y, z] in mm, three numbers"
     );
     assert!(check_args("transform", &json!({"bottom": "2cm"}))
         .unwrap_err()
@@ -344,4 +348,59 @@ fn inline_svg_pictures_open_for_the_picture_tools() {
         .as_str()
         .unwrap();
     assert!(text.contains("OBJ") && text.contains("SVG"), "{text}");
+}
+
+#[test]
+fn measure_names_what_is_missing_and_refuses_objects_without_geometry() {
+    use buildcraft3d::{
+        mcp::{args, measure, require_geometry},
+        mesh::Mesh,
+        primitives,
+        scene::{Object, Scene, DEFAULT_COLOR},
+    };
+    let mut scene = Scene::default();
+    let cube = scene.add(Object::new("cube", primitives::cube(2.0), DEFAULT_COLOR));
+    let empty = scene.add(Object::new("empty", Mesh::default(), DEFAULT_COLOR));
+    let err = |a: Value| measure(&scene, &a).unwrap_err();
+    assert!(err(json!({"section": {}})).starts_with("section.id is missing"));
+    assert!(err(json!({"section": {"id": "a"}})).contains("section.id must be an object id"));
+    assert!(err(json!({"section": {"id": 99, "z": 1}})).contains("no object with id 99"));
+    // The normal's own range and wording, not a point's; any length above 0 is fine.
+    let e = err(json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 1e9]}}));
+    assert!(
+        e.starts_with("section.normal must be [x, y, z]") && !e.contains("point"),
+        "{e}"
+    );
+    assert!(
+        err(json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 0]}}))
+            .contains("section.normal must not be zero")
+    );
+    let ok = json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 1e-3]}});
+    assert!(measure(&scene, &ok).is_ok());
+    // An object with no triangles is an error everywhere, never null or infinity.
+    for a in [
+        json!({"diameter_of": empty}),
+        json!({"section": {"id": empty, "z": 0}}),
+        json!({"ids": [cube, empty]}),
+    ] {
+        let e = err(a);
+        assert!(
+            e.contains(&format!("object {empty} has no geometry")),
+            "{e}"
+        );
+    }
+    let mut selected = scene.clone();
+    selected.selection.insert(empty);
+    assert!(measure(&selected, &json!({}))
+        .unwrap_err()
+        .contains("has no geometry"));
+    assert!(require_geometry(scene.get(cube).unwrap()).is_ok());
+    // Colours take the # or not, through one parser.
+    for c in ["#ff8000", "ff8000", " FF8000 "] {
+        assert_eq!(
+            args::color(&json!({"c": c}), "c"),
+            Ok(Some([255, 128, 0, 255]))
+        );
+    }
+    assert!(args::color(&json!({"c": "ff80"}), "c").is_err());
 }

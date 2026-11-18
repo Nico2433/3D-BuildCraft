@@ -130,6 +130,10 @@ impl App {
         if selection_needed && self.scene.selection.is_empty() {
             return Err(mcp::nothing_selected(tool));
         }
+        // An object with no triangles can only be deleted.
+        if selection_needed && !(tool == "edit" && a["operation"] == "delete") {
+            self.scene.selected().try_for_each(mcp::require_geometry)?;
+        }
         let adds = matches!(tool, "insert_shape" | "import" | "load_image")
             || (tool == "edit" && a["operation"] == "duplicate");
         if adds && self.scene.objects.len() >= args::limits::MAX_OBJECTS {
@@ -169,6 +173,8 @@ impl App {
         let before = self.scene.objects.clone();
         // What `save` wrote: the file and its size in bytes.
         let mut saved = None;
+        // What to tell the agent when the call did nothing.
+        let mut note = None;
         match tool {
             "get_scene" => {}
             "select" => {
@@ -181,29 +187,33 @@ impl App {
             "insert_shape" => self.agent_insert_shape(a, ctx)?,
             "transform" => {
                 let t = args::transform(a)?;
-                self.apply(Action::BeginEdit, ctx);
-                // Rotation first: it changes the bounding box the others are about.
-                if let Some(r) = t.rotation {
-                    self.apply(Action::SetRotation(r), ctx);
-                }
-                if let Some(s) = t.size {
-                    // Resizing is about the centre; keep the bottom where it was, so
-                    // objects on the floor stay there.
-                    let bottom = self.scene.selection_aabb().min.z;
-                    self.apply(Action::SetSize(s), ctx);
-                    let b = self.scene.selection_aabb();
-                    let lifted = b.center() + Vec3::Z * (bottom - b.min.z);
-                    self.apply(Action::MoveSelectionTo(lifted), ctx);
-                }
-                if let Some(p) = t.position {
-                    self.apply(Action::MoveSelectionTo(p), ctx);
-                }
-                // Side positions override the centre, so objects can meet at their bounds.
-                for &(axis, max, value) in &t.sides {
-                    let b = self.scene.selection_aabb();
-                    let bound = if max { b.max[axis] } else { b.min[axis] };
-                    let to = b.center() + Vec3::AXES[axis] * (value - bound);
-                    self.apply(Action::MoveSelectionTo(to), ctx);
+                if t == args::Transform::default() {
+                    note = Some("nothing changed: give position, rotation, size, bottom, left, right, front or back");
+                } else {
+                    self.apply(Action::BeginEdit, ctx);
+                    // Rotation first: it changes the bounding box the others are about.
+                    if let Some(r) = t.rotation {
+                        self.apply(Action::SetRotation(r), ctx);
+                    }
+                    if let Some(s) = t.size {
+                        // Resizing is about the centre; keep the bottom where it was, so
+                        // objects on the floor stay there.
+                        let bottom = self.scene.selection_aabb().min.z;
+                        self.apply(Action::SetSize(s), ctx);
+                        let b = self.scene.selection_aabb();
+                        let lifted = b.center() + Vec3::Z * (bottom - b.min.z);
+                        self.apply(Action::MoveSelectionTo(lifted), ctx);
+                    }
+                    if let Some(p) = t.position {
+                        self.apply(Action::MoveSelectionTo(p), ctx);
+                    }
+                    // Side positions override the centre, so objects can meet at their bounds.
+                    for &(axis, max, value) in &t.sides {
+                        let b = self.scene.selection_aabb();
+                        let bound = if max { b.max[axis] } else { b.min[axis] };
+                        let to = b.center() + Vec3::AXES[axis] * (value - bound);
+                        self.apply(Action::MoveSelectionTo(to), ctx);
+                    }
                 }
             }
             "edit" => {
@@ -249,8 +259,8 @@ impl App {
                 self.wait_jobs();
             }
             "set_color" => {
-                let c = a["color"].as_str().and_then(crate::io::parse_hex);
-                let c = c.ok_or("color must be #RRGGBB, e.g. #FF8000")?;
+                let c =
+                    args::color(a, "color")?.ok_or("color is missing: #RRGGBB, e.g. #FF8000")?;
                 self.apply(Action::SetColor(c), ctx);
             }
             "smooth" => {
@@ -312,6 +322,9 @@ impl App {
             self.tool = None;
         }
         let mut answer = self.scene_json();
+        if let Some(note) = note {
+            answer["note"] = json!(note);
+        }
         if let Some((path, bytes)) = saved {
             answer["saved_to"] = json!(path.display().to_string());
             answer["bytes"] = json!(bytes);

@@ -100,7 +100,17 @@ fn emboss_text_with_a_huge_size_is_refused_at_once() {
     // The original crash: size 100000 on a cube.
     let a = json!({"text": "X", "size": 100000});
     let (e, took) = timed("emboss size 100000", || args::emboss(&a).unwrap_err());
+    // Out of range: a number, so the hint for centimetres; a wrong type gets none.
+    assert_eq!(
+        e,
+        "size must be a number between 1 and 200 mm; for cm multiply by 10"
+    );
+    let e = args::emboss(&json!({"text": "X", "size": "10 cm"})).unwrap_err();
     assert_eq!(e, "size must be a number between 1 and 200 mm");
+    let e = args::vec3(&json!({"s": [1, 2, 1e9]}), "s", args::limits::OBJECT_SIZE).unwrap_err();
+    assert!(e.ends_with("for cm multiply by 10"), "{e}");
+    let e = args::vec3(&json!({"s": [1, "x", 1e9]}), "s", args::limits::OBJECT_SIZE).unwrap_err();
+    assert!(!e.contains("multiply"), "{e}");
     eprintln!("emboss size 100000 refused in {took:?}");
     assert!(took < Duration::from_millis(50), "{took:?}");
 }
