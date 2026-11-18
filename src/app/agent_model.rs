@@ -273,7 +273,7 @@ impl App {
                 Some((o.id, tri, at))
             })
             .min_by(|x, y| x.2.distance_squared(p).total_cmp(&y.2.distance_squared(p)))
-            .ok_or("there is no object there")?;
+            .ok_or("no object with that id; get_scene lists the ids")?;
         let d = at.distance(p);
         if d > SURFACE_REACH {
             return Err(format!(

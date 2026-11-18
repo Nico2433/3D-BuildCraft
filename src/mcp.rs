@@ -401,7 +401,7 @@ fn model_tools() -> Vec<Value> {
     vec![
         tool(
             "insert_shape",
-            "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it gets a new id and becomes the selection (the previous selection is replaced). Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
+            "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it gets a new id and becomes the selection (the previous selection is replaced). Without size its widest side is 40 mm (a torus is 10 mm thick, a cone or pyramid 40 mm tall). custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
             json!({ "type": "object", "properties": {
                 "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"], "description": "the shape to add" },
                 "size": vec3(&format!("bounding box [x, y, z] in mm, each {}; applied last, the bottom stays on the floor", args::limits::OBJECT_SIZE)),
@@ -429,7 +429,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as raised lettering on a ball. The pattern has the object's colour, so the relief is hard to see: give top_color. With top_color or side_color different from the object's, the relief (or part of it) ends up in OTHER, new objects (changes.created lists their ids) and the original object can stay unchanged (not in changes.modified); without them the object keeps its id and is modified. All pieces are selected afterwards. The work grows with the pattern: text up to 60 characters, and its box at most 100000 mm².",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as raised lettering on a ball. The pattern has the object's colour, so the relief is hard to see: give top_color. With top_color or side_color different from the object's, the relief (or part of it) ends up in OTHER, new objects (changes.created lists their ids) and the original object may also be listed in changes.modified; without them the object keeps its id and is modified. All pieces are selected afterwards. The work grows with the pattern: text up to 60 characters, and its box at most 100000 mm².",
             with_file(json!({ "type": "object", "properties": {
                 "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
                 "text": text(&format!("the text, for pattern text, up to {} characters", args::limits::TEXT_CHARS)),
@@ -484,7 +484,7 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "import",
-            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (changes.created) and become the selection, replacing the previous one. A file with no triangles, or whose size (after units) is over 10000 mm along a side, is an error. For a picture (PNG, JPEG) use load_image.",
+            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, its px converted to mm at 96 dpi, so 1 px is 0.265 mm). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (changes.created) and become the selection, replacing the previous one. A file with no triangles, or whose size (after units) is over 10000 mm along a side, is an error. For a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
                 "path": text("model file path on the app's computer; if it says no such file, send the file with file_name and file_text or file_base64"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),

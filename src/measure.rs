@@ -22,7 +22,7 @@ const CURVED_FACE_DEG: f32 = 30.0;
 /// A sphere's face normals point away from its centre within this cosine.
 const RADIAL_COS: f32 = 0.98;
 /// A ring of a cone or torus: the vertices at least this fraction of the widest radius.
-const RING_FRACTION: f32 = 0.98;
+const RING_FRACTION: f32 = 0.998;
 /// Angular sectors that vertices must fill to go "all the way round" a circle, how many of
 /// them (a box's corners fill four) and the fewest vertices for that.
 const SECTORS: u32 = 12;
@@ -800,6 +800,15 @@ mod tests {
             sphere.aabb().size().x,
             sphere.aabb().size().x * 0.02
         ));
+        // A torus gives its outer equator, whatever its rows.
+        for torus in [
+            Primitive::Torus.build(),
+            crate::primitives::torus(15.0, 5.0, 24, 10),
+        ] {
+            let t = fit_object(&torus, [Vec3::X, Vec3::Y, Vec3::Z]).expect("torus");
+            assert_eq!(t.kind, RoundKind::Circle);
+            assert!(near(t.diameter(), torus.aabb().size().x, 0.05), "{t:?}");
+        }
         let cone = Primitive::Cone.build();
         let c = fit_object(&cone, [Vec3::X, Vec3::Y, Vec3::Z]).unwrap();
         assert_eq!(c.kind, RoundKind::Circle);
