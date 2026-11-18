@@ -141,7 +141,7 @@ set_color and edit act on the selection, so select the object you mean first.\n\
 - In transform, position is the CENTRE of the bounding box. To set the positions of the \
 sides instead, give bottom (min Z), left/right (min/max X), front/back (min/max Y). \
 Bottom 0 = standing on the floor.\n\
-- To measure, use measure; never cut or edit to measure.\n\
+- To measure, use measure; never cut or edit to measure. For the diameter, centre or wall thickness of anything round, measure with section (near a point on the feature).\n\
 - To put B on top of A: get_scene, select B, transform with position [A.x, A.y, 0] and \
 bottom = A's top.\n\
 - To put B to the right of A: transform B with left = A's right; in front: back = A's \
@@ -235,23 +235,36 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "measure",
-            "Read-only measurements, all in mm. No arguments: min, max, size, volume (mm³) and surface_area (mm²) of each selected object and of the whole selection. from and to: the distance between two points and its X, Y, Z parts. ids: the gap between two objects' bounding boxes along X, Y and Z (0 on an axis where they touch or overlap, so touching boxes give [0, 0, 0] too) and the distance between their centres. Diameter is the main output of every round measurement (radius is half of it). diameter_of (an object id; radius_of is the same argument under its old name): the diameter and radius of a round object: a sphere, a cylinder or the widest circle of a cone or torus (kind says which), with its centre and axis; errors when the object is not round. circle (three points on it): the diameter, radius, centre and axis of the circle through them, for a hole, a round edge or any feature. snap (true) moves each point of from/to/circle to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance mm (else leaves it), and for from/to lines the second point up with the first (perpendicular distance when both lie on parallel faces, exact along an axis when within 3 degrees of it; align false turns that off); the answer then also lists the points used, what each snapped to and the alignment. section ({id, near} or {id, z} or {id, point, normal}) is THE way to get a diameter (and radius, centre or wall thickness) of anything round: a cylinder, a cone at any height, a pot's mouth and body, a rim, a base, a hole, a torus. It slices object id with a plane (near [x, y, z]: the horizontal plane at that point's height; z: the horizontal plane at world height z; point and normal: any plane) and returns every contour of the cut with a circle fitted to it (role outer or inner, centre, axis, diameter, radius, fit_error, why_not when not round) and walls: for each round contour inside another round one the thickness (outer radius minus inner radius) and the offset between their centres. near also makes nearest the index of the contour passing closest to that point, so to measure a rim, a base edge or a hole, give near as a point on it (read from get_scene, or the object's bounding box: a cylinder's top rim is [x_max, y_center, z_max]) and read the contour at nearest; a hollow object lists the outer and inner diameters and the wall. When the plane lies in a flat face (the top or bottom of a cylinder, the base of a cone, the rim of a hollow tube) it would cut no material, so the slice is taken a hair inside the solid (shifted_mm and a note say how far; 0.02 mm on a 100 mm object) on the side that has material, the one with a contour nearest to near. With near, or point and no normal, tilt defaults to auto: when the horizontal contour at that point is not round (a pot whose mouth is tilted or cut at a slant, a tilted cylinder) the plane through the point is turned to where the contour is round (the plane's normal, tilt_degrees from vertical and auto_tilted say so), and every diameter is the true one in that plane; a click on the crest of a rounded rim is cut a hair under it. tilt none keeps the plane horizontal; z or normal always give exactly the plane asked for. A smooth rounded rim has no flat top: click on it or just under it. Without a mode argument it needs a selection.",
+            "Read-only measurements; lengths in mm, areas in mm², volume in mm³. Give ONE kind of measurement per call (two kinds is an error; call again). With none it measures the selection.\n\
+- no argument: bounding box, volume and surface area of each selected object and of the selection.\n\
+- section: slice an object with a plane and read the circles fitted to the cut. THE way to get the diameter, centre or wall thickness of anything round: a cylinder's rim, a pot's mouth, a hole, a cone at some height, a torus, a hollow wall.\n\
+- diameter_of: only when the WHOLE object is a sphere, cylinder, cone or torus.\n\
+- circle: three known points on a circle.\n\
+- from and to: distance between two points. ids: gap between two objects.\n\
+- snap, snap_tolerance, align: catch from, to and circle points on the model (distance between two walls: from, to and snap true).\n\
+Each argument's description says what it returns, with an example.",
             json!({"type":"object","properties":{
-                "from":vec3("first point [x, y, z], mm; needs to"),
-                "to":vec3("second point [x, y, z], mm"),
-                "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene"},
-                "diameter_of":{"type":"integer","description":"object id from get_scene: diameter and radius of a sphere, cylinder, cone or torus"},
-                "radius_of":{"type":"integer","description":"the same as diameter_of (its old name)"},
-                "section":{"type":"object","properties":{"id":{"type":"integer","description":"object id from get_scene"},"near":vec3("a point [x, y, z] in mm on or near the feature (a rim, a base edge, a hole, the wall): alone it gives the horizontal plane at its height; with z or point it only chooses nearest; the answer's nearest names the contour passing closest to it"),"z":{"type":"number","description":"world height in mm of a horizontal plane"},"point":vec3("a point [x, y, z] in mm on the plane (with normal; alone, the plane is horizontal)"),"normal":vec3("the plane's normal [x, y, z], default [0, 0, 1]; the plane is then exactly this one, never tilted"),"tilt":{"type":"string","enum":["auto","none"],"description":"auto (default with near, or point without normal): when the horizontal contour is not round, tilt the plane through the point to where it is, for a tilted mouth or cylinder; none: keep it horizontal"}},"required":["id"],"description":"THE way to get diameters, centres and wall thickness: the cross-section of an object by a plane (give near, z, or point and normal): contours with fitted circles (diameter, centre), outer and inner, nearest to near, the plane's tilt, and wall thickness"},
-                "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] on a circle, mm: diameter and radius of the circle through them"},
-                "snap":{"type":"boolean","description":"snap from/to/circle points to vertices, edge middles, edges and face centres of the objects (default false)"},
-                "snap_tolerance":{"type":"number","description":"how far, in mm, a point may be from a feature to snap to it (default 1)"},
-                "align":{"type":"boolean","description":"with snap, line the second point up with the first: perpendicular between parallel faces, or along an axis (default true)"}
+                "section":{"type":"object","properties":{
+                    "id":{"type":"integer","description":"object id from get_scene"},
+                    "near":vec3("[x, y, z] in mm on or near the feature (a rim, base edge, hole or wall). Alone it also gives the plane: horizontal at its height, tilted to where the contour is round (see tilt). With z or point it only picks the contour. A cylinder's top rim is [right, centre y, top] of get_scene"),
+                    "z":{"type":"number","description":"height in mm of an exactly horizontal plane (not with point); give near too to choose the contour"},
+                    "point":vec3("[x, y, z] in mm the plane passes through (not with z). Alone: horizontal there, tilted like near. With normal: exactly that plane"),
+                    "normal":vec3("the plane's normal, any length > 0, default [0, 0, 1]; with z it must be vertical. A given normal is used exactly, never tilted"),
+                    "tilt":{"type":"string","enum":["auto","none"],"description":"auto (default with near, or point without normal): when the horizontal contour is not round, as on a tilted cylinder or a pot cut at a slant, turn the plane to where it is, so diameters are true; the answer's plane.tilt_degrees and auto_tilted say so. none keeps it horizontal"}
+                },"required":["id"],"description":"Slice object id with a plane (give near, or z, or point with normal). Returns plane, total, contours (role outer, inner or open; circular; diameter and radius in mm; center; axis; fit_error; why_not when not round; 50 listed at most), walls (thickness = outer radius minus inner radius, center_offset) and nearest (the contour closest to near, else null). A plane in a flat face (a rim, a base) is moved into the material by 0.02 mm per 100 mm of the object's largest size (shifted_mm). Examples: cylinder top rim {id, near: [right, centre y, top]}, read contours[nearest].diameter; pot mouth: near on its rim; wall thickness: near on the outer wall at mid height, read walls[0].thickness"},
+                "diameter_of":{"type":"integer","description":"object id from get_scene, only when the whole object is a sphere, cylinder, cone or torus (a cone or torus gives its widest circle). Returns kind, diameter and radius in mm, center, axis. Errors when the object is not round: use section"},
+                "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] in mm on a circle, e.g. [[5,0,0],[0,5,0],[-5,0,0]]. Returns kind, diameter and radius in mm, center, axis. Errors when they lie on a line"},
+                "from":vec3("first point [x, y, z] in mm; needs to. Returns distance in mm and differences [dx, dy, dz]"),
+                "to":vec3("second point [x, y, z] in mm; needs from"),
+                "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene. Returns gap [x, y, z] in mm between their bounding boxes (0 on an axis where they touch or overlap) and centre_distance"},
+                "snap":{"type":"boolean","description":"default false. Moves each from, to and circle point to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance (else leaves it); the answer lists snapped and, for from/to, from, to and alignment. Distance between two walls: from and to near each wall, snap true. Ignored by section"},
+                "snap_tolerance":{"type":"number","description":"with snap: how far, in mm, a point may be from a feature to catch it; default 1, 0 or more"},
+                "align":{"type":"boolean","description":"with snap and from/to, default true: lines the second point up with the first, so the distance is perpendicular between parallel faces, or exact along X, Y or Z when within 3 degrees of it; false keeps the snapped points as they are"}
             }}),
         ),
         tool(
             "get_scene",
-            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh), selected, material (none, simple, realistic or translucent) and the surface's extras as true/false: painted (areas painted with paint_area), textured (a texture brushed on) and stickers; plus the chosen slicer and can_undo/can_redo. Units mm and degrees.",
+            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh), selected, material (none, simple, realistic or translucent) and the surface's extras as true/false: painted (areas painted with paint_area), textured (a texture brushed on) and stickers; plus the chosen slicer and can_undo/can_redo. Units mm and degrees. valid false: run edit repair. Call it to learn the ids; tools that change the scene reply in the same format.",
             none.clone(),
         ),
         tool(
@@ -261,36 +274,36 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "transform",
-            "Move, rotate or resize the selection. position is the centre of its bounding box; bottom sets min Z, left/right set min/max X, front/back set min/max Y, after position (left then right, front then back). To stack on an object, bottom = that object's top. rotation is degrees about X, Y, Z (each selected object), size is the bounding box in mm (the bottom stays where it was unless position or bottom is given).",
-            json!({ "type": "object", "properties": { "position": vec3("centre, mm"), "rotation": vec3("degrees about X, Y, Z"), "size": vec3("bounding box, mm, all > 0"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
+            "Move, rotate or resize the selection, every unit mm or degrees. Applied in this order: rotation, size, position, then bottom, left, right, front, back, which override position on their axis. To stack on an object, bottom = that object's top. Give only what changes.",
+            json!({ "type": "object", "properties": { "position": vec3("centre of the selection's bounding box, mm"), "rotation": vec3("each selected object's orientation as degrees about X, Y, Z, as get_scene lists it: it replaces the current rotation (it is not added to it) and turns the object about its box centre"), "size": vec3("bounding box, mm, all > 0 (the object is scaled; the bottom stays where it was unless position or bottom is given)"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
         ),
         tool(
             "edit",
             "Apply an operation to the selection. delete removes it. duplicate adds copies to its right and selects them. group joins two or more objects into one without merging their shapes (each keeps its colour); ungroup splits an object made of separate solids into one object per solid. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults (3 passes, edges false); use the smooth tool for other settings. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
-            json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": EDIT_OPERATIONS } }, "required": ["operation"] }),
+            json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": EDIT_OPERATIONS, "description": "what to do to the selection; delete, duplicate, group, ungroup, merge, subtract, intersect and the rest are explained in the tool description" } }, "required": ["operation"] }),
         ),
         tool(
             "set_color",
-            "Give each selected object this colour.",
-            json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB" } }, "required": ["color"] }),
+            "Give each selected object this colour (its whole surface; use paint_area for one region).",
+            json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB, e.g. #FF8000" } }, "required": ["color"] }),
         ),
         tool(
             "hollow",
-            "Hollow each selected object, keeping walls of the given thickness.",
-            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "wall thickness, mm, > 0" } }, "required": ["wall"] }),
+            "Hollow each selected object, leaving a closed wall of the given thickness. The wall never comes out thinner than asked, and is within about 0.25 mm of it where the voxel size allows (voxels are a quarter of the wall, but never finer than 1/160 of the model's largest size, so very large models get coarser voxels and a somewhat thicker wall). Errors when the object is too thin for that wall: ask for a thinner one.",
+            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "wall thickness, mm, > 0, e.g. 2" } }, "required": ["wall"] }),
         ),
         tool(
             "smooth",
             "Smooth the selection, as the Smooth tool. Without edges each pass splits faces while the model is small and relaxes the surface, keeping about its size (it shrinks slightly); with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
             json!({ "type": "object", "properties": {
-                "passes": { "type": "integer", "description": "0..6, default 3" },
-                "edges": { "type": "boolean", "description": "smooth sharp edges too, default false" }
+                "passes": { "type": "integer", "description": "how strongly to smooth, a whole number 0..6, default 3" },
+                "edges": { "type": "boolean", "description": "round sharp edges and corners off too (the model shrinks), default false" }
             } }),
         ),
         tool(
             "simplify",
             "Reduce the number of triangles of the selection, keeping its shape as well as it can.",
-            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of the triangles to remove, 0..1 (0.5 halves them)" } }, "required": ["remove"] }),
+            json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of the triangles to remove, 0..1 (0.5 halves them); get_scene lists the triangle count" } }, "required": ["remove"] }),
         ),
         tool(
             "open",
@@ -363,9 +376,9 @@ fn model_tools() -> Vec<Value> {
             "insert_shape",
             "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
             json!({ "type": "object", "properties": {
-                "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"] },
+                "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"], "description": "the shape to add" },
                 "size": vec3("bounding box [x, y, z] in mm, all > 0; applied last, the bottom stays on the floor"),
-                "custom": { "type": "object", "description": "Custom tool settings", "properties": {
+                "custom": { "type": "object", "description": "Custom tool settings, only for cube, sphere, cone, torus or cylinder; leave out for the plain shape", "properties": {
                     "latitude": int("subdivisions from bottom to top (box, sphere, torus), 3..48, default 10"),
                     "longitude": int("subdivisions around (or across for the cube), 3..48, default 10"),
                     "width": num("mm across, 1..1000, default 40; the shape keeps its proportions across"),
@@ -504,7 +517,7 @@ fn print_tools() -> Vec<Value> {
                 "printer": field("a printer profile name from printers"),
                 "process": field("a print profile name from processes"),
                 "filament": { "type": "integer", "minimum": 1, "description": "filament slot for every scene colour" },
-                "filaments": { "type": "array", "description": "filament slot per scene colour", "items": { "type": "object", "properties": { "color": field("a scene colour, #RRGGBB"), "slot": { "type": "integer", "minimum": 1 } }, "required": ["color", "slot"] } },
+                "filaments": { "type": "array", "description": "filament slot per scene colour", "items": { "type": "object", "properties": { "color": field("a scene colour, #RRGGBB"), "slot": { "type": "integer", "minimum": 1, "description": "filament slot, from 1" } }, "required": ["color", "slot"] } },
             } }),
         ),
         tool(
@@ -726,7 +739,7 @@ fn check_object(tool: &str, path: &str, schema: &Value, value: &Value) -> Result
             }
         }
         if v.is_null() || fits(prop, v) {
-            if prop["type"] == "object" {
+            if prop["type"] == "object" && !v.is_null() {
                 check_object(tool, &format!("{path}{key}."), prop, v)?;
             }
             continue;
@@ -1046,7 +1059,13 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
         (Some("auto") | None, true) => Tilt::Auto,
         (Some(other), _) => return Err(format!("section.tilt must be auto or none, not {other}")),
     };
-    let s = section_tilted(&o.mesh, &o.matrix(), point, hint, tilt);
+    // A normal the caller gave is the plane's own; otherwise the plane is horizontal and
+    // may be turned.
+    let s = if !horizontal && !free {
+        crate::section::section(&o.mesh, &o.matrix(), point, normal, hint)
+    } else {
+        section_tilted(&o.mesh, &o.matrix(), point, hint, tilt)
+    };
     if s.contours.is_empty() {
         let b = o.world_aabb();
         return Err(format!(
@@ -1141,21 +1160,10 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     };
     // Null counts as left out, as in `check_args`.
     let given = |key: &str| args.get(key).filter(|v| !v.is_null());
-    const MODES: [&str; 7] = [
-        "section",
-        "diameter_of",
-        "radius_of",
-        "circle",
-        "from",
-        "to",
-        "ids",
-    ];
+    const MODES: [&str; 6] = ["section", "diameter_of", "circle", "from", "to", "ids"];
     let used: Vec<&str> = MODES.into_iter().filter(|k| given(k).is_some()).collect();
     let pair = used.iter().all(|k| matches!(*k, "from" | "to"));
-    let same = used
-        .iter()
-        .all(|k| matches!(*k, "diameter_of" | "radius_of"));
-    if used.len() > 1 && !pair && !same {
+    if used.len() > 1 && !pair {
         return Err(format!(
             "measure takes one kind of measurement at a time, not {}; call it once for each",
             used.join(" and ")
@@ -1164,7 +1172,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
     if let Some(spec) = given("section") {
         return section_json(scene, spec);
     }
-    if let Some(id) = given("diameter_of").or_else(|| given("radius_of")) {
+    if let Some(id) = given("diameter_of") {
         let o = object_arg(scene, id)?;
         let m = o.matrix();
         let axes = [m.x_axis, m.y_axis, m.z_axis].map(|a| a.truncate());
@@ -1415,22 +1423,22 @@ mod tests {
     }
 
     #[test]
-    fn measure_radius_of_objects_and_circles() {
+    fn measure_diameter_of_objects_and_circles() {
         use crate::primitives::Primitive;
         let (scene, id) = scene_with(Primitive::Cylinder);
         let r = measure(&scene, &json!({"diameter_of":id})).unwrap();
-        assert_eq!(r, measure(&scene, &json!({"radius_of":id})).unwrap());
+        assert!(check_args("measure", &json!({"radius_of":id})).is_err());
         assert_eq!(r["kind"], "cylinder");
         let radius = r["radius"].as_f64().unwrap();
         assert!((r["diameter"].as_f64().unwrap() - 2.0 * radius).abs() < 1e-3);
         assert_eq!(
-            measure(&scene_with(Primitive::Sphere).0, &json!({"radius_of":1})).unwrap()["kind"],
+            measure(&scene_with(Primitive::Sphere).0, &json!({"diameter_of":1})).unwrap()["kind"],
             "sphere"
         );
         let (cube, id) = scene_with(Primitive::Cube);
-        let err = measure(&cube, &json!({"radius_of":id})).unwrap_err();
+        let err = measure(&cube, &json!({"diameter_of":id})).unwrap_err();
         assert!(err.contains("not round"), "{err}");
-        assert!(measure(&cube, &json!({"radius_of":99}))
+        assert!(measure(&cube, &json!({"diameter_of":99}))
             .unwrap_err()
             .contains("no object"));
         let c = measure(&cube, &json!({"circle":[[5,0,0],[0,5,0],[-5,0,0]]})).unwrap();
@@ -1494,6 +1502,107 @@ mod tests {
         )
         .unwrap();
         assert_eq!(circle["snapped"][2], "Vertex");
+    }
+
+    #[test]
+    fn measure_section_cuts_the_slanted_plane_that_was_asked_for() {
+        let (scene, id) = scene_with(crate::primitives::Primitive::Cylinder);
+        let b = scene.get(id).unwrap().world_aabb();
+        let c = b.center();
+        // A vertical plane through the axis cuts the cylinder in a rectangle, not a circle.
+        let s = measure(
+            &scene,
+            &json!({"section":{"id":id,"point":[c.x,c.y,c.z],"normal":[1,0,0]}}),
+        )
+        .unwrap();
+        assert!((s["plane"]["tilt_degrees"].as_f64().unwrap() - 90.0).abs() < 1e-3);
+        assert_eq!(s["contours"][0]["circular"], false);
+    }
+
+    /// Every description in a schema: (path, text) for the schema's own properties and
+    /// those nested in objects and in the items of lists.
+    fn property_descriptions(path: &str, schema: &Value, out: &mut Vec<(String, Option<String>)>) {
+        for (key, prop) in schema["properties"].as_object().into_iter().flatten() {
+            let here = format!("{path}.{key}");
+            out.push((
+                here.clone(),
+                prop["description"].as_str().map(str::to_owned),
+            ));
+            property_descriptions(&here, prop, out);
+            property_descriptions(&here, &prop["items"], out);
+        }
+    }
+
+    #[test]
+    fn every_tool_and_argument_has_a_description_of_a_sane_length() {
+        const TOOL_MAX: usize = 1500;
+        const PROPERTY_MAX: usize = 700;
+        let list = tools();
+        assert!(list.len() >= 20);
+        for t in &list {
+            let name = t["name"].as_str().unwrap();
+            let d = t["description"].as_str().unwrap_or("");
+            assert!(!d.trim().is_empty(), "{name} has no description");
+            assert!(
+                d.chars().count() <= TOOL_MAX,
+                "{name}'s description has {} characters, over {TOOL_MAX}; move details to its arguments",
+                d.chars().count()
+            );
+            let mut props = Vec::new();
+            property_descriptions(name, &t["inputSchema"], &mut props);
+            for (path, d) in props {
+                let d = d.unwrap_or_default();
+                assert!(!d.trim().is_empty(), "{path} has no description");
+                assert!(
+                    d.chars().count() <= PROPERTY_MAX,
+                    "{path}'s description has {} characters, over {PROPERTY_MAX}",
+                    d.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_args_accepts_exactly_the_properties_of_the_schema() {
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            let props: Vec<&str> = t["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            // Each property of the schema is accepted (null counts as left out)...
+            for p in &props {
+                assert!(
+                    check_args(
+                        name,
+                        &Value::Object([(p.to_string(), Value::Null)].into_iter().collect())
+                    )
+                    .is_ok(),
+                    "{name} rejects its own argument {p}"
+                );
+            }
+            // ... and the error for an unknown one lists them all, and only them.
+            let err = check_args(name, &json!({"no_such_argument": 1})).unwrap_err();
+            let listed = err.split(" takes ").nth(1).unwrap_or("");
+            if props.is_empty() {
+                assert!(err.contains("takes no arguments"), "{err}");
+            }
+            let named: Vec<&str> = listed.split(", ").filter(|s| !s.is_empty()).collect();
+            if !props.is_empty() {
+                assert_eq!(named, props, "{name}: {err}");
+            }
+            // Every required argument is a property.
+            for r in t["inputSchema"]["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                assert!(props.contains(&r.as_str().unwrap()), "{name} requires {r}");
+            }
+        }
+        assert!(check_args("measure", &json!({"radius_of": 1})).is_err());
     }
 
     #[test]
