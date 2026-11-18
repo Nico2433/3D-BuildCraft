@@ -3,8 +3,9 @@
 //! stray faces, fixes orientation and closes holes without remeshing).
 
 use crate::mesh::Mesh;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RepairReport {
@@ -25,7 +26,7 @@ pub fn repair(mesh: &Mesh) -> (Mesh, RepairReport) {
     r.removed_degenerate = mesh.triangles.len() - m.triangles.len();
 
     let welded_count = m.triangles.len();
-    let mut seen = HashSet::with_capacity(welded_count);
+    let mut seen = HashSet::with_capacity_and_hasher(welded_count, Default::default());
     m.triangles.retain(|t| seen.insert(sorted(t)));
     r.removed_duplicate = welded_count - m.triangles.len();
 
@@ -56,8 +57,12 @@ pub fn repair(mesh: &Mesh) -> (Mesh, RepairReport) {
     (m, r)
 }
 
-fn edge_faces(tris: &[[u32; 3]]) -> HashMap<(u32, u32), Vec<usize>> {
-    let mut map: HashMap<(u32, u32), Vec<usize>> = HashMap::with_capacity(tris.len() * 3 / 2);
+/// The faces on each edge; two fit inline, so a manifold mesh allocates nothing per edge.
+type EdgeFaces = HashMap<(u32, u32), SmallVec<[usize; 2]>>;
+
+fn edge_faces(tris: &[[u32; 3]]) -> EdgeFaces {
+    let mut map: EdgeFaces =
+        HashMap::with_capacity_and_hasher(tris.len() * 3 / 2, Default::default());
     for (f, t) in tris.iter().enumerate() {
         for (a, b) in edges(t) {
             map.entry((a.min(b), a.max(b))).or_default().push(f);
@@ -97,7 +102,7 @@ fn allowed(tris: &[[u32; 3]], (a, b): (u32, u32), faces: &[usize]) -> usize {
 /// vertices. Around a vertex, faces joined by ordinary edges form one surface.
 fn split_touching_sheets(m: &mut Mesh) -> usize {
     let map = edge_faces(&m.triangles);
-    let mut around: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut around: HashMap<u32, Vec<usize>> = HashMap::default();
     for (e, faces) in &map {
         if faces.len() > 2 {
             for v in [e.0, e.1] {
@@ -138,7 +143,7 @@ fn split_touching_sheets(m: &mut Mesh) -> usize {
                 }
             }
         }
-        let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut by_root: HashMap<usize, Vec<usize>> = HashMap::default();
         for &f in faces {
             by_root.entry(root(&mut group, f)).or_default().push(f);
         }
@@ -164,7 +169,7 @@ fn remove_conflicting_faces(m: &mut Mesh) -> usize {
     let mut removed = 0;
     loop {
         let map = edge_faces(&m.triangles);
-        let broken = |e: &(u32, u32), faces: &Vec<usize>| {
+        let broken = |e: &(u32, u32), faces: &[usize]| {
             faces.len() != 2 || allowed(&m.triangles, *e, faces) < 2
         };
         let bad = |f: usize| {
@@ -176,7 +181,7 @@ fn remove_conflicting_faces(m: &mut Mesh) -> usize {
                 })
                 .count()
         };
-        let mut drop = HashSet::new();
+        let mut drop = HashSet::default();
         for (e, faces) in &map {
             let keep = allowed(&m.triangles, *e, faces);
             if faces.len() <= keep {
@@ -268,7 +273,7 @@ fn remove_open_patches(m: &mut Mesh) -> usize {
     }
     let largest = components.iter().map(Vec::len).max().unwrap_or(0);
     let map = edge_faces(&m.triangles);
-    let mut drop = HashSet::new();
+    let mut drop = HashSet::default();
     for c in components.iter().filter(|c| c.len() * 100 < largest) {
         let open = c.iter().any(|&f| {
             edges(&m.triangles[f]).iter().any(|(a, b)| {
@@ -296,7 +301,7 @@ fn remove_open_patches(m: &mut Mesh) -> usize {
 fn fill_holes(m: &mut Mesh) -> (usize, usize) {
     let map = edge_faces(&m.triangles);
     // A hole edge runs opposite to the open edge of the face beside it.
-    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut out: HashMap<u32, Vec<u32>> = HashMap::default();
     for faces in map.values().filter(|f| f.len() == 1) {
         for (a, b) in edges(&m.triangles[faces[0]]) {
             if map[&(a.min(b), a.max(b))].len() == 1 {
@@ -308,7 +313,7 @@ fn fill_holes(m: &mut Mesh) -> (usize, usize) {
     let starts: Vec<u32> = out.keys().copied().collect();
     for start in starts {
         let mut path = vec![start];
-        let mut on_path = HashMap::from([(start, 0usize)]);
+        let mut on_path = [(start, 0usize)].into_iter().collect::<HashMap<_, _>>();
         loop {
             let cur = *path.last().unwrap();
             let Some(n) = out.get_mut(&cur).and_then(Vec::pop) else {

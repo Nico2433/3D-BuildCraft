@@ -41,11 +41,14 @@ fn model_tools_are_listed_once_with_their_arguments() {
                 "at",
             ],
         ),
-        ("paint_area", &["point", "color", "coverage", "id"]),
+        (
+            "paint_area",
+            &["point", "color", "coverage", "radius", "id"],
+        ),
         ("set_material", &["type", "color"]),
         (
             "apply_texture",
-            &["texture", "image", "mode", "point", "coverage"],
+            &["texture", "image", "mode", "point", "coverage", "radius"],
         ),
         ("import", &["path", "units"]),
         ("load_image", &["path", "method", "levels", "invert"]),
@@ -88,6 +91,29 @@ fn every_texture_name_round_trips() {
     assert_eq!(Kind::WaterDrops.name(), "water_drops");
     assert_eq!(Kind::from_name("Green_Marble"), Some(Kind::GreenMarble));
     assert_eq!(Kind::from_name("plywood"), None);
+}
+
+#[test]
+fn a_radius_keeps_the_texture_brush_to_part_of_a_sphere() {
+    use buildcraft3d::texture::{apply_box, layer_of};
+    let sphere = primitives::Primitive::Sphere.build();
+    let model = Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0));
+    let layer = layer_of(Kind::all().next().unwrap()).unwrap();
+    let [a, b, c] =
+        sphere.triangles[0].map(|v| model.transform_point3(sphere.positions[v as usize]));
+    let at = (a + b + c) / 3.0;
+    let textured = |near| {
+        let faces = sphere.face_region_near(0, 1.0, &model, near);
+        let out = apply_box(&sphere, &model, &faces, layer, 10.0);
+        (0..out.triangles.len())
+            .filter(|&i| out.face_tex(i).is_some())
+            .count()
+    };
+    let all = sphere.triangles.len();
+    // Without a radius, full coverage floods the smooth surface, as before.
+    assert_eq!(textured(None), all);
+    let part = textured(Some((at, 8.0)));
+    assert!(part > 1 && part < all / 4, "{part} of {all}");
 }
 
 #[test]
@@ -140,4 +166,91 @@ fn a_plane_through_a_point_faces_its_normal_and_cuts_there() {
         "{vt} {vb}"
     );
     assert!(top.aabb().max.x > 19.0 && top.aabb().min.z > -1e-3);
+}
+
+#[test]
+fn a_plane_that_misses_the_selection_cuts_nothing_and_says_why() {
+    use buildcraft3d::cut::Keep;
+    use buildcraft3d::scene::{Object, Scene, DEFAULT_COLOR};
+    let mut scene = Scene::default();
+    let id = scene.add(Object::new(
+        "Sphere",
+        primitives::Primitive::Sphere.build(),
+        DEFAULT_COLOR,
+    ));
+    scene.selection.insert(id);
+    let top = scene.get(id).unwrap().world_aabb().max.z;
+    for keep in [Keep::Top, Keep::Bottom, Keep::Both] {
+        let e = scene
+            .cut_pieces(&CutPlane::at_height(200.0), keep)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            format!("z 200 is above the top of the object ({top:.2} mm); nothing to cut")
+        );
+        assert!(scene
+            .cut_pieces(&CutPlane::at_height(-5.0), keep)
+            .unwrap_err()
+            .to_string()
+            .contains("below the bottom"));
+    }
+    let slanted = CutPlane::through(Vec3::new(0.0, 0.0, 500.0), Vec3::new(1.0, 0.0, 1.0)).unwrap();
+    assert!(scene
+        .cut_pieces(&slanted, Keep::Top)
+        .unwrap_err()
+        .to_string()
+        .contains("wholly below"));
+    assert_eq!(
+        scene
+            .cut_pieces(&CutPlane::at_height(top / 2.0), Keep::Top)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_plane_on_a_face_or_with_no_reach_cuts_nothing_and_keeps_the_object() {
+    use buildcraft3d::cut::Keep;
+    use buildcraft3d::scene::{Object, Scene, DEFAULT_COLOR};
+    let mut scene = Scene::default();
+    let id = scene.add(Object::new(
+        "Cube",
+        primitives::Primitive::Cube.build(),
+        DEFAULT_COLOR,
+    ));
+    scene.selection.insert(id);
+    let b = scene.get(id).unwrap().world_aabb();
+    for (z, face) in [(b.min.z, "bottom"), (b.max.z, "top")] {
+        let e = scene
+            .cut_pieces(&CutPlane::at_height(z), Keep::Top)
+            .unwrap_err()
+            .to_string();
+        let want = format!(
+            "z must be strictly between the bottom ({} mm) and the top ({} mm) of the object; z {} is on its {face} face and cuts nothing",
+            (b.min.z * 100.0).round() / 100.0,
+            (b.max.z * 100.0).round() / 100.0,
+            (z * 100.0).round() / 100.0
+        );
+        assert_eq!(e, want);
+    }
+    // A finite plane too small to reach any material replaces nothing.
+    let mut tiny = CutPlane::at_height(b.center().z);
+    tiny.set_extent(0, Some(1e-9));
+    tiny.set_extent(1, Some(1e-9));
+    for keep in [Keep::Top, Keep::Bottom, Keep::Both] {
+        let e = scene.cut_pieces(&tiny, keep).unwrap_err().to_string();
+        assert!(
+            e.contains("leave nothing of the object to cut"),
+            "{keep:?}: {e}"
+        );
+    }
+    assert_eq!(scene.objects.len(), 1);
+    assert_eq!(scene.objects[0].id, id);
+    // A real finite plane still cuts.
+    let mut real = CutPlane::at_height(b.center().z);
+    real.set_extent(0, Some(10.0));
+    real.set_extent(1, Some(10.0));
+    assert!(!scene.cut_pieces(&real, Keep::Top).unwrap().is_empty());
 }

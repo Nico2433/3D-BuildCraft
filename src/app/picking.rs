@@ -54,7 +54,7 @@ impl Cache {
             self.pending = Some((Arc::downgrade(&mesh), rx));
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let node = Node::build(&mesh, (0..mesh.triangles.len()).collect());
+                let node = Node::build_all(&mesh);
                 if tx.send(node).is_ok() {
                     ctx.request_repaint();
                 }
@@ -96,17 +96,26 @@ impl Node {
             })
     }
 
-    fn build(mesh: &Mesh, mut triangles: Vec<usize>) -> Self {
-        let bounds_for = |i: usize| {
-            let mut bounds = Aabb::empty();
-            for v in mesh.triangles[i] {
-                bounds.grow(mesh.positions[v as usize]);
-            }
-            bounds
-        };
+    fn build_all(mesh: &Mesh) -> Self {
+        let boxes: Vec<Aabb> = mesh
+            .triangles
+            .iter()
+            .map(|t| {
+                let mut bounds = Aabb::empty();
+                for v in t {
+                    bounds.grow(mesh.positions[*v as usize]);
+                }
+                bounds
+            })
+            .collect();
+        Self::build(&boxes, (0..mesh.triangles.len()).collect())
+    }
+
+    /// `boxes` holds each triangle's bounds, so the sort does not recompute them.
+    fn build(boxes: &[Aabb], mut triangles: Vec<usize>) -> Self {
         let bounds = triangles
             .iter()
-            .fold(Aabb::empty(), |b, &i| b.union(bounds_for(i)));
+            .fold(Aabb::empty(), |b, &i| b.union(boxes[i]));
         if triangles.len() <= 16 {
             // split_off keeps the parent's capacity in the left branch.
             triangles.shrink_to_fit();
@@ -126,15 +135,15 @@ impl Node {
         };
         let middle = triangles.len() / 2;
         triangles.select_nth_unstable_by(middle, |&a, &b| {
-            bounds_for(a).center()[axis].total_cmp(&bounds_for(b).center()[axis])
+            boxes[a].center()[axis].total_cmp(&boxes[b].center()[axis])
         });
         let right = triangles.split_off(middle);
         Self {
             bounds,
             triangles: Vec::new(),
             children: Some(Box::new([
-                Self::build(mesh, triangles),
-                Self::build(mesh, right),
+                Self::build(boxes, triangles),
+                Self::build(boxes, right),
             ])),
         }
     }
@@ -181,7 +190,7 @@ mod tests {
             ]);
             mesh.triangles.push([n, n + 1, n + 2]);
         }
-        let node = Node::build(&mesh, (0..mesh.triangles.len()).collect());
+        let node = Node::build_all(&mesh);
         for x in -1..202 {
             let origin = Vec3::new(x as f32 * 0.5, 0.2, 5.0);
             let dir = Vec3::new(0.0, 0.0, -2.0);
@@ -193,5 +202,37 @@ mod tests {
             node.hit(&mesh, origin, dir, &mut actual);
             assert_eq!(actual, expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// `cargo test --offline --release -j 4 -- --ignored --nocapture bvh_build_time`
+    #[test]
+    #[ignore]
+    fn bvh_build_time() {
+        let mesh = crate::primitives::sphere(10.0, 400, 400);
+        let t = std::time::Instant::now();
+        let node = Node::build_all(&mesh);
+        println!(
+            "BENCH bvh_build {} triangles: {:.1} ms",
+            mesh.triangles.len(),
+            t.elapsed().as_secs_f64() * 1e3
+        );
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for i in 0..2000 {
+            let x = (i % 100) as f32 * 0.2 - 10.0;
+            let y = (i / 100) as f32 * 0.5 - 5.0;
+            let mut best = None;
+            node.hit(&mesh, Vec3::new(x, y, 30.0), -Vec3::Z, &mut best);
+            n += best.is_some() as usize;
+        }
+        println!(
+            "BENCH bvh_hit 2000 rays ({n} hits): {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
     }
 }

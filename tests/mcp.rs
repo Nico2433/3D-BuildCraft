@@ -52,7 +52,7 @@ fn speaks_the_handshake_lists_tools_and_calls_them() {
 
 #[test]
 fn unknown_versions_get_the_newest_and_bad_json_an_error() {
-    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n";
+    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n[{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}]\n7\n";
     let mut out = Vec::new();
     serve(input.as_bytes(), &mut out, |_, _| Ok(vec![])).unwrap();
     let r: Vec<Value> = String::from_utf8(out)
@@ -62,6 +62,10 @@ fn unknown_versions_get_the_newest_and_bad_json_an_error() {
         .collect();
     assert_eq!(r[0]["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(r[1]["error"]["code"], -32700);
+    // A batch or a bare value is answered, not dropped.
+    assert_eq!(r.len(), 4);
+    assert_eq!(r[2]["error"]["code"], -32600);
+    assert_eq!(r[3]["error"]["code"], -32600);
 }
 
 #[test]
@@ -81,7 +85,82 @@ fn measurements_are_read_only() {
     assert_eq!(result["differences"], json!([3.0, 4.0, 0.0]));
     assert!(measure(&scene, &json!({"ids":[1,2]})).is_err());
     assert!(measure(&scene, &json!({"from":[1]})).is_err());
+    // The selection's measurements need one, rather than nulls and a volume of 0.
+    assert!(measure(&scene, &json!({}))
+        .unwrap_err()
+        .contains("nothing is selected"));
     assert!(scene.objects.is_empty());
+}
+
+#[test]
+fn arguments_are_checked_against_the_tool_schema() {
+    use buildcraft3d::mcp::check_args;
+    assert!(check_args("transform", &json!({"size": [10, 20, 30], "bottom": 0})).is_ok());
+    assert!(check_args("get_scene", &json!(null)).is_ok());
+    // Null counts as left out.
+    assert!(check_args("transform", &json!({"position": null})).is_ok());
+    let bad_op = check_args("edit", &json!({"operation": "select_all"})).unwrap_err();
+    assert!(
+        bad_op.starts_with("unknown operation: select_all; one of"),
+        "{bad_op}"
+    );
+    let unknown = check_args("transform", &json!({"size": [1, 2, 3], "units": "cm"})).unwrap_err();
+    assert!(
+        unknown.starts_with(
+            "unknown argument units: transform takes back, bottom, front, left, position"
+        ),
+        "{unknown}"
+    );
+    assert!(check_args("get_scene", &json!({"verbose": true}))
+        .unwrap_err()
+        .contains("takes no arguments"));
+    assert_eq!(
+        check_args("transform", &json!({"size": "3cm"})).unwrap_err(),
+        "size must be [x, y, z] in mm, three numbers"
+    );
+    assert!(check_args("transform", &json!({"bottom": "2cm"}))
+        .unwrap_err()
+        .contains("a number in mm"));
+    assert!(check_args("transform", &json!({"rotation": [0, 90]}))
+        .unwrap_err()
+        .contains("in degrees"));
+    // Nested objects and alternatives.
+    assert!(check_args(
+        "insert_shape",
+        &json!({"shape": "cube", "custom": {"roundness": 3}})
+    )
+    .is_ok());
+    assert!(check_args(
+        "insert_shape",
+        &json!({"shape": "cube", "custom": {"round": 3}})
+    )
+    .unwrap_err()
+    .contains("custom.round"));
+    // The same inside a list of objects and in measure's section.
+    let ok = json!({"filaments": [{"color": "#FF0000", "slot": 1}]});
+    assert!(check_args("print_setup", &ok).is_ok());
+    let e = check_args(
+        "print_setup",
+        &json!({"filaments": [{"color": "#FF0000", "slot": 1}, {"color": "#00FF00", "slot": 2, "slott": 3}]}),
+    )
+    .unwrap_err();
+    assert_eq!(
+        e,
+        "unknown argument filaments[1].slott: print_setup filaments[1] takes color, slot"
+    );
+    let e = check_args("print_setup", &json!({"filaments": [{"color": 5}]})).unwrap_err();
+    assert!(e.starts_with("filaments[0].color must be"), "{e}");
+    let e = check_args(
+        "measure",
+        &json!({"section": {"id": 1, "nearby": [0, 0, 0]}}),
+    )
+    .unwrap_err();
+    assert!(e.starts_with("unknown argument section.nearby"), "{e}");
+    assert!(check_args("screenshot", &json!({"focus": "all"})).is_ok());
+    assert!(check_args("screenshot", &json!({"focus": [1, 2]})).is_ok());
+    assert!(check_args("screenshot", &json!({"focus": 3})).is_err());
+    assert!(check_args("smooth", &json!({"passes": 2.5})).is_err());
+    assert!(check_args("no_such_tool", &json!({})).is_err());
 }
 
 #[test]
@@ -153,9 +232,14 @@ fn list_fonts_filters_and_find_font_suggests() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let v = list_fonts(&all, Some("dejavu"));
+    let v = list_fonts(&all, Some("dejavu"), None);
     assert_eq!(v["count"], 2);
-    assert_eq!(list_fonts(&all, None)["count"], 4);
+    assert_eq!(list_fonts(&all, None, None)["count"], 4);
+    let few = list_fonts(&all, None, Some(1));
+    assert_eq!(
+        (few["count"].as_u64(), few["fonts"].as_array().map(Vec::len)),
+        (Some(4), Some(1))
+    );
     assert!(tools().iter().any(|t| t["name"] == "list_fonts"));
     assert_eq!(find_font(&all, " dejavu serif ").unwrap(), "DejaVu Serif");
     let err = find_font(&all, "Noto Serif").unwrap_err();
@@ -223,4 +307,100 @@ fn inline_files_land_in_their_own_folder() {
         );
         assert!(t["inputSchema"]["required"].is_null(), "{name}");
     }
+}
+
+#[test]
+fn inline_svg_pictures_open_for_the_picture_tools() {
+    use buildcraft3d::mcp::inline_file;
+    let dir = tempfile::tempdir().unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="white"/><rect x="50" width="50" height="50"/></svg>"#;
+    for (tool, key) in [
+        ("emboss_text", "image"),
+        ("apply_texture", "image"),
+        ("load_image", "path"),
+    ] {
+        let a = inline_file(
+            &json!({"file_name": "logo.svg", "file_text": svg}),
+            key,
+            dir.path(),
+        )
+        .unwrap()
+        .unwrap();
+        let path = std::path::PathBuf::from(a[key].as_str().unwrap());
+        let img = buildcraft3d::picture::open(&path).unwrap().to_rgba8();
+        // The black square is the top right quarter; the rest is white.
+        assert_eq!(img.get_pixel(768, 256).0, [0, 0, 0, 255], "{tool}");
+        assert_eq!(img.get_pixel(256, 768).0, [255, 255, 255, 255], "{tool}");
+        // The tool's inline fields name the formats it takes.
+        let t = tools().into_iter().find(|t| t["name"] == tool).unwrap();
+        let props = &t["inputSchema"]["properties"];
+        assert_eq!(
+            props["file_text"]["description"], "the whole file as text: SVG",
+            "{tool}"
+        );
+        assert!(props[key]["description"]
+            .as_str()
+            .unwrap()
+            .contains("PNG, JPEG or SVG"));
+    }
+    let open = tools().into_iter().find(|t| t["name"] == "open").unwrap();
+    let text = open["inputSchema"]["properties"]["file_text"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("OBJ") && text.contains("SVG"), "{text}");
+}
+
+#[test]
+fn measure_names_what_is_missing_and_refuses_objects_without_geometry() {
+    use buildcraft3d::{
+        mcp::{args, measure, require_geometry},
+        mesh::Mesh,
+        primitives,
+        scene::{Object, Scene, DEFAULT_COLOR},
+    };
+    let mut scene = Scene::default();
+    let cube = scene.add(Object::new("cube", primitives::cube(2.0), DEFAULT_COLOR));
+    let empty = scene.add(Object::new("empty", Mesh::default(), DEFAULT_COLOR));
+    let err = |a: Value| measure(&scene, &a).unwrap_err();
+    assert!(err(json!({"section": {}})).starts_with("section.id is missing"));
+    assert!(err(json!({"section": {"id": "a"}})).contains("section.id must be an object id"));
+    assert!(err(json!({"section": {"id": 99, "z": 1}})).contains("no object with id 99"));
+    // The normal's own range and wording, not a point's; any length above 0 is fine.
+    let e = err(json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 1e9]}}));
+    assert!(
+        e.starts_with("section.normal must be [x, y, z]") && !e.contains("point"),
+        "{e}"
+    );
+    assert!(
+        err(json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 0]}}))
+            .contains("section.normal must not be zero")
+    );
+    let ok = json!({"section": {"id": cube, "point": [0, 0, 0], "normal": [0, 0, 1e-3]}});
+    assert!(measure(&scene, &ok).is_ok());
+    // An object with no triangles is an error everywhere, never null or infinity.
+    for a in [
+        json!({"diameter_of": empty}),
+        json!({"section": {"id": empty, "z": 0}}),
+        json!({"ids": [cube, empty]}),
+    ] {
+        let e = err(a);
+        assert!(
+            e.contains(&format!("object {empty} has no geometry")),
+            "{e}"
+        );
+    }
+    let mut selected = scene.clone();
+    selected.selection.insert(empty);
+    assert!(measure(&selected, &json!({}))
+        .unwrap_err()
+        .contains("has no geometry"));
+    assert!(require_geometry(scene.get(cube).unwrap()).is_ok());
+    // Colours take the # or not, through one parser.
+    for c in ["#ff8000", "ff8000", " FF8000 "] {
+        assert_eq!(
+            args::color(&json!({"c": c}), "c"),
+            Ok(Some([255, 128, 0, 255]))
+        );
+    }
+    assert!(args::color(&json!({"c": "ff80"}), "c").is_err());
 }

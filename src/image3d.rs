@@ -5,7 +5,7 @@
 use crate::emboss::{self, Emboss, Pattern};
 use crate::mesh::Mesh;
 use crate::primitives::box_mesh;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use glam::Vec3;
 use std::path::PathBuf;
 
@@ -67,9 +67,6 @@ impl Options {
     }
 }
 
-/// Picture files Load image opens.
-pub const EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
-
 /// Thickness under the lowest point of a relief, so it holds together.
 const BASE: f32 = 0.6;
 /// Most samples along the longer side of a relief.
@@ -102,8 +99,7 @@ pub fn build(o: &Options) -> Result<Mesh> {
 
 /// A height relief; `levels` makes flat steps of it, `mirror` flips it left to right.
 fn relief(o: &Options, levels: Option<u32>, mirror: bool) -> Result<Mesh> {
-    let img = image::open(&o.path)
-        .map_err(|e| anyhow!("Could not open the image {}: {e}", o.path.display()))?;
+    let img = crate::picture::open(&o.path)?;
     let img = if img.width().max(img.height()) > MAX_SAMPLES {
         img.resize(
             MAX_SAMPLES,

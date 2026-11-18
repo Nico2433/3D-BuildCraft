@@ -110,8 +110,7 @@ fn trace_image(path: &std::path::Path) -> Result<Vec<Vec<Vec2>>> {
     // shortcut: images are traced at up to 256 px on the long side; finer detail is lost
     // until the outlines are simplified instead.
     const MAX: u32 = 256;
-    let img = image::open(path)
-        .map_err(|err| anyhow!("Could not open the image {}: {err}", path.display()))?;
+    let img = crate::picture::open(path)?;
     let img = if img.width().max(img.height()) > MAX {
         img.resize(MAX, MAX, image::imageops::FilterType::Triangle)
     } else {

@@ -69,8 +69,9 @@ pub(super) enum Action {
     StartCamera,
     /// Saves the camera's picture and opens it in "Load image".
     Capture,
-    /// Paints the area around a triangle of an object: (object, triangle, colour, coverage).
-    PaintArea(u64, usize, Rgba, f32),
+    /// Paints the area around a triangle of an object: (object, triangle, colour, coverage,
+    /// and optionally a world point and radius in mm the painted triangles' centres stay within).
+    PaintArea(u64, usize, Rgba, f32, Option<(Vec3, f32)>),
     /// Adds a file to the scene (from the Add dialog's recent files).
     AddPath(PathBuf),
     OpenPrint,
@@ -229,12 +230,7 @@ impl App {
                     self.scene.selection.insert(id);
                 }
             }
-            Action::Measure => {
-                self.tool = Some(Tool::Measure {
-                    points: vec![],
-                    hover: None,
-                })
-            }
+            Action::Measure => self.tool = Some(Tool::Measure(Measure::new(Mode::Distance))),
             Action::StartCut => {
                 let mut plane = CutPlane::at_height(0.0);
                 plane.center = self.scene.selection_aabb().center();
@@ -335,7 +331,7 @@ impl App {
                     *menu = if more {
                         paint_menu::PaintMenu::More {
                             hsv: [h.h, h.s, h.v],
-                            hex: format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2]),
+                            hex: crate::io::hex6(*color),
                         }
                     } else {
                         paint_menu::PaintMenu::Swatches
@@ -372,7 +368,7 @@ impl App {
             }
             Action::StartImage => {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr(lang, "Image"), &crate::image3d::EXTENSIONS)
+                    .add_filter(tr(lang, "Image"), &crate::picture::EXTENSIONS)
                     .pick_file()
                 {
                     self.tool = Some(Tool::image(path));
@@ -442,8 +438,8 @@ impl App {
                 self.toggle_flyout(side_menu::Flyout::About);
             }
             Action::OpenPaper => self.print_on_paper(ctx),
-            Action::PaintArea(id, tri, color, coverage) => {
-                self.paint_area(id, tri, color, coverage)
+            Action::PaintArea(id, tri, color, coverage, near) => {
+                self.paint_area(id, tri, color, coverage, near)
             }
             Action::CancelTool => self.cancel_tool(),
             Action::BeginEdit => self.history.push(self.snapshot()),

@@ -93,31 +93,102 @@ impl App {
             g.paint(&painter, hot, self.field);
         }
         self.paint_emboss(&painter, resp.hover_pos(), rect, aspect);
-        if let Some(Tool::Measure { points, hover }) = &self.tool {
-            // The placed points are blue and the live one green, as the original's.
-            let live = if points.len() < 2 { *hover } else { None };
-            let marks: Vec<(Vec3, Color32)> = points
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (*p, if i == 0 { MEASURE_BLUE } else { MEASURE_GREEN }))
-                .chain(live.map(|p| (p, MEASURE_GREEN)))
+        if let Some(Tool::Measure(m)) = &self.tool {
+            measure_overlay(&painter, m, &to_screen, ui.ctx().pixels_per_point());
+        }
+    }
+}
+
+/// The measure marks: arrows on the placed points (blue) and on
+/// the live one (the arrow is the tool's cursor), the faint line between two of them, and
+/// the fitted circle or sphere with its radius line.
+fn measure_overlay(
+    painter: &egui::Painter,
+    m: &Measure,
+    to_screen: &dyn Fn(Vec3) -> Option<Pos2>,
+    ppp: f32,
+) {
+    let faint = |a: Pos2, b: Pos2| {
+        painter.line_segment(
+            [a, b],
+            Stroke::new(11.0 / ppp, Color32::from_white_alpha(13)),
+        );
+    };
+    let live = if m.picking() { m.hover } else { None };
+    let marks: Vec<(Vec3, Color32)> = m
+        .points
+        .iter()
+        .map(|p| (p.point, MEASURE_BLUE))
+        .chain(live.map(|p| (p.point, MEASURE_GREEN)))
+        .collect();
+    if let (Mode::Distance, [(a, _), (b, _)]) = (m.mode, &marks[..]) {
+        if let Some((a, b)) = to_screen(*a).zip(to_screen(*b)) {
+            faint(a, b);
+        }
+    }
+    if let Some(r) = m.current_round() {
+        // Seen from any side: a circle about its axis, or three for a sphere.
+        let axes = r
+            .axis
+            .map_or([Vec3::X, Vec3::Y, Vec3::Z].to_vec(), |a| vec![a]);
+        for axis in axes {
+            let (u, v) = crate::measure::plane_basis(axis);
+            let ring: Vec<Pos2> = (0..=96)
+                .filter_map(|i| {
+                    let t = i as f32 / 96.0 * std::f32::consts::TAU;
+                    to_screen(r.center + (u * t.cos() + v * t.sin()) * r.radius)
+                })
                 .collect();
-            if let [(a, _), (b, _)] = marks[..] {
-                if let Some((a, b)) = to_screen(a).zip(to_screen(b)) {
-                    painter.line_segment(
-                        [a, b],
-                        Stroke::new(
-                            11.0 / ui.ctx().pixels_per_point(),
-                            Color32::from_white_alpha(13),
-                        ),
-                    );
-                }
+            for w in ring.windows(2) {
+                faint(w[0], w[1]);
             }
-            for (p, color) in marks {
-                if let Some(tip) = to_screen(p) {
-                    measure_arrow(&painter, tip, color, ui.ctx().pixels_per_point());
-                }
+            painter.add(egui::Shape::line(
+                ring,
+                Stroke::new(1.5 / ppp, MEASURE_GREEN),
+            ));
+        }
+        // Radius line from the centre to the rim (to the outline's first vertex on a
+        // section), the centre as a dot with a small cross.
+        let rim = match m.outline().and_then(|l| l.points.first()) {
+            Some(p) => (*p - r.center).normalize_or_zero(),
+            None => r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector()),
+        };
+        if let Some((c, e)) = to_screen(r.center).zip(to_screen(r.center + rim * r.radius)) {
+            faint(c, e);
+            painter.line_segment([c, e], Stroke::new(1.5 / ppp, MEASURE_GREEN));
+        }
+        if let Some(c) = to_screen(r.center) {
+            let arm = 6.0 / ppp;
+            let stroke = Stroke::new(1.5 / ppp, MEASURE_GREEN);
+            painter.line_segment([c - egui::vec2(arm, 0.0), c + egui::vec2(arm, 0.0)], stroke);
+            painter.line_segment([c - egui::vec2(0.0, arm), c + egui::vec2(0.0, arm)], stroke);
+            painter.circle_filled(c, 3.0 / ppp, MEASURE_GREEN);
+        }
+    }
+    // The section's contours in yellow, like the snap indicator; the one clicked in green.
+    let loop_line = |l: &crate::section::Outline, color: Color32| {
+        let mut line: Vec<Pos2> = l.points.iter().filter_map(|p| to_screen(*p)).collect();
+        if l.closed {
+            line.extend(line.first().copied());
+        }
+        for w in line.windows(2) {
+            faint(w[0], w[1]);
+        }
+        painter.add(egui::Shape::line(line, Stroke::new(2.5 / ppp, color)));
+    };
+    if let Some(s) = m.section.as_ref().filter(|_| m.mode == Mode::Section) {
+        for (i, c) in s.section.contours.iter().enumerate() {
+            if Some(i) != s.chosen {
+                loop_line(&c.outline, SECTION_YELLOW);
             }
+        }
+        if let Some(c) = s.chosen.and_then(|i| s.section.contours.get(i)) {
+            loop_line(&c.outline, MEASURE_GREEN);
+        }
+    }
+    for (p, color) in marks {
+        if let Some(tip) = to_screen(p) {
+            measure_arrow(painter, tip, color, ppp);
         }
     }
 }
@@ -175,6 +246,7 @@ pub(super) fn camera_feed(
 
 const MEASURE_GREEN: Color32 = Color32::from_rgb(0x50, 0xE8, 0x28);
 const MEASURE_BLUE: Color32 = Color32::from_rgb(0x20, 0xA8, 0xF0);
+const SECTION_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD8, 0x3C);
 
 /// The measure marker: a thick downward arrow about 25 px tall whose tip is `tip`, with a
 /// small red dot on the tip.

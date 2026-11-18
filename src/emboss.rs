@@ -370,6 +370,18 @@ fn layout(e: &Emboss) -> Result<Layout> {
         bail!("Nothing to emboss: type some text or pick a pattern");
     }
     let (lo, hi) = bounds(&pieces);
+    let (width, height) = (hi.x - lo.x, hi.y - lo.y);
+    if width * height > MAX_AREA {
+        let (what, fix) = match e.pattern {
+            Pattern::Text => ("pattern", "Use a smaller size or width, or less text"),
+            Pattern::Image(_) => ("picture", "Use a smaller size"),
+            Pattern::Shape(_) => ("pattern", "Use a smaller size or width"),
+        };
+        bail!(
+            "The {what} would cover {:.0} mm² ({width:.0} × {height:.0} mm); the most is {MAX_AREA:.0} mm². {fix}",
+            width * height
+        );
+    }
     let half = (hi - lo) * 0.5;
     for p in pieces.iter_mut().flatten().flatten() {
         *p = turn(e, *p);
@@ -406,10 +418,15 @@ pub fn pattern_size(e: &Emboss) -> Result<Vec2> {
     Ok(hi - lo)
 }
 
-/// Sizes of the pattern the bar and the handles may set, in mm (the width as a stretch).
-const SIZES: std::ops::RangeInclusive<f32> = 1.0..=200.0;
-const STRETCHES: std::ops::RangeInclusive<f32> = 0.05..=20.0;
-const DEPTHS: std::ops::RangeInclusive<f32> = 0.1..=50.0;
+/// Sizes of the pattern the bar, the handles and the agent's tool may set, as (least,
+/// most) in mm (the width as a stretch). They also bound how long an emboss takes: it
+/// grows with the pattern's size, and 1000 mm took 6 s where 200 mm takes 0.4 s.
+pub const SIZES: (f32, f32) = (1.0, 200.0);
+/// The most area the pattern's bounding box may cover, mm²: the work grows with it (a
+/// 2 mm grid of rays), so a long text at the largest size and width would run for minutes.
+pub const MAX_AREA: f32 = 100_000.0;
+pub const STRETCHES: (f32, f32) = (0.05, 20.0);
+pub const DEPTHS: (f32, f32) = (0.1, 50.0);
 
 /// The stretch that makes `e` `width` mm wide, kept in the range the handles and the
 /// bar allow (0.05–20 times its natural width), so no width gives a degenerate pattern.
@@ -419,7 +436,7 @@ pub fn stretch_for_width(e: &Emboss, width: f32) -> Result<f32> {
         ..e.clone()
     })?
     .x;
-    Ok((width / natural.max(1e-6)).clamp(*STRETCHES.start(), *STRETCHES.end()))
+    Ok((width / natural.max(1e-6)).clamp(STRETCHES.0, STRETCHES.1))
 }
 
 /// Scales one of the pattern's extents by `ratio`: `axis` 0 is its width, 1 its height
@@ -431,7 +448,7 @@ pub fn rescale(e: &mut Emboss, axis: usize, ratio: f32, lock: bool) {
     if !(ratio.is_finite() && ratio > 0.0) {
         return;
     }
-    let clamp = |v: f32, r: &std::ops::RangeInclusive<f32>| v.clamp(*r.start(), *r.end());
+    let clamp = |v: f32, r: &(f32, f32)| v.clamp(r.0, r.1);
     match axis {
         0 if !lock => e.stretch = clamp(e.stretch * ratio, &STRETCHES),
         0 | 1 => {

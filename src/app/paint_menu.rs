@@ -7,6 +7,7 @@ use super::flyout::{Flyout, Grid, Mark, Menu, BUTTON, ROW};
 use super::icons::Icon;
 use super::style;
 use super::*;
+use crate::io::{hex6, parse_hex};
 use eframe::egui::ecolor::Hsva;
 
 /// Which colour menu is open under Paint's "Selected" swatch.
@@ -86,10 +87,6 @@ const KNOB: Color32 = Color32::from_rgb(0x88, 0x17, 0x98);
 
 fn rgb(c: Rgba) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
-}
-
-fn hex(c: Rgba) -> String {
-    format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2])
 }
 
 fn from_hsv(hsv: [f32; 3]) -> Rgba {
@@ -226,7 +223,7 @@ pub(super) fn color_menu(
                     let h = Hsva::from_srgb([color[0], color[1], color[2]]);
                     *menu = PaintMenu::More {
                         hsv: [h.h, h.s, h.v],
-                        hex: hex(*color),
+                        hex: hex6(*color),
                     };
                 }
                 Some(p) => {
@@ -372,7 +369,7 @@ pub(super) fn color_menu(
                         moved |= gradient_slider(ui, k, track(row), stops, &mut hsv[k]);
                     }
                     if moved {
-                        *text = hex(from_hsv(*hsv));
+                        *text = hex6(from_hsv(*hsv));
                     }
                 },
             );
@@ -436,16 +433,6 @@ fn swatch_list(m: &mut Menu, lang: Lang, color: &mut Rgba, look: &MenuLook) -> O
     picked
 }
 
-/// "DC4E62" or "#dc4e62" as a colour.
-fn parse_hex(s: &str) -> Option<Rgba> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let v = u32::from_str_radix(s, 16).ok()?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xFF])
-}
-
 /// A thin track coloured through `stops` with the original's purple pill as the handle.
 /// True when it moved.
 fn gradient_slider(
@@ -484,12 +471,21 @@ fn gradient_slider(
 }
 
 impl App {
-    /// Paints the connected region around triangle `tri` of object `id`.
-    pub(super) fn paint_area(&mut self, id: u64, tri: usize, color: Rgba, coverage: f32) {
+    /// Paints the connected region around triangle `tri` of object `id`; with `near`
+    /// (a world point and radius, mm) only triangles whose centres lie within it.
+    pub(super) fn paint_area(
+        &mut self,
+        id: u64,
+        tri: usize,
+        color: Rgba,
+        coverage: f32,
+        near: Option<(Vec3, f32)>,
+    ) {
         self.remember_color(color);
         self.edit(|s| {
             if let Some(o) = s.get_mut(id) {
-                o.mesh = std::sync::Arc::new(paint_region(&o.mesh, tri, color, coverage));
+                let area = o.mesh.face_region_near(tri, coverage, &o.matrix(), near);
+                o.mesh = std::sync::Arc::new(paint_faces(&o.mesh, &area, color));
             }
         });
     }
@@ -504,11 +500,11 @@ impl App {
     }
 }
 
-fn paint_region(mesh: &Mesh, tri: usize, color: Rgba, coverage: f32) -> Mesh {
+/// `mesh` with `area`'s triangles painted `color`.
+fn paint_faces(mesh: &Mesh, area: &[usize], color: Rgba) -> Mesh {
     let mut mesh = mesh.clone();
-    let area = mesh.face_region(tri, coverage.clamp(0.0, 1.0) * 180.0);
     mesh.colors.resize(mesh.triangles.len(), [0; 4]);
-    for face in area {
+    for &face in area {
         mesh.colors[face] = color;
     }
     mesh
@@ -516,13 +512,22 @@ fn paint_region(mesh: &Mesh, tri: usize, color: Rgba, coverage: f32) -> Mesh {
 
 #[cfg(test)]
 mod tests {
+    use crate::mesh::Mesh;
+    use glam::{Mat4, Vec3};
+
+    /// Paint's click on triangle 0 of `mesh`, placed as it is.
+    fn paint_region(mesh: &Mesh, color: [u8; 4], coverage: f32, near: Option<(Vec3, f32)>) -> Mesh {
+        let area = mesh.face_region_near(0, coverage, &Mat4::IDENTITY, near);
+        super::paint_faces(mesh, &area, color)
+    }
+
     #[test]
     fn zero_coverage_paints_only_the_connected_flat_region() {
         let mut cube = crate::primitives::Primitive::Cube.build();
         let old_color = [0, 0, 255, 255];
         let new_color = [255, 0, 0, 255];
         cube.colors = vec![old_color; cube.triangles.len()];
-        let painted = super::paint_region(&cube, 0, new_color, 0.0);
+        let painted = paint_region(&cube, new_color, 0.0, None);
         assert_eq!(
             painted.colors.iter().filter(|&&c| c == new_color).count(),
             2
@@ -542,15 +547,27 @@ mod tests {
         ] {
             let mesh = primitive.build();
             let color = [255, 0, 0, 255];
-            let painted = super::paint_region(&mesh, 0, color, 1.0);
+            let painted = paint_region(&mesh, color, 1.0, None);
             assert!(painted.colors.iter().all(|&c| c == color));
         }
     }
 
     #[test]
-    fn hex_round_trip() {
-        assert_eq!(super::parse_hex("#DC4E62"), Some([0xDC, 0x4E, 0x62, 0xFF]));
-        assert_eq!(super::parse_hex("dc4e6"), None);
-        assert_eq!(super::hex([0xDC, 0x4E, 0x62, 0xFF]), "DC4E62");
+    fn a_radius_limits_paint_on_a_smooth_sphere() {
+        let sphere = crate::primitives::Primitive::Sphere.build();
+        let color = [255, 0, 0, 255];
+        let [a, b, c] = sphere.triangles[0].map(|v| sphere.positions[v as usize]);
+        let at = (a + b + c) / 3.0;
+        let near = |f: usize| {
+            let [a, b, c] = sphere.triangles[f].map(|v| sphere.positions[v as usize]);
+            ((a + b + c) / 3.0).distance(at) <= 10.0
+        };
+        let painted = paint_region(&sphere, color, 1.0, Some((at, 10.0)));
+        let count = painted.colors.iter().filter(|&&c| c == color).count();
+        assert_eq!(
+            count,
+            (0..sphere.triangles.len()).filter(|f| near(*f)).count()
+        );
+        assert!(count > 1 && count < sphere.triangles.len() / 2, "{count}");
     }
 }

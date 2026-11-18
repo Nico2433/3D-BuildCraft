@@ -3,6 +3,9 @@
 use super::*;
 use crate::render::Slab;
 
+/// Owner id of the tool preview shape; imports waiting for units count down from it.
+const PREVIEW_OWNER: u64 = u64::MAX;
+
 impl App {
     /// What the GPU draws this frame: the scene plus any tool previews.
     pub(super) fn frame(
@@ -22,6 +25,7 @@ impl App {
             .objects
             .iter()
             .map(|o| DrawItem {
+                owner: o.id,
                 mesh: o.mesh.clone(),
                 model: o.matrix(),
                 color: if ghost {
@@ -50,6 +54,7 @@ impl App {
             items.insert(
                 0,
                 DrawItem {
+                    owner: PREVIEW_OWNER,
                     mesh: shape.clone(),
                     model: glam::Mat4::IDENTITY,
                     color: [0xC8, 0xC8, 0xC8, 0xFF],
@@ -63,7 +68,9 @@ impl App {
         let waiting: Vec<DrawItem> = self
             .shown_imports()
             .flat_map(|p| p.placed())
-            .map(|(mesh, model, color)| DrawItem {
+            .enumerate()
+            .map(|(i, (mesh, model, color))| DrawItem {
+                owner: PREVIEW_OWNER - 1 - i as u64,
                 mesh,
                 model,
                 color,
@@ -73,6 +80,7 @@ impl App {
             .collect();
         items.splice(0..0, waiting);
         let cb = FrameCallback {
+            repaint: ui.ctx().clone(),
             items,
             decal: preview,
             view_proj: self.camera.view_proj(aspect),

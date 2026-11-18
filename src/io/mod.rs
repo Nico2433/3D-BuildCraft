@@ -127,6 +127,10 @@ impl Format {
 }
 
 pub const OPEN_EXTENSIONS: [&str; 7] = ["3mf", "stl", "obj", "ply", "gltf", "glb", "svg"];
+/// The model formats that open, for messages.
+pub const OPEN_FORMATS: &str = "3MF, STL, OBJ, PLY, glTF, GLB or SVG";
+/// The formats a scene saves as ([`Format::SAVE`]), for messages.
+pub const SAVE_FORMATS: &str = "3MF, STL, OBJ, PLY, GLB or glTF";
 
 /// The file name without extension, "Object" when it has none.
 pub fn file_stem(path: &Path) -> &str {
@@ -135,9 +139,72 @@ pub fn file_stem(path: &Path) -> &str {
         .unwrap_or("Object")
 }
 
+/// The largest an object may be along one axis, in mm: the limit of the tools and of what a
+/// file that carries its own units may hold.
+pub const MAX_SIZE_MM: f32 = 10_000.0;
+
+/// The size along each axis of the box round all `objects` placed, in mm.
+pub fn extent(objects: &[ModelObject]) -> glam::Vec3 {
+    let mut bounds = crate::mesh::Aabb::empty();
+    for o in objects.iter().filter(|o| !o.mesh.is_empty()) {
+        let b = o.mesh.aabb();
+        for i in 0..8 {
+            let corner = glam::Vec3::select(
+                glam::BVec3::new(i & 1 != 0, i & 2 != 0, i & 4 != 0),
+                b.max,
+                b.min,
+            );
+            bounds.grow(o.transform.transform_point3(corner));
+        }
+    }
+    // Not `is_valid`: an infinite box is a size too, and the one to refuse.
+    if bounds.min.cmple(bounds.max).all() {
+        bounds.size()
+    } else {
+        glam::Vec3::ZERO
+    }
+}
+
+/// An error naming the limit when a model of this `size` in mm is larger than
+/// [`MAX_SIZE_MM`] along any side (or has no size).
+pub fn check_size(size: glam::Vec3) -> Result<()> {
+    if size.is_nan() || size.max_element() > MAX_SIZE_MM {
+        bail!(
+            "The model is {:.0} × {:.0} × {:.0} mm; the most is {MAX_SIZE_MM} mm along each side",
+            size.x,
+            size.y,
+            size.z
+        );
+    }
+    Ok(())
+}
+
+/// What a file read must hold: objects with triangles (empty ones are dropped), and, when
+/// the format carries its units, none larger than [`MAX_SIZE_MM`].
+fn checked(
+    mut objects: Vec<ModelObject>,
+    format: Format,
+    units_known: bool,
+) -> Result<Vec<ModelObject>> {
+    objects.retain(|o| !o.mesh.is_empty());
+    if objects.is_empty() {
+        bail!(
+            "The file has no triangles: it is empty, or not a valid {} model",
+            format.label()
+        );
+    }
+    if units_known {
+        check_size(extent(&objects))?;
+    }
+    Ok(objects)
+}
+
 pub fn load(path: &Path) -> Result<LoadedModel> {
     let Some(format) = Format::from_path(path) else {
-        bail!("Unsupported format: {}", path.display());
+        bail!(
+            "Unsupported format: {}. Models open as {OPEN_FORMATS}",
+            path.display()
+        );
     };
     let stem = file_stem(path).to_string();
     let mut info = ModelInfo::default();
@@ -157,6 +224,7 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
         format,
         Format::ThreeMf | Format::Gltf | Format::Glb | Format::Svg
     );
+    let objects = checked(objects, format, units_known)?;
     Ok(LoadedModel {
         objects,
         info,
@@ -166,17 +234,42 @@ pub fn load(path: &Path) -> Result<LoadedModel> {
 
 pub fn save(path: &Path, objects: &[ModelObject], info: &ModelInfo) -> Result<()> {
     let Some(format) = Format::from_path(path) else {
-        bail!("Unsupported format: {}", path.display());
+        bail!(
+            "Unsupported format: {}. Scenes save as {SAVE_FORMATS}",
+            path.display()
+        );
     };
-    match format {
+    let written = match format {
         Format::ThreeMf => threemf::write(path, objects, info),
         Format::Stl => stl::write(path, objects),
         Format::Obj => obj::write(path, objects),
         Format::Ply => ply::write(path, objects),
         Format::Gltf => gltf_io::write(path, objects, false),
         Format::Glb => gltf_io::write(path, objects, true),
-        Format::Svg => bail!("SVG files can only be imported"),
-    }
+        Format::Svg => bail!("SVG files can only be imported; save as {SAVE_FORMATS}"),
+    };
+    written.map_err(|e| {
+        let denied = e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            )
+        });
+        if !denied {
+            return e;
+        }
+        let folder = path.parent().unwrap_or(Path::new("."));
+        // A folder the app cannot see is not the same as one it may not write in.
+        let why = if folder.is_dir() {
+            "is not writable for the app"
+        } else {
+            "does not exist for the app (a Flatpak app sees the real home folder but has its own private /tmp)"
+        };
+        anyhow::anyhow!(
+            "{e:#}. The folder {} {why}; save in an existing folder that is writable, e.g. the home folder",
+            folder.display()
+        )
+    })
 }
 
 /// Objects with their transforms applied, for formats that store world coordinates.
@@ -218,8 +311,24 @@ pub(crate) fn fan(idx: &[u32], out: &mut Vec<[u32; 3]>) {
 pub fn color_name(c: Rgba) -> String {
     match crate::scene::PALETTE.iter().find(|(_, rgba)| *rgba == c) {
         Some((name, _)) => (*name).to_string(),
-        None => format!("Color_{:02X}{:02X}{:02X}", c[0], c[1], c[2]),
+        None => format!("Color_{}", hex6(c)),
     }
+}
+
+/// "DC4E62": a colour's red, green and blue as hex digits.
+pub fn hex6(c: Rgba) -> String {
+    format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+}
+
+/// "DC4E62" or "#dc4e62" as an opaque colour.
+pub fn parse_hex(s: &str) -> Option<Rgba> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xFF])
 }
 
 pub fn srgb_to_linear(c: u8) -> f32 {
@@ -246,6 +355,15 @@ mod tests {
     use super::*;
     use crate::primitives::Primitive;
     use glam::Vec3;
+
+    #[test]
+    fn hex_round_trip() {
+        assert_eq!(parse_hex("#DC4E62"), Some([0xDC, 0x4E, 0x62, 0xFF]));
+        assert_eq!(parse_hex(" dc4e62 "), Some([0xDC, 0x4E, 0x62, 0xFF]));
+        assert_eq!(parse_hex("dc4e6"), None);
+        assert_eq!(parse_hex("+c4e62"), None);
+        assert_eq!(hex6([0xDC, 0x4E, 0x62, 0xFF]), "DC4E62");
+    }
 
     fn sample() -> Vec<ModelObject> {
         vec![

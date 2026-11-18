@@ -45,6 +45,22 @@ fn hollow_rejects_a_box_thinner_than_twice_the_wall() {
 }
 
 #[test]
+fn hollow_says_whether_the_object_is_thin_or_the_wall_too_thick_for_the_voxels() {
+    let cube = primitives::cube(10.0);
+    // Walls up to 4.5 work on a 10 mm cube; 4.99 leaves a cavity under one voxel.
+    assert!(solid::hollow(&cube, 4.5).is_ok());
+    let e = solid::hollow(&cube, 4.99).unwrap_err().to_string();
+    assert!(e.starts_with("The wall is too thick for this size"), "{e}");
+    assert!(e.contains("voxels") && e.contains("thinner wall"), "{e}");
+    // Not more than twice the wall is plain thinness.
+    for wall in [5.0, 6.0] {
+        let e = solid::hollow(&cube, wall).unwrap_err().to_string();
+        assert!(e.starts_with("The object is too thin to hollow"), "{e}");
+        assert!(e.contains("smallest side is 10.00 mm"), "{e}");
+    }
+}
+
+#[test]
 fn solid_edits_reject_an_open_mesh() {
     let mut open = primitives::cube(40.0);
     open.triangles.pop();
@@ -104,4 +120,24 @@ fn set_world_mesh_resets_transform_and_uses_the_given_mesh() {
     assert_eq!(object.rotation, Vec3::ZERO);
     assert_eq!(object.scale, Vec3::ONE);
     assert_eq!(object.world_mesh(), world);
+}
+
+/// Flat faces between the level-set grid planes made manifold-rust panic ("table full
+/// before any vert") and took the app down; these sizes all did before the grid shifts.
+#[test]
+fn hollow_cubes_whose_walls_fall_between_grid_planes() {
+    for (size, wall) in [(30.0, 2.0), (27.0, 1.0), (45.0, 3.0), (57.0, 3.0)] {
+        let cube = primitives::cube(size);
+        let hollow = solid::hollow(&cube, wall).unwrap();
+        assert_closed(&hollow);
+        // The cavity is a cube whose wall is `wall` plus up to the grid margin.
+        let cavity = (size as f64).powi(3) - hollow.stats().volume;
+        let side = |w: f64| (size as f64 - 2.0 * w).powi(3);
+        assert!(cavity < side(wall as f64), "{size} {wall}: {cavity}");
+        assert!(cavity > side(wall as f64 + 2.0), "{size} {wall}: {cavity}");
+        println!(
+            "{size} {wall}: cavity {cavity:.0} of {:.0}",
+            side(wall as f64)
+        );
+    }
 }

@@ -6,7 +6,7 @@ The library crate (`src/lib.rs`, no UI) holds the core; the binary adds UI and r
 
 | Module | Responsibility |
 |---|---|
-| `src/mesh.rs` | Indexed mesh, optional per-triangle `colors` (RGBA; alpha 0 = object colour; edits that rebuild a mesh, such as booleans, repair, cut and simplify, drop them), `face_region` (flood fill across edges whose angle is under 5° + coverage·85°; coverage 1 = whole object), welding, normals, AABB, transform, topology stats (same counters as `stlstats.py`), ray tests; `Mesh::shading(40°)` splits vertices at creases (flat faces stay flat) and returns crease edges |
+| `src/mesh.rs` | Indexed mesh, optional per-triangle `colors` (RGBA; alpha 0 = object colour; edits that rebuild a mesh, such as booleans, repair, cut and simplify, drop them), `face_region` (flood fill across edges whose bend is at most coverage·180°; coverage 1 = whole connected surface; `face_region_within` also limits it to triangles a test accepts, the agent's paint radius), welding, normals, AABB, transform, topology stats (same counters as `stlstats.py`), ray tests; `Mesh::shading(40°)` splits vertices at creases (flat faces stay flat) and returns crease edges |
 | `src/primitives.rs` | The 9 shapes at 40 mm, on the floor; cylinder matches the original's 240 vertices / 476 triangles. `custom(shape, lat, lon, width, height)`: box as a lat/lon cell grid, lon segments for round shapes, lat for box/sphere/torus; centred on the floor, proportions kept across |
 | `src/io/` | `stl`, `obj`, `ply`, `threemf`, `gltf_io`: read and write with the original's conventions. `ModelInfo` (title, designer, copyright, license terms, description) is read from and written to the 3MF metadata |
 | `src/scene.rs` | Objects (shared `Arc<Mesh>` + translation/rotation/scale + colour), selection, settle, duplicate, mirror, cut, simplify, resize, palette |
@@ -19,9 +19,12 @@ The library crate (`src/lib.rs`, no UI) holds the core; the binary adds UI and r
 | `src/slicer/` | `detect` (installed slicers, native or Flatpak, and opening a 3MF in one), `profiles` (printer, print and filament profiles read from the slicer's config folder, read-only, off the UI thread), `host_files` (reading those folders from inside the Flatpak sandbox in one host call), `status` (printers configured in the slicer and their state from Moonraker over HTTP, port 7125, every 5 s on a thread; read-only queries). Access codes and API keys found in the profiles are never shown or logged |
 | `src/paper.rs` | Print on paper: a picture of the model, a one-page A4 PDF (JPEG, hand-written), and the system print dialog: the XDG desktop portal on Linux (`ashpd`), the picture's print verb on Windows. `src/app/paper.rs` runs it as a job |
 | `src/host.rs` | Running programs on the host when the app is in a Flatpak (`flatpak-spawn --host`) |
+| `src/mcp/args.rs` | The tools' arguments: named `Limit` ranges (`limits::*`, printed in the tool descriptions), `number`/`integer`/`vec3`/`text`/`ids`/`choice` helpers whose errors name the range, and the parsers of the heavy tools (emboss, load_image, extrude_outline, split, transform, custom shapes, hollow, smooth, simplify) and `save_path`, kept out of the UI so `tests/mcp_limits.rs` can fuzz them. The app runs a tool on the UI thread, so these ranges (and `emboss::MAX_AREA`) are what bound its time |
 | `src/assistant.rs`, `src/mcp.rs` | The in-app assistant (chat with an OpenAI- or Anthropic-compatible endpoint, or an installed agent) and the MCP server with the app's tools: `src/mcp.rs` speaks JSON-RPC (`serve` on stdio for `--mcp`, the token-line `Listener` port the `--mcp` bridge forwards to) and `src/mcp/http.rs` serves the same messages over Streamable HTTP at `http://127.0.0.1:<mcp_port>/mcp/<token>` while the app runs with external agents on (`App::sync_listener`); agents are registered with that URL (`AgentKind::connect_args`) and an older `--mcp` registration is detected as outdated (`Registration`); see [ADR-0004](decisions/ADR-0004-ai-agent-can-drive-the-tools.md) |
 | `src/webcam.rs` | Camera frames read on a background thread (Add > Camera, texture camera source) |
-| `src/snapping.rs` | Bounding-box edge and centre alignment while moving, with guides |
+| `src/snapping.rs` | Bounding-box edge and centre alignment while moving, with guides; and point snapping for Measure (`FaceInfo` of a flat face: centre, normal and outline edges; `snap_point` to a vertex, edge middle, edge, face centre, else the plane; `align` puts a second point on the first's normal when both faces are parallel, or exactly on an axis within 3°, only when the aligned point is within the snap reach of the cursor) |
+| `src/measure.rs` | Measure's model, shared by the UI tool and the MCP `measure` tool: `circle_through` (3 points), `fit_surface`/`surface_round` (a curved face: cylinder when all normals are square to one axis, else sphere; least-squares fits), `fit_object` (cylinder, sphere or the widest ring of a cone/torus; a box's corners are rejected because they do not go all the way round), `snap_to_scene`/`nearest_surface` (nearest object and triangle to a point), `plane_basis` (the one orthonormal frame of a plane, used by section, fits and the overlay), and `Measure` (mode Distance / Surface / Circle / Section, placed points with normal and snap kind, hover, the clicked section, `forget_results` after undo/redo, `Measure::preset` for `--measure`) |
+| `src/section.rs` | Cross-sections: the one tool for diameters, centres and wall thickness, behind Measure's "Section at height" mode and the MCP `measure` `section`. `section(mesh, model, point, normal, near)` slices with any plane (edge crossings welded by position as they are met, joined into contours; `Cutter` places the mesh once and sorts its triangles into 256 height slabs so a nearly horizontal plane reads only a few, 1 to 4 ms a cut on 0.4 to 1.3M triangles; the old per-mesh weld was 18 ms of the 22), fits a circle to each (`Outline`: RMS ≤ 1 %, worst ≤ 2.5 % of the radius, 8 points on a closed contour, 5 and 40° on an open one), orders them by enclosed area and gives `depth`/`parent` (outer 0, cavity 1), `Section::walls` (outer radius minus inner radius, centre offset) and `nearest`/`closest` (the contour passing closest to a point). A plane lying in a flat face (top or bottom of a cylinder, base of a cone, rim of a hollow tube) cuts no material, so the slice goes `SHIFT` (2e-4 of the object's size) inside the solid on the side whose contour is nearest to `near` (larger cut area without it), the contours projected back onto the plane (`Section::shift`); `section_tilted(.., Tilt::Auto)` (`Cutter::cut_round`, the default of the UI and MCP) is the "best circular plane": when the horizontal contour at the click is not round it finds the axis of the round feature (turning a plane a little inwards, 4/10/20 % of the size, to where its contour's ellipse puts the axis: tilt = acos(minor/major) about the minor axis, the side taken by the more even radii, the other if that does not make the contour rounder, until a turn is under 0.2°), or the mouth plane of a slanted rim on an upright wall (the ring's highest points at the click's side and 120° either way), cuts through the click with that normal (a hair under it, 0.1/0.3/1 mm on a 100 mm pot, below the crest of a rounded rim) and keeps it only if the contour is round (`Section::auto_tilted`, `tilt_degrees`); a closed contour must also fill 85 % of its circle (`MIN_FILL`: a thin sliver along a rim's crest is not round); tilts over 60° are never tried; 4 to 30 ms on the real pots |
 | `src/library.rs` | Local 3D libraries: `list` (subfolders that contain models, then models) and `search` (by name, depth 8, sorted then capped at 500 results) |
 | `src/thumbnail.rs` | CPU rasteriser for thumbnails: 2× supersampled, per-face colours, no GPU |
 | `src/image3d.rs` | Load image: Relief (height map, dark is high, 0.6 mm base, at most 160 samples a side, optional invert) or Outline (dark part traced with Emboss's image tracing and extruded) |
@@ -57,13 +60,46 @@ Screenshots of a known state: `cargo run --release -- --screenshot out.png` with
 - Print on paper: the XDG print portal on Linux.
 - Native file dialogs through `rfd`; config and data folders through `directories`.
 
+## Performance
+
+- Timings of the mesh hot paths live in `tests/perf_bench.rs` (ignored tests):
+  `cargo test --offline --release -j 4 --test perf_bench -- --ignored --nocapture`; the
+  picking BVH has its own in `src/app/picking.rs`. Measure before and after any change
+  that claims to be faster, on the 319k-triangle sphere they build.
+- Mesh topology maps (`stats`, `shading`, welding, repair, face regions, OBJ remap) use
+  `rustc_hash` (small integer keys; SipHash was the cost), and repair keeps an edge's two
+  faces inline (`smallvec`). 3MF is deflated at level 3: three times faster to save for a
+  file 4% bigger than the default.
+- Per-frame work is cached by mesh identity (`Arc<Mesh>`): GPU uploads, world boxes, stats,
+  the picking BVH and the measure face. `scene::WorkCache<T>` is the shared "compute on a
+  worker, keyed by a weak mesh pointer" helper (one worker at a time; results of meshes that
+  were edited or deleted are dropped with them): `cached_stats` and the renderer's shading
+  both use it.
+- Which copy of a mesh is drawn is decided by `mesh_cache::MeshCache` (generic over the GPU
+  copy, so `tests/mesh_cache.rs` runs it without a device), keyed per object (`DrawItem::owner`).
+  Meshes up to `SYNC_SHADING_TRIANGLES` (10k, about 2 ms of `Mesh::shading`) are shaded on
+  the UI thread, so the first frame is already the final look. A bigger one is shaded on the
+  worker; meanwhile the object keeps drawing its previous copy (a tool preview replacing the
+  object's mesh looks unchanged for the ~70 ms it takes at 320k triangles), and only a mesh
+  with nothing earlier to show (first load of a huge file) uses `Mesh::provisional_shading`
+  (flat face normals, one vertex set per triangle, no creases/paint/textures). Commit 4808262
+  had drawn the provisional smooth shading first for every new mesh, which made a cube
+  flicker rounded-then-flat on entering a tool; the fix is the synchronous path below the
+  threshold plus the hold above it. Copies no longer drawn are kept as spares (4 copies,
+  1.5M triangles) so leaving a tool, undo and redo do not shade again.
+  UI-thread cost of the first frame of a new mesh (`new_mesh_ui_cost`, `shading_cost_by_size`
+  in `tests/perf_bench.rs`): 12 triangles 0.02 ms inline; 20k 4.7 ms before the worker, now
+  held, 0.02 ms; 320k 75 ms before the worker, 2.8 ms with the smooth provisional, now 0.03 ms
+  held (first load with nothing to show: 12 ms). The test counts shading requests per tool
+  entry (one per distinct mesh, none on leave/undo/redo).
+
 ## Hubs
 
 `Scene`/`Object`, `Mesh` and `io::ModelObject` are what every part touches.
 
 ## Risks and constraints
 
-- Picking is a brute-force ray test per triangle; fine on click, slow for drag-hovering big meshes. A BVH is still missing.
+- Picking uses a per-mesh BVH built on a worker thread (`src/app/picking.rs`); until it is ready a click falls back to a brute-force ray test per triangle.
 - egui 0.31 is pinned on purpose; upgrading needs API changes in `src/app/` and `render.rs`.
 - Repair result on the camel sample (1.39M triangles; 20 open, 20 non-manifold, 24 misoriented edges before): none after, volume change 1e-5 % (original app 1.6e-3 %), +8 vertices (original +16).
 - Booleans depend on manifold-rust, a young pure-Rust port; inputs must be repaired first.

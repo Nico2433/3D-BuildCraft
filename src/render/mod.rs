@@ -7,12 +7,13 @@ mod selection;
 mod shader;
 
 use crate::mesh::Mesh;
+use crate::mesh_cache::MeshCache;
 use crate::scene::Material;
 use bytemuck::{Pod, Zeroable};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu, CallbackResources, CallbackTrait};
 use glam::{Mat4, Vec3, Vec4};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -75,6 +76,9 @@ struct Vertex {
 /// What one frame draws. Built by the UI, consumed by the callback.
 #[derive(Clone)]
 pub struct DrawItem {
+    /// Who draws it (an object id; previews use ids no object has): the renderer keeps
+    /// showing an owner's previous copy while the new one's shading is computed.
+    pub owner: u64,
     pub mesh: Arc<Mesh>,
     pub model: Mat4,
     pub color: [u8; 4],
@@ -150,6 +154,8 @@ pub struct Clip {
 }
 
 pub struct FrameCallback {
+    /// Woken by workers (mesh shading) when they finish.
+    pub repaint: egui::Context,
     pub items: Vec<DrawItem>,
     pub decal: Option<DecalPreview>,
     pub view_proj: Mat4,
@@ -216,7 +222,9 @@ pub struct Renderer {
     object_capacity: u64,
     /// Scratch for the per-frame object uniforms, kept to avoid reallocating.
     object_bytes: Vec<u8>,
-    meshes: HashMap<usize, GpuMesh>,
+    meshes: MeshCache<GpuMesh>,
+    /// This frame's copy to draw for each [`DrawItem`], set by `prepare`.
+    item_keys: Vec<usize>,
     /// The texture array and how many registry pictures it already holds.
     textures: wgpu::Texture,
     texture_bg: wgpu::BindGroup,
@@ -224,6 +232,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The GPU copy drawn for item `i` of this frame.
+    fn gpu(&self, i: usize) -> &GpuMesh {
+        self.meshes
+            .get(self.item_keys[i])
+            .expect("copy resolved in prepare")
+    }
+
     /// Mesh uploads and wireframe copies are rebuilt on the next draw.
     pub fn release_meshes(&mut self) {
         let bytes: u64 = self
@@ -236,7 +251,7 @@ impl Renderer {
             self.meshes.len(),
             bytes
         );
-        self.meshes = HashMap::new();
+        self.meshes.clear();
         self.selection = None;
     }
 
@@ -360,8 +375,11 @@ impl Renderer {
         (buf, bg)
     }
 
-    fn upload_mesh(device: &wgpu::Device, mesh: &Arc<Mesh>) -> GpuMesh {
-        let shading = mesh.shading(40.0);
+    fn upload_mesh(
+        device: &wgpu::Device,
+        mesh: &Arc<Mesh>,
+        shading: &crate::mesh::Shading,
+    ) -> GpuMesh {
         let verts: Vec<Vertex> = shading
             .positions
             .iter()
@@ -393,7 +411,7 @@ impl Renderer {
             index_count: (shading.triangles.len() * 3) as u32,
             bounds: mesh.aabb(),
             lines: None,
-            triangles: shading.triangles,
+            triangles: shading.triangles.clone(),
         }
     }
 

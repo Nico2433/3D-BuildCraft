@@ -161,29 +161,37 @@ fn focus(scene: &Scene, v: &Value) -> Result<Option<BTreeSet<u64>>, String> {
                 .filter(|id| scene.get(**id).is_none())
                 .map(u64::to_string)
                 .collect();
+            let have: Vec<String> = scene.objects.iter().map(|o| o.id.to_string()).collect();
+            let valid = format!("the scene's ids are {}", have.join(", "));
             match unknown.len() {
                 0 => Ok(Some(ids)),
-                1 => Err(format!("no object with id {}", unknown[0])),
-                _ => Err(format!("no objects with ids {}", unknown.join(", "))),
+                1 => Err(format!("no object with id {}; {valid}", unknown[0])),
+                _ => Err(format!(
+                    "no objects with ids {}; {valid}",
+                    unknown.join(", ")
+                )),
             }
         }
         _ => Err("focus must be \"all\", \"selection\" or a list of object ids".into()),
     }
 }
 
-/// `[width, height]` in pixels, clamped to [`SIDES`].
+/// `[width, height]` in pixels: any whole numbers, each clamped to [`SIDES`] (0 and
+/// negatives give the smallest); anything that is not a whole number is an error.
 fn size(v: &Value) -> Result<[u32; 2], String> {
     if v.is_null() {
         return Ok(DEFAULT_SIZE);
     }
-    let sides: Option<Vec<u64>> = v
-        .as_array()
-        .map(|a| a.iter().filter_map(Value::as_u64).collect());
-    match (sides.as_deref(), v.as_array().map(Vec::len)) {
-        (Some(&[w, h]), Some(2)) => {
-            Ok([w, h].map(|s| (s.min(u32::MAX as u64) as u32).clamp(*SIDES.start(), *SIDES.end())))
-        }
-        _ => Err("size must be [width, height] in whole pixels".into()),
+    // A whole number past i64 is still a whole number: it clamps.
+    let whole = |v: &Value| v.as_i64().or_else(|| v.as_u64().map(|_| i64::MAX));
+    let sides: Option<Vec<i64>> = v.as_array().and_then(|a| a.iter().map(whole).collect());
+    match sides.as_deref() {
+        Some(&[w, h]) => Ok([w, h].map(|s| s.clamp(*SIDES.start() as i64, *SIDES.end() as i64) as u32)),
+        _ => Err(format!(
+            "size must be [width, height], two whole numbers of pixels (not decimals); values outside {}..{} are clamped",
+            SIDES.start(),
+            SIDES.end()
+        )),
     }
 }
 
@@ -335,7 +343,10 @@ mod tests {
         assert!(err(json!({"focus": "everything"})).contains("selection"));
         assert!(err(json!({"isolate": "yes"})).contains("isolate"));
         assert!(err(json!({"size": [100]})).contains("width, height"));
-        assert!(err(json!({"size": [100, -5]})).contains("width, height"));
+        // Whole numbers of any size clamp; anything else is an error.
+        assert!(err(json!({"size": [100.5, 100]})).contains("whole numbers"));
+        assert!(err(json!({"size": [1e9, 100]})).contains("whole numbers"));
+        assert!(err(json!({"size": ["100", 100]})).contains("whole numbers"));
         let empty = Shot::parse(&Scene::default(), &json!({"view": "top"}));
         assert!(empty.is_err());
     }
@@ -345,6 +356,15 @@ mod tests {
         let (scene, ..) = scene();
         let s = shot(&scene, json!({"size": [10, 5000]})).unwrap();
         assert_eq!(s.size(), [64, 2048]);
+        for (given, want) in [
+            (json!([0, 0]), [64, 64]),
+            (json!([-5, -5]), [64, 64]),
+            (json!([1000000000, 100]), [2048, 100]),
+            (json!([u64::MAX, -(1i64 << 62)]), [2048, 64]),
+        ] {
+            let s = shot(&scene, json!({ "size": given })).unwrap();
+            assert_eq!(s.size(), want, "{given}");
+        }
         assert_eq!(
             shot(&scene, json!({"isolate": false})).unwrap().size(),
             [800, 600]

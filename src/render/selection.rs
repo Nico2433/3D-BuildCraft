@@ -24,8 +24,9 @@ impl Renderer {
             items: cb
                 .items
                 .iter()
-                .filter(|it| it.selected)
-                .map(|it| (Arc::as_ptr(&it.mesh) as usize, it.model))
+                .enumerate()
+                .filter(|(_, it)| it.selected)
+                .map(|(i, it)| (self.item_keys[i], it.model))
                 .collect(),
         };
         if key.items.is_empty() {
@@ -82,8 +83,8 @@ impl Renderer {
             // model occupies only a small part of a large viewport.
             let size = glam::Vec2::new(key.size[0] as f32, key.size[1] as f32);
             let (mut min, mut max) = (size, glam::Vec2::ZERO);
-            'bounds: for it in cb.items.iter().filter(|it| it.selected) {
-                let b = self.meshes[&(Arc::as_ptr(&it.mesh) as usize)].bounds;
+            'bounds: for (i, it) in cb.items.iter().enumerate().filter(|(_, it)| it.selected) {
+                let b = self.gpu(i).bounds;
                 let m = cb.view_proj * it.model;
                 for x in [b.min.x, b.max.x] {
                     for y in [b.min.y, b.max.y] {
@@ -144,8 +145,8 @@ impl Renderer {
                 } else {
                     pass.set_pipeline(&self.mask_pipeline);
                     pass.set_bind_group(0, &self.globals_bg, &[]);
-                    for (i, it) in cb.items.iter().enumerate().filter(|(_, it)| it.selected) {
-                        let gm = &self.meshes[&(Arc::as_ptr(&it.mesh) as usize)];
+                    for (i, _) in cb.items.iter().enumerate().filter(|(_, it)| it.selected) {
+                        let gm = self.meshes.get(self.item_keys[i]).expect("resolved");
                         pass.set_bind_group(
                             1,
                             &self.object_bg,

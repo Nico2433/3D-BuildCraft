@@ -72,7 +72,8 @@ fn write_zip<W: Write + std::io::Seek>(
 ) -> Result<()> {
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(3));
 
     zip.start_file("[Content_Types].xml", opts)?;
     zip.write_all(

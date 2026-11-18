@@ -4,7 +4,7 @@
 
 use super::agent_shot::Shot;
 use super::*;
-use crate::mcp::{self, Reply};
+use crate::mcp::{self, args, Reply};
 use serde_json::{json, Value};
 use std::sync::mpsc::{channel, Sender};
 
@@ -65,6 +65,10 @@ impl App {
         let processed = !requests.is_empty();
         let lang = self.settings.lang();
         for r in requests {
+            if let Err(e) = mcp::check_args(&r.tool, &r.args) {
+                let _ = r.reply.send(Err(e));
+                continue;
+            }
             if r.tool == "screenshot" {
                 self.screenshot(r, ctx);
                 continue;
@@ -77,7 +81,11 @@ impl App {
             }
             // Errors the actions report as notices go back to the agent too.
             let before = self.toasts.len();
-            let mut out = self.agent_call(&r.tool, &r.args, ctx);
+            // A panic in a tool fails that call, not the app.
+            let mut out = crate::i18n::in_english(|| {
+                crate::no_panic(|| Ok(self.agent_call(&r.tool, &r.args, ctx)))
+            })
+            .unwrap_or_else(|e| Err(format!("{e:#}; the scene may need undo")));
             let errors: Vec<String> = self.toasts[before.min(self.toasts.len())..]
                 .iter()
                 .filter(|t| t.error)
@@ -110,7 +118,9 @@ impl App {
             "transform"
                 | "set_color"
                 | "hollow"
+                | "smooth"
                 | "simplify"
+                | "extrude_outline"
                 | "split"
                 | "emboss_text"
                 | "set_material"
@@ -118,14 +128,34 @@ impl App {
         ) || (tool == "edit"
             && !matches!(a["operation"].as_str(), Some("undo" | "redo")));
         if selection_needed && self.scene.selection.is_empty() {
-            return Err("nothing is selected; call select first".into());
+            return Err(mcp::nothing_selected(tool));
+        }
+        // An object with no triangles can only be deleted.
+        if selection_needed && !(tool == "edit" && a["operation"] == "delete") {
+            self.scene.selected().try_for_each(mcp::require_geometry)?;
+        }
+        let adds = matches!(tool, "insert_shape" | "import" | "load_image")
+            || (tool == "edit" && a["operation"] == "duplicate");
+        if adds && self.scene.objects.len() >= args::limits::MAX_OBJECTS {
+            return Err(format!(
+                "the scene already has {} objects, the most {tool} adds to; delete some first",
+                self.scene.objects.len()
+            ));
         }
         // A tool left open by the user would catch the edit; the agent's call wins.
         if tool == "measure" {
             return Ok(vec![mcp::text(&mcp::measure(&self.scene, a)?.to_string())]);
         }
         if tool == "list_fonts" {
-            let fonts = mcp::list_fonts(&crate::emboss::font_families(), a["filter"].as_str());
+            let limit = (!a["limit"].is_null())
+                .then(|| args::integer(a, "limit", 0, args::limits::LIST_LIMIT))
+                .transpose()?;
+            let filter = args::text(a, "filter", args::limits::INFO_CHARS)?;
+            let fonts = mcp::list_fonts(
+                &crate::emboss::font_families(),
+                filter.as_deref(),
+                limit.map(|n| n as usize),
+            );
             return Ok(vec![mcp::text(&fonts.to_string())]);
         }
         // These leave the user's open tool alone.
@@ -139,57 +169,49 @@ impl App {
         if edits {
             self.tool = None;
         }
+        // Objects are cheap to clone (their meshes are shared): the answer says what changed.
+        let before = self.scene.objects.clone();
+        // What `save` wrote: the file and its size in bytes.
+        let mut saved = None;
+        // What to tell the agent when the call did nothing.
+        let mut note = None;
         match tool {
             "get_scene" => {}
             "select" => {
-                let ids: Vec<u64> = a["ids"]
-                    .as_array()
-                    .ok_or("ids must be a list")?
-                    .iter()
-                    .map(|v| v.as_u64().ok_or("ids must be integers"))
-                    .collect::<Result<_, _>>()?;
+                let ids = args::ids(&a["ids"], "ids")?;
                 if let Some(id) = ids.iter().find(|id| self.scene.get(**id).is_none()) {
-                    return Err(format!("no object with id {id}"));
+                    return Err(format!("no object with id {id}; get_scene lists the ids"));
                 }
                 self.scene.selection = ids.into_iter().collect();
             }
             "insert_shape" => self.agent_insert_shape(a, ctx)?,
             "transform" => {
-                let rotation = vec3(&a["rotation"])?;
-                let size = vec3(&a["size"])?;
-                let position = vec3(&a["position"])?;
-                if size.is_some_and(|s| s.min_element() <= 0.0) {
-                    return Err("size must be greater than 0".into());
-                }
-                self.apply(Action::BeginEdit, ctx);
-                // Rotation first: it changes the bounding box the others are about.
-                if let Some(r) = rotation {
-                    self.apply(Action::SetRotation(r), ctx);
-                }
-                if let Some(s) = size {
-                    // Resizing is about the centre; keep the bottom where it was, so
-                    // objects on the floor stay there.
-                    let bottom = self.scene.selection_aabb().min.z;
-                    self.apply(Action::SetSize(s), ctx);
-                    let b = self.scene.selection_aabb();
-                    let lifted = b.center() + Vec3::Z * (bottom - b.min.z);
-                    self.apply(Action::MoveSelectionTo(lifted), ctx);
-                }
-                if let Some(p) = position {
-                    self.apply(Action::MoveSelectionTo(p), ctx);
-                }
-                // Side positions override the centre, so objects can meet at their bounds.
-                for (side, axis, max) in [
-                    ("bottom", 2, false),
-                    ("left", 0, false),
-                    ("right", 0, true),
-                    ("front", 1, false),
-                    ("back", 1, true),
-                ] {
-                    if let Some(value) = a[side].as_f64() {
+                let t = args::transform(a)?;
+                if t == args::Transform::default() {
+                    note = Some("nothing changed: give position, rotation, size, bottom, left, right, front or back");
+                } else {
+                    self.apply(Action::BeginEdit, ctx);
+                    // Rotation first: it changes the bounding box the others are about.
+                    if let Some(r) = t.rotation {
+                        self.apply(Action::SetRotation(r), ctx);
+                    }
+                    if let Some(s) = t.size {
+                        // Resizing is about the centre; keep the bottom where it was, so
+                        // objects on the floor stay there.
+                        let bottom = self.scene.selection_aabb().min.z;
+                        self.apply(Action::SetSize(s), ctx);
+                        let b = self.scene.selection_aabb();
+                        let lifted = b.center() + Vec3::Z * (bottom - b.min.z);
+                        self.apply(Action::MoveSelectionTo(lifted), ctx);
+                    }
+                    if let Some(p) = t.position {
+                        self.apply(Action::MoveSelectionTo(p), ctx);
+                    }
+                    // Side positions override the centre, so objects can meet at their bounds.
+                    for &(axis, max, value) in &t.sides {
                         let b = self.scene.selection_aabb();
                         let bound = if max { b.max[axis] } else { b.min[axis] };
-                        let to = b.center() + Vec3::AXES[axis] * (value as f32 - bound);
+                        let to = b.center() + Vec3::AXES[axis] * (value - bound);
                         self.apply(Action::MoveSelectionTo(to), ctx);
                     }
                 }
@@ -200,12 +222,20 @@ impl App {
                 if boolean && self.scene.selection.len() < 2 {
                     return Err(format!("{op} needs two or more selected objects"));
                 }
-                if op == "subtract" && self.scene.selection.is_empty() {
-                    return Err("subtract needs a selected object".into());
+                if op == "group" && self.scene.selection.len() < 2 {
+                    return Err("group needs two or more selected objects".into());
+                }
+                if op == "ungroup" && !self.scene.selected().any(|o| o.mesh.solids().len() > 1) {
+                    return Err(
+                        "ungroup needs a selected object made of separate solids, such as a group"
+                            .into(),
+                    );
                 }
                 let action = match op {
                     "delete" => Action::Delete,
                     "duplicate" => Action::Duplicate,
+                    "group" => Action::Group,
+                    "ungroup" => Action::Ungroup,
                     "merge" => Action::Boolean(Op::Union),
                     "subtract" => Action::Boolean(Op::Subtract),
                     "intersect" => Action::Boolean(Op::Intersect),
@@ -218,40 +248,36 @@ impl App {
                     "mirror_z" => Action::Mirror(Axis::Z),
                     "undo" => Action::Undo,
                     "redo" => Action::Redo,
-                    _ => return Err(format!("unknown operation: {op}")),
+                    _ => {
+                        return Err(format!(
+                            "unknown operation: {op}; one of {}",
+                            mcp::EDIT_OPERATIONS.join(", ")
+                        ))
+                    }
                 };
                 self.apply(action, ctx);
                 self.wait_jobs();
             }
             "set_color" => {
-                let c = a["color"].as_str().and_then(parse_hex);
-                let c = c.ok_or("color must look like #RRGGBB")?;
+                let c =
+                    args::color(a, "color")?.ok_or("color is missing: #RRGGBB, e.g. #FF8000")?;
                 self.apply(Action::SetColor(c), ctx);
             }
             "smooth" => {
-                let passes = match &a["passes"] {
-                    Value::Null => 3,
-                    v => v
-                        .as_u64()
-                        .filter(|p| *p <= crate::solid::SMOOTH_STEPS as u64)
-                        .ok_or("passes must be a whole number from 0 to 6")?,
-                };
+                let passes = args::passes(a)?;
                 let amount = passes as f32 / crate::solid::SMOOTH_STEPS as f32;
                 let edges = a["edges"].as_bool().unwrap_or(false);
                 if !self.modify_selected(|m| crate::solid::smooth_by(m, amount, edges)) {
-                    return Err("nothing selected, or smoothing failed".into());
+                    return Err("smoothing failed".into());
                 }
             }
             "hollow" => {
-                let wall = positive(&a["wall"], "wall")?;
+                let wall = args::wall(a)?;
                 self.tool = Some(Tool::Hollow { wall });
                 self.apply(Action::ApplyHollow, ctx);
             }
             "simplify" => {
-                let level = a["remove"].as_f64().ok_or("remove must be a number")? as f32;
-                if !(0.0..=1.0).contains(&level) {
-                    return Err("remove must be between 0 and 1".into());
-                }
+                let level = args::simplify_remove(a)?;
                 self.start_simplify(1.0 - level, ctx);
                 self.wait_jobs();
             }
@@ -264,41 +290,50 @@ impl App {
             "load_image" => self.agent_load_image(a, ctx)?,
             "extrude_outline" => self.agent_extrude_outline(a)?,
             "open" => {
-                let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
-                if !path.is_file() {
-                    return Err(format!("no such file: {}", path.display()));
-                }
+                let path = args::model_file(a)?;
                 if self.scene.dirty && a["discard_changes"].as_bool() != Some(true) {
                     return Err(
-                        "the scene has unsaved changes; save it or pass discard_changes".into(),
+                        "the scene has unsaved changes; save it first, pass discard_changes true to drop them, or use import to add the file to the scene".into(),
                     );
                 }
                 self.scene.dirty = false;
                 self.apply(Action::OpenPath(path), ctx);
                 self.wait_jobs();
                 // Files without units are taken as millimetres instead of asking.
-                while !self.pending_import.is_empty() {
+                while let Some(p) = self.pending_import.first() {
+                    if let Err(e) = p.check_size() {
+                        self.cancel_import();
+                        return Err(e);
+                    }
                     self.finish_import(false);
                 }
             }
             "save" => {
-                let path = PathBuf::from(a["path"].as_str().ok_or("path is missing")?);
-                if path.exists() && a["overwrite"].as_bool() != Some(true) {
-                    return Err(format!(
-                        "{} exists; pass overwrite to replace it",
-                        path.display()
-                    ));
-                }
-                self.save_to(path);
+                let path = args::save_path(a)?;
+                self.save_to(path.clone());
+                // A write that failed left an error notice, which `serve_agent` returns.
+                saved = std::fs::metadata(&path).ok().map(|m| (path, m.len()));
             }
             "print" => self.agent_print(ctx)?,
-            other => return Err(format!("unknown tool: {other}")),
+            other => return Err(format!("unknown tool: {other}; tools/list lists the tools")),
         }
         // A tool that failed stays open in the UI; close it, the agent gets the error.
         if edits {
             self.tool = None;
         }
-        Ok(vec![mcp::text(&self.scene_json().to_string())])
+        let mut answer = self.scene_json();
+        if let Some(note) = note {
+            answer["note"] = json!(note);
+        }
+        if let Some((path, bytes)) = saved {
+            answer["saved_to"] = json!(path.display().to_string());
+            answer["bytes"] = json!(bytes);
+        }
+        let changes = changes(&before, &self.scene.objects);
+        if changes.as_object().is_some_and(|c| !c.is_empty()) {
+            answer["changes"] = changes;
+        }
+        Ok(vec![mcp::text(&answer.to_string())])
     }
 
     /// The scene as the agent sees it, in millimetres.
@@ -327,6 +362,10 @@ impl App {
                     "triangles": o.mesh.triangles.len(),
                     "valid": !self.invalid.contains(&o.id),
                     "selected": self.scene.selection.contains(&o.id),
+                    "material": o.material.name(),
+                    "painted": o.mesh.colors.iter().any(|c| c[3] > 0),
+                    "textured": o.mesh.tex.iter().any(|t| t.layer != 0 && !t.decal),
+                    "stickers": o.mesh.tex.iter().any(|t| t.layer != 0 && t.decal),
                 })
             })
             .collect();
@@ -338,39 +377,6 @@ impl App {
             "can_redo": self.history.can_redo(),
         })
     }
-}
-
-/// An optional `[x, y, z]`; anything else is an error.
-pub(super) fn vec3(v: &Value) -> Result<Option<Vec3>, String> {
-    if v.is_null() {
-        return Ok(None);
-    }
-    let xs: Option<Vec<f32>> = v.as_array().map(|a| {
-        a.iter()
-            .filter_map(|x| x.as_f64().map(|x| x as f32))
-            .filter(|x| x.is_finite())
-            .collect()
-    });
-    match xs.as_deref() {
-        Some(&[x, y, z]) => Ok(Some(Vec3::new(x, y, z))),
-        _ => Err("expected [x, y, z] with three numbers".into()),
-    }
-}
-
-pub(super) fn positive(v: &Value, name: &str) -> Result<f32, String> {
-    match v.as_f64() {
-        Some(x) if x.is_finite() && x > 0.0 => Ok(x as f32),
-        _ => Err(format!("{name} must be a number greater than 0")),
-    }
-}
-
-pub(super) fn parse_hex(s: &str) -> Option<Rgba> {
-    let h = s.strip_prefix('#').unwrap_or(s);
-    if h.len() != 6 || !h.is_ascii() {
-        return None;
-    }
-    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
-    Some([byte(0)?, byte(2)?, byte(4)?, 0xFF])
 }
 
 impl App {
@@ -402,6 +408,60 @@ impl App {
     }
 }
 
+/// What a call did to the objects, by id: `created`, `removed` and `modified` (shape,
+/// placement, colour, material or name); a list with nothing in it is left out. A tool that
+/// replaces an object (split, a subtraction) shows as removed ids and created ones.
+fn changes(before: &[Object], after: &[Object]) -> Value {
+    let ids = |list: Vec<u64>| (!list.is_empty()).then(|| json!(list));
+    fn find(from: &[Object], id: u64) -> Option<&Object> {
+        from.iter().find(|o| o.id == id)
+    }
+    let created: Vec<u64> = after
+        .iter()
+        .filter(|o| find(before, o.id).is_none())
+        .map(|o| o.id)
+        .collect();
+    let removed: Vec<u64> = before
+        .iter()
+        .filter(|o| find(after, o.id).is_none())
+        .map(|o| o.id)
+        .collect();
+    let modified: Vec<u64> = after
+        .iter()
+        .filter(|n| {
+            find(before, n.id).is_some_and(|o| {
+                !std::sync::Arc::ptr_eq(&o.mesh, &n.mesh)
+                    || (
+                        o.translation,
+                        o.rotation,
+                        o.scale,
+                        o.color,
+                        o.material,
+                        &o.name,
+                    ) != (
+                        n.translation,
+                        n.rotation,
+                        n.scale,
+                        n.color,
+                        n.material,
+                        &n.name,
+                    )
+            })
+        })
+        .map(|o| o.id)
+        .collect();
+    let all = [
+        ("created", created),
+        ("removed", removed),
+        ("modified", modified),
+    ];
+    Value::Object(
+        all.into_iter()
+            .filter_map(|(key, list)| ids(list).map(|v| (key.to_owned(), v)))
+            .collect(),
+    )
+}
+
 fn round3(v: Vec3) -> [f32; 3] {
     v.to_array().map(|x| (x * 100.0).round() / 100.0)
 }
@@ -419,4 +479,26 @@ fn png_reply(w: u32, h: u32, bytes: Vec<u8>) -> Reply {
     rgba.write_to(&mut png, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
     Ok(vec![mcp::png(png.get_ref())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changes_lists_created_removed_and_modified_ids() {
+        let mut scene = Scene::default();
+        let cube = |name: &str| Object::new(name, Primitive::Cube.build(), [200, 0, 0, 255]);
+        let (a, b) = (scene.add(cube("a")), scene.add(cube("b")));
+        let before = scene.objects.clone();
+        assert_eq!(changes(&before, &scene.objects), json!({}));
+        scene.get_mut(a).unwrap().color = [0, 0, 255, 255];
+        scene.selection = [b].into();
+        scene.delete_selected();
+        let c = scene.add(cube("c"));
+        assert_eq!(
+            changes(&before, &scene.objects),
+            json!({"created": [c], "removed": [b], "modified": [a]})
+        );
+    }
 }

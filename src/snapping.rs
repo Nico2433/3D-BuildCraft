@@ -1,5 +1,9 @@
-//! Bounding-box alignment, independent of the UI and camera.
-use crate::mesh::Aabb;
+//! Snapping, independent of the UI and camera: bounding-box alignment for moving objects,
+//! and point snapping (vertices, edge middles and edges, face centres and planes) for the
+//! Measure tool and the MCP `measure` tool.
+use crate::mesh::{Aabb, Mesh};
+use glam::{Mat4, Vec3};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Snap {
@@ -27,6 +31,189 @@ pub fn snap_axis(moving: &Aabb, targets: &[Aabb], axis: usize, threshold: f32) -
         }
     }
     best
+}
+
+/// What a measured point snapped to, nearest kind first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapKind {
+    Vertex,
+    Midpoint,
+    Edge,
+    Face,
+    /// Nothing nearer than the face itself: the point stays on its plane.
+    Plane,
+}
+
+impl SnapKind {
+    /// English name, returned by the MCP tool.
+    pub fn name(self) -> &'static str {
+        match self {
+            SnapKind::Vertex => "Vertex",
+            SnapKind::Midpoint => "Midpoint",
+            SnapKind::Edge => "Edge",
+            SnapKind::Face => "Face centre",
+            SnapKind::Plane => "Plane",
+        }
+    }
+}
+
+/// A point on a surface after snapping, with the surface's normal there.
+#[derive(Clone, Copy, Debug)]
+pub struct PointSnap {
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub kind: SnapKind,
+    /// The face is one facet of a curved surface (a polygonal cylinder or sphere), so its
+    /// normal is not the surface's: aligning along it would measure to the facet.
+    pub curved: bool,
+}
+
+/// Neighbouring faces bending by at most this many degrees make a facet part of a curved
+/// surface; more is a real edge, as on a box.
+const CURVED_BEND: f32 = 45.0;
+
+/// The flat face (triangles within 1 degree of each other) around a triangle, in world
+/// space: its centre, normal and outline edges, and whether it is a facet of a curved
+/// surface.
+#[derive(Clone, Debug)]
+pub struct FaceInfo {
+    pub centre: Vec3,
+    pub normal: Vec3,
+    pub edges: Vec<[Vec3; 2]>,
+    /// The face is a facet of a curved surface, see [`PointSnap::curved`].
+    pub curved: bool,
+}
+
+impl FaceInfo {
+    /// `None` for a missing or degenerate triangle.
+    pub fn new(mesh: &Mesh, model: &Mat4, tri: usize) -> Option<Self> {
+        let world = |t: usize| {
+            mesh.triangles[t].map(|v| model.transform_point3(mesh.positions[v as usize]))
+        };
+        let region = mesh.face_region(tri, 1.0);
+        let flat = region.len();
+        let [a, b, c] = world(*region.first()?);
+        let normal = Mesh::face_normal(a, b, c);
+        if normal == Vec3::ZERO {
+            return None;
+        }
+        let key = |p: Vec3| (p * 1000.0).round().as_ivec3().to_array();
+        type Key = [i32; 3];
+        let mut edges: HashMap<(Key, Key), (u32, [Vec3; 2])> = HashMap::new();
+        let (mut sum, mut area) = (Vec3::ZERO, 0.0);
+        for t in region {
+            let v = world(t);
+            let twice = (v[1] - v[0]).cross(v[2] - v[0]).length();
+            sum += (v[0] + v[1] + v[2]) / 3.0 * twice;
+            area += twice;
+            for k in 0..3 {
+                let (p, q) = (v[k], v[(k + 1) % 3]);
+                let (kp, kq) = (key(p), key(q));
+                let e = edges.entry((kp.min(kq), kp.max(kq))).or_insert((0, [p, q]));
+                e.0 += 1;
+            }
+        }
+        (area > 0.0).then(|| FaceInfo {
+            centre: sum / area,
+            normal,
+            curved: mesh.face_region(tri, CURVED_BEND).len() > flat,
+            edges: edges
+                .into_values()
+                .filter(|e| e.0 == 1)
+                .map(|e| e.1)
+                .collect(),
+        })
+    }
+}
+
+fn closest_on_segment(p: Vec3, [a, b]: [Vec3; 2]) -> Vec3 {
+    let ab = b - a;
+    let t = if ab.length_squared() > 0.0 {
+        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    a + ab * t
+}
+
+/// Snap `hit`, a point on the face, to its nearest vertex, edge middle, edge or the face
+/// centre within `threshold` (in that order of preference), else keep it on the plane.
+pub fn snap_point(face: &FaceInfo, hit: Vec3, threshold: f32) -> PointSnap {
+    let nearest = |candidates: Vec<Vec3>| {
+        candidates
+            .into_iter()
+            .map(|p| (p.distance(hit), p))
+            .filter(|(d, _)| *d <= threshold)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, p)| p)
+    };
+    let found = nearest(face.edges.iter().flatten().copied().collect())
+        .map(|p| (p, SnapKind::Vertex))
+        .or_else(|| {
+            nearest(face.edges.iter().map(|[a, b]| (*a + *b) / 2.0).collect())
+                .map(|p| (p, SnapKind::Midpoint))
+        })
+        .or_else(|| {
+            nearest(
+                face.edges
+                    .iter()
+                    .map(|e| closest_on_segment(hit, *e))
+                    .collect(),
+            )
+            .map(|p| (p, SnapKind::Edge))
+        })
+        .or_else(|| nearest(vec![face.centre]).map(|p| (p, SnapKind::Face)));
+    let (point, kind) = found.unwrap_or((hit, SnapKind::Plane));
+    PointSnap {
+        point,
+        normal: face.normal,
+        kind,
+        curved: face.curved,
+    }
+}
+
+/// How a second measured point was moved to line up with the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alignment {
+    /// Both points lie on parallel faces: the distance is the one between the planes.
+    Perpendicular,
+    /// The line is within 3 degrees of this world axis (0 X, 1 Y, 2 Z): made exact.
+    Axis(usize),
+}
+
+/// Line the second point up with the first so the measurement is exact: onto the normal
+/// through the first point when both lie on parallel faces, else onto a world axis the
+/// line is nearly along. The aligned point must lie within `reach` of `second`, like any
+/// other snap target: a cursor far from the line keeps its own point instead of jumping
+/// across the face to the line (the hover would otherwise snap to a far corner on the
+/// parallel face, and flicker on the first point's own face where the offset is rounding
+/// noise). `f32::INFINITY` aligns whatever the distance. `None` when neither applies.
+pub fn align(
+    first: Vec3,
+    first_normal: Option<Vec3>,
+    second: Vec3,
+    second_normal: Option<Vec3>,
+    reach: f32,
+) -> Option<(Vec3, Alignment)> {
+    let d = second - first;
+    let perpendicular = first_normal.zip(second_normal).and_then(|(n, m)| {
+        let along = d.dot(n);
+        (n.dot(m).abs() >= 0.9995 && along.abs() > 1e-6)
+            .then(|| (first + n * along, Alignment::Perpendicular))
+    });
+    let len = d.length();
+    let on_axis = || {
+        (0..3)
+            .find(|&i| len > 1e-6 && d[i].abs() / len >= 0.9986)
+            .map(|i| {
+                let mut p = first;
+                p[i] = second[i];
+                (p, Alignment::Axis(i))
+            })
+    };
+    perpendicular
+        .filter(|(p, _)| p.distance(second) <= reach)
+        .or_else(|| on_axis().filter(|(p, _)| p.distance(second) <= reach))
 }
 
 #[cfg(test)]
@@ -68,5 +255,90 @@ mod tests {
     #[test]
     fn beyond_threshold() {
         assert!(snap_axis(&bounds(0., 10.), &[bounds(12., 22.)], 0, 0.5).is_none());
+    }
+
+    fn square() -> FaceInfo {
+        // A 10 x 10 square in the XY plane made of two triangles.
+        let mesh = Mesh::new(
+            vec![
+                Vec3::ZERO,
+                Vec3::new(10., 0., 0.),
+                Vec3::new(10., 10., 0.),
+                Vec3::new(0., 10., 0.),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        FaceInfo::new(&mesh, &Mat4::IDENTITY, 0).unwrap()
+    }
+    #[test]
+    fn face_info_skips_the_inner_diagonal() {
+        let f = square();
+        assert_eq!(f.edges.len(), 4);
+        assert!(f.centre.distance(Vec3::new(5., 5., 0.)) < 1e-4);
+        assert!((f.normal - Vec3::Z).length() < 1e-5);
+    }
+    #[test]
+    fn snaps_in_order_of_preference() {
+        let f = square();
+        let kind = |p: Vec3| snap_point(&f, p, 0.5).kind;
+        assert_eq!(kind(Vec3::new(0.2, 0.1, 0.)), SnapKind::Vertex);
+        assert_eq!(kind(Vec3::new(5.2, 0.1, 0.)), SnapKind::Midpoint);
+        assert_eq!(kind(Vec3::new(2.0, 0.3, 0.)), SnapKind::Edge);
+        assert_eq!(kind(Vec3::new(5.1, 4.9, 0.)), SnapKind::Face);
+        let p = snap_point(&f, Vec3::new(3., 4., 0.), 0.5);
+        assert_eq!((p.kind, p.point), (SnapKind::Plane, Vec3::new(3., 4., 0.)));
+        assert_eq!(
+            snap_point(&f, Vec3::new(0.2, 0.1, 0.), 0.5).point,
+            Vec3::ZERO
+        );
+    }
+    #[test]
+    fn a_facet_of_a_curved_surface_is_marked_but_a_box_face_is_not() {
+        let curved = |mesh: Mesh| {
+            let tri = (0..mesh.triangles.len())
+                .find(|&t| {
+                    let [a, b, c] = mesh.triangles[t].map(|v| mesh.positions[v as usize]);
+                    Mesh::face_normal(a, b, c).z.abs() < 0.1
+                })
+                .unwrap();
+            FaceInfo::new(&mesh, &Mat4::IDENTITY, tri).unwrap().curved
+        };
+        assert!(curved(crate::primitives::prism(24, 10.0, 20.0)));
+        assert!(!curved(crate::primitives::cube(10.0)));
+    }
+    #[test]
+    fn parallel_faces_give_the_perpendicular_distance() {
+        let n = Some(Vec3::Z);
+        let (p, how) = align(
+            Vec3::new(1., 1., 0.),
+            n,
+            Vec3::new(4., 6., 7.),
+            n,
+            f32::INFINITY,
+        )
+        .unwrap();
+        assert_eq!((p, how), (Vec3::new(1., 1., 7.), Alignment::Perpendicular));
+        // Out of reach of the cursor the point stays where it is.
+        assert!(align(Vec3::new(1., 1., 0.), n, Vec3::new(4., 6., 7.), n, 2.0).is_none());
+    }
+    #[test]
+    fn nearly_axis_aligned_lines_become_exact() {
+        let (p, how) = align(
+            Vec3::ZERO,
+            None,
+            Vec3::new(10., 0.1, -0.1),
+            None,
+            f32::INFINITY,
+        )
+        .unwrap();
+        assert_eq!((p, how), (Vec3::new(10., 0., 0.), Alignment::Axis(0)));
+        assert!(align(
+            Vec3::ZERO,
+            None,
+            Vec3::new(10., 5., 0.),
+            None,
+            f32::INFINITY
+        )
+        .is_none());
     }
 }

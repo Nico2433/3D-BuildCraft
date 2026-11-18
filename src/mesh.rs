@@ -2,7 +2,7 @@
 
 use crate::texture::FaceTex;
 use glam::{Mat4, Vec3};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mesh {
@@ -87,6 +87,9 @@ pub struct MeshStats {
     pub nonmanifold_edges: usize,
     pub misoriented_edges: usize,
     pub components: usize,
+    /// Pieces `Mesh::solids` splits the mesh into: components, with each cavity counted
+    /// as part of the solid around it.
+    pub solids: usize,
     pub area: f64,
     pub volume: f64,
 }
@@ -109,7 +112,8 @@ impl Mesh {
 
     /// Builds an indexed mesh from loose triangles, merging bit-identical vertices.
     pub fn from_triangle_soup(tris: &[[Vec3; 3]]) -> Self {
-        let mut map: HashMap<[u32; 3], u32> = HashMap::with_capacity(tris.len());
+        let mut map: HashMap<[u32; 3], u32> =
+            HashMap::with_capacity_and_hasher(tris.len(), Default::default());
         let mut positions = Vec::with_capacity(tris.len() / 2 + 3);
         let mut triangles = Vec::with_capacity(tris.len());
         for t in tris {
@@ -285,18 +289,35 @@ impl Mesh {
     /// Triangles that touch `start` through shared edges and bend no more than `max_deg`
     /// between adjacent faces: the area "Color" paints with a given coverage.
     pub fn face_region(&self, start: usize, max_deg: f32) -> Vec<usize> {
-        let unit: Vec<Vec3> = self
-            .triangle_positions()
-            .map(|[a, b, c]| Mesh::face_normal(a, b, c))
-            .collect();
-        let Some(_) = unit.get(start) else {
-            return Vec::new();
-        };
-        let cos = max_deg.clamp(0.0, 180.0).to_radians().cos();
-        // Quantize positions for topology only; preserve triangle numbering and colours.
+        self.face_region_within(start, max_deg, |_| true)
+    }
+
+    /// The area a brush (Paint's colour, Texture's brush) covers from triangle `start` of
+    /// this mesh placed by `model`: [`Mesh::face_region`] up to `coverage` × 180°, and with
+    /// `near` (a world point and radius, mm) only triangles whose centres lie within it,
+    /// so a smooth surface, where every edge bends a little, is not flooded.
+    pub fn face_region_near(
+        &self,
+        start: usize,
+        coverage: f32,
+        model: &Mat4,
+        near: Option<(Vec3, f32)>,
+    ) -> Vec<usize> {
+        self.face_region_within(start, coverage.clamp(0.0, 1.0) * 180.0, |f| {
+            near.is_none_or(|(at, r)| {
+                let [a, b, c] = self.triangles[f].map(|v| self.positions[v as usize]);
+                model.transform_point3((a + b + c) / 3.0).distance(at) <= r
+            })
+        })
+    }
+
+    /// For topology only: the index of the welded vertex each vertex belongs to (positions
+    /// equal within a millionth of the size are one) and how many welded vertices there are.
+    /// Vertex and triangle numbering stay as they are.
+    pub fn welded_indices(&self) -> (Vec<u32>, usize) {
         let tolerance = self.aabb().size().max_element().max(1.0) * 1e-6;
-        let mut vertices = HashMap::new();
-        let welded: Vec<u32> = self
+        let mut vertices = HashMap::default();
+        let welded = self
             .positions
             .iter()
             .map(|p| {
@@ -305,28 +326,75 @@ impl Mesh {
                 *vertices.entry(key).or_insert(next)
             })
             .collect();
+        (welded, vertices.len())
+    }
+
+    /// [`Mesh::face_region`], spreading only through triangles `within` accepts; `start`
+    /// is always in it.
+    pub fn face_region_within(
+        &self,
+        start: usize,
+        max_deg: f32,
+        within: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
+        if start >= self.triangles.len() {
+            return Vec::new();
+        }
+        // Only the triangles the region reaches need their normals.
+        let normal = |f: usize| {
+            let [a, b, c] = self.triangles[f].map(|v| self.positions[v as usize]);
+            Mesh::face_normal(a, b, c)
+        };
+        let cos = max_deg.clamp(0.0, 180.0).to_radians().cos();
+        // Quantize positions for topology only; preserve triangle numbering and colours.
+        let (welded, count) = self.welded_indices();
         let triangles: Vec<_> = self
             .triangles
             .iter()
             .map(|t| t.map(|v| welded[v as usize]))
             .collect();
-        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        // Triangles around each welded vertex, as one flat list with offsets; two
+        // triangles share an edge when both are around its first vertex and hold the other.
+        let mut first = vec![0u32; count + 1];
+        for &v in triangles.iter().flatten() {
+            first[v as usize + 1] += 1;
+        }
+        for v in 0..count {
+            first[v + 1] += first[v];
+        }
+        let mut fill = first.clone();
+        let mut around = vec![0u32; triangles.len() * 3];
         for (f, t) in triangles.iter().enumerate() {
-            for k in 0..3 {
-                let (a, b) = (t[k], t[(k + 1) % 3]);
-                by_edge.entry((a.min(b), a.max(b))).or_default().push(f);
+            for &v in t {
+                around[fill[v as usize] as usize] = f as u32;
+                fill[v as usize] += 1;
             }
         }
+        // Whether `t` has the edge between `a` and `b`, which can be a collapsed one.
+        let has_edge = |t: &[u32; 3], a: u32, b: u32| {
+            if a == b {
+                (0..3).any(|k| t[k] == a && t[(k + 1) % 3] == a)
+            } else {
+                t.contains(&a) && t.contains(&b)
+            }
+        };
         let mut seen = vec![false; self.triangles.len()];
         seen[start] = true;
         let mut out = vec![start];
         let mut i = 0;
         while i < out.len() {
-            let t = triangles[out[i]];
+            let from = out[i];
+            let t = triangles[from];
+            let from_normal = normal(from);
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
-                for &g in &by_edge[&(a.min(b), a.max(b))] {
-                    if !seen[g] && unit[g].dot(unit[out[i]]) >= cos - 1e-6 {
+                for &g in &around[first[a as usize] as usize..first[a as usize + 1] as usize] {
+                    let g = g as usize;
+                    if !seen[g]
+                        && has_edge(&triangles[g], a, b)
+                        && normal(g).dot(from_normal) >= cos - 1e-6
+                        && within(g)
+                    {
                         seen[g] = true;
                         out.push(g);
                     }
@@ -367,6 +435,33 @@ impl Mesh {
         n.iter().map(|v| v.normalize_or_zero()).collect()
     }
 
+    /// A cheap stand-in for [`Mesh::shading`] (linear time, about 2 ms at 320k triangles):
+    /// every triangle gets its own vertices with its face normal, so hard-edged models
+    /// look right and a dense smooth one (tiny triangles) is hard to tell from the real
+    /// shading. No creases, paint or textures. Last resort, drawn only when a big mesh
+    /// has nothing earlier to show while the real shading is computed on a worker.
+    pub fn provisional_shading(&self) -> Shading {
+        let n = self.triangles.len() * 3;
+        let mut out = Shading {
+            positions: Vec::with_capacity(n),
+            normals: Vec::with_capacity(n),
+            colors: vec![[0; 4]; n],
+            uvs: vec![[0.0; 2]; n],
+            tex: vec![0; n],
+            triangles: Vec::with_capacity(self.triangles.len()),
+            edges: Vec::new(),
+        };
+        for t in &self.triangles {
+            let [a, b, c] = t.map(|i| self.positions[i as usize]);
+            let normal = (b - a).cross(c - a).normalize_or_zero();
+            let base = out.positions.len() as u32;
+            out.positions.extend([a, b, c]);
+            out.normals.extend([normal; 3]);
+            out.triangles.push([base, base + 1, base + 2]);
+        }
+        out
+    }
+
     /// The mesh as drawn: vertices split where faces meet at more than `crease_deg`, so
     /// flat faces look flat and smooth ones stay smooth, with the crease edges that
     /// outline a selected object.
@@ -381,20 +476,30 @@ impl Mesh {
             })
             .collect();
         let unit: Vec<Vec3> = face.iter().map(|n| n.normalize_or_zero()).collect();
-        let mut around: Vec<Vec<u32>> = vec![Vec::new(); self.positions.len()];
+        // Faces around each vertex, as one flat list with a start offset per vertex.
+        let mut start = vec![0u32; self.positions.len() + 1];
+        for &v in self.triangles.iter().flatten() {
+            start[v as usize + 1] += 1;
+        }
+        for v in 0..self.positions.len() {
+            start[v + 1] += start[v];
+        }
+        let mut fill = start.clone();
+        let mut around = vec![0u32; self.triangles.len() * 3];
         for (f, t) in self.triangles.iter().enumerate() {
             for &v in t {
-                around[v as usize].push(f as u32);
+                around[fill[v as usize] as usize] = f as u32;
+                fill[v as usize] += 1;
             }
         }
         let mut out = Shading::default();
-        let mut index: HashMap<Corner, u32> = HashMap::new();
+        let mut index: HashMap<Corner, u32> = HashMap::default();
         let mut corner = vec![[0u32; 3]; self.triangles.len()];
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
                 let v = t[k];
                 // Faces at this vertex that bend less than the crease from this one.
-                let n: Vec3 = around[v as usize]
+                let n: Vec3 = around[start[v as usize] as usize..start[v as usize + 1] as usize]
                     .iter()
                     .filter(|&&g| g as usize == f || unit[f].dot(unit[g as usize]) >= cos)
                     .map(|&g| face[g as usize])
@@ -424,21 +529,24 @@ impl Mesh {
             }
         }
         out.triangles = corner.clone();
-        let mut edges: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::new();
+        // Every edge as (low vertex, high vertex, face, side), sorted so the faces on one
+        // edge sit together.
+        let mut edges: Vec<(u32, u32, u32, u8)> = Vec::with_capacity(self.triangles.len() * 3);
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
-                edges.entry((a.min(b), a.max(b))).or_default().push((f, k));
+                edges.push((a.min(b), a.max(b), f as u32, k as u8));
             }
         }
-        for faces in edges.values() {
+        edges.sort_unstable();
+        for faces in edges.chunk_by(|x, y| (x.0, x.1) == (y.0, y.1)) {
             // Borders are left out: they mark broken meshes, which get a red outline on the floor instead.
-            let sharp = match faces[..] {
-                [(f, _), (g, _)] => unit[f].dot(unit[g]) < cos,
+            let sharp = match faces {
+                [(_, _, f, _), (_, _, g, _)] => unit[*f as usize].dot(unit[*g as usize]) < cos,
                 _ => false,
             };
             if sharp {
-                let (f, k) = faces[0];
+                let (f, k) = (faces[0].2 as usize, faces[0].3 as usize);
                 out.edges.push([corner[f][k], corner[f][(k + 1) % 3]]);
             }
         }
@@ -509,9 +617,9 @@ impl Mesh {
             ..Default::default()
         };
         let mut undirected: HashMap<(u32, u32), u32> =
-            HashMap::with_capacity(self.triangles.len() * 2);
+            HashMap::with_capacity_and_hasher(self.triangles.len() * 2, Default::default());
         let mut directed: HashMap<(u32, u32), u32> =
-            HashMap::with_capacity(self.triangles.len() * 3);
+            HashMap::with_capacity_and_hasher(self.triangles.len() * 3, Default::default());
         let mut dsu = Dsu::new(self.positions.len());
         for t in &self.triangles {
             if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
@@ -543,6 +651,11 @@ impl Mesh {
         roots.sort_unstable();
         roots.dedup();
         s.components = roots.len();
+        s.solids = if s.components > 1 {
+            self.solid_groups().map_or(1, |g| g.len())
+        } else {
+            s.components
+        };
         s
     }
 }
@@ -552,17 +665,25 @@ impl Mesh {
     /// cut. A closed inner surface (the cavity of a hollowed part, wound inwards) stays with
     /// the smallest solid around it.
     pub fn solids(&self) -> Vec<Mesh> {
+        match self.solid_groups() {
+            Some(groups) => groups.iter().map(|g| self.sub_mesh(g)).collect(),
+            None => vec![self.clone()],
+        }
+    }
+
+    /// Triangle indices of each solid `solids` returns; `None` when the mesh is one piece.
+    fn solid_groups(&self) -> Option<Vec<Vec<usize>>> {
         let mut dsu = Dsu::new(self.positions.len());
         for t in &self.triangles {
             dsu.union(t[0] as usize, t[1] as usize);
             dsu.union(t[1] as usize, t[2] as usize);
         }
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
         for (i, t) in self.triangles.iter().enumerate() {
             groups.entry(dsu.find(t[0] as usize)).or_default().push(i);
         }
         if groups.len() < 2 {
-            return vec![self.clone()];
+            return None;
         }
         let mut shells: Vec<Vec<usize>> = groups.into_values().collect();
         shells.sort_by_key(|g| g[0]);
@@ -586,7 +707,7 @@ impl Mesh {
         };
         let (outer, voids): (Vec<_>, Vec<_>) = shells.into_iter().partition(|g| volume(g) >= 0.0);
         if outer.is_empty() {
-            return vec![self.clone()];
+            return None;
         }
         let boxes: Vec<(Aabb, f64)> = outer.iter().map(|g| (aabb(g), volume(g))).collect();
         let mut solids = outer;
@@ -599,12 +720,12 @@ impl Mesh {
                 .unwrap_or(0);
             solids[host].extend(v);
         }
-        solids.iter().map(|g| self.sub_mesh(g)).collect()
+        Some(solids)
     }
 
     /// The given triangles, with only the vertices they use.
     fn sub_mesh(&self, tris: &[usize]) -> Mesh {
-        let mut map: HashMap<u32, u32> = HashMap::new();
+        let mut map: HashMap<u32, u32> = HashMap::default();
         let mut m = Mesh::default();
         let colored = self.colors.len() == self.triangles.len();
         let textured = self.tex.len() == self.triangles.len();

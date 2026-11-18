@@ -130,6 +130,63 @@ pub fn cut_plane(mesh: &Mesh, plane: &CutPlane) -> (Mesh, Mesh) {
     )
 }
 
+/// Why `plane` cuts nothing of `mesh` (world coordinates), when the whole mesh lies on
+/// one side of it; `name` names the object in the message.
+pub fn misses(mesh: &Mesh, plane: &CutPlane, name: &str) -> Option<String> {
+    let (n, p) = (plane.normal(), plane.point());
+    let (lo, hi) = mesh
+        .positions
+        .iter()
+        .map(|v| n.dot(*v - p))
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d), hi.max(d))
+        });
+    // A hair inside still cuts nothing worth keeping.
+    const EPS: f32 = 1e-4;
+    if mesh.positions.is_empty() || (lo < -EPS && hi > EPS) {
+        return None;
+    }
+    let below = hi <= EPS;
+    let b = mesh.aabb();
+    Some(
+        if n.abs_diff_eq(Vec3::Z, 1e-4) || n.abs_diff_eq(-Vec3::Z, 1e-4) {
+            // Level: in heights, as the agent and the panel give them.
+            let round = |v: f32| (v * 100.0).round() / 100.0;
+            let (z, bottom, top) = (round(p.z), round(b.min.z), round(b.max.z));
+            if p.z > b.max.z + EPS || p.z < b.min.z - EPS {
+                let (side, edge, at) = if p.z > b.max.z {
+                    ("above", "top", b.max.z)
+                } else {
+                    ("below", "bottom", b.min.z)
+                };
+                format!("z {z} is {side} the {edge} of {name} ({at:.2} mm); nothing to cut")
+            } else {
+                // On the bottom or the top face: no material on one side of the plane.
+                format!(
+                    "z must be strictly between the bottom ({bottom} mm) and the top ({top} mm) of {name}; z {z} is on its {} face and cuts nothing",
+                    if p.z > b.center().z { "top" } else { "bottom" }
+                )
+            }
+        } else {
+            let side = if below { "below" } else { "above" };
+            format!("the plane misses {name}, which lies wholly {side} it; nothing to cut")
+        },
+    )
+}
+
+/// Whether `pieces` are `mesh` unchanged: a finite plane whose rectangle sweeps through
+/// none of it, or next to none (under a millionth of its volume), keeps it whole and at
+/// most splits off slivers.
+pub fn unchanged(mesh: &Mesh, pieces: &[Mesh]) -> bool {
+    let volume = mesh.stats().volume;
+    let tiny = 1e-6 * volume.abs();
+    let volumes: Vec<f64> = pieces.iter().map(|p| p.stats().volume).collect();
+    matches!(
+        volumes.iter().filter(|v| v.abs() > tiny).collect::<Vec<_>>()[..],
+        [only] if (only - volume).abs() <= tiny
+    )
+}
+
 /// The pieces of `mesh` (world coordinates) that "Split" keeps, empty ones left out. An
 /// infinite plane cuts exactly with `cut_plane`. A finite one only cuts inside the prism
 /// its rectangle sweeps along the normal: Top removes the part of the prism below the

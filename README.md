@@ -31,7 +31,7 @@ macOS builds are planned but not published yet.
 
 **Building**
 - Shapes: cube, cylinder, pyramid, cone, sphere, hexagon, wedge, torus, tetrahedron (40 mm), and Custom with subdivisions, size, roundness and a wireframe option.
-- Add dialog: recent files as thumbnails, local 3D libraries (your own folders, browsed and searched with thumbnails), Load image as a height relief or an outline, Camera (a webcam photo).
+- Add dialog: recent files as thumbnails, local 3D libraries (your own folders, browsed and searched with thumbnails), Load image (PNG, JPEG or SVG) as a height relief or an outline, Camera (a webcam photo).
 - Select (click, Ctrl/Shift for more, box selection), move, rotate and scale with handles or exact values in the bottom bar. Objects snap to each other's edges and centres with alignment guides; hold Alt while dragging to turn snapping off.
 - Duplicate, copy, cut, paste, delete, group, put on floor, mirror, measure distances. Ctrl+V of a picture from the clipboard (a screenshot, an image copied in a browser) opens Load image with it; Ctrl+V of files copied in a file manager imports them as a drop.
 - Booleans (merge, intersect, subtract), Split with a movable and rotatable cut plane, full (infinite) or sized to cut only part of a model, Simplify, Smooth, Hollow, Extrude down, Extrude outline (a border around or inside the shape seen from above, for keychains, with sharp corners and separate smoothing for its outer and inner edges).
@@ -57,7 +57,7 @@ macOS builds are planned but not published yet.
 
 The assistant button in the top bar opens a chat with Chat and Settings tabs. Settings turns the assistant on and picks what it talks to: an installed agent (Claude Code or Codex, found on PATH), a command of your own, or a model endpoint (OpenAI-compatible such as Ollama, LM Studio, OpenAI or OpenRouter, or Anthropic-compatible). API keys go to the system keychain, never to the settings file.
 
-The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, extrude an outline, split with a level or slanted plane, emboss text, shapes or pictures, list the installed fonts, colour, paint an area, materials, textures and stickers, add a file (SVG too), load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step.
+The assistant works on the open scene with the app's tools (read the scene, select, insert shapes (sized or as Custom), move/rotate/size, booleans, repair, smooth, hollow, simplify, extrude an outline, split with a level or slanted plane, emboss text, shapes or pictures, list the installed fonts, colour, paint an area, materials, textures and stickers, add a file (SVG too), load an image, open, save, screenshot, the model's title and other details, the slicer's printer, print profile and filaments, printer status, and printing in 3D or on paper when you ask for it). Each change shows as it happens and is an undo step. Pictures (Load image, an emboss picture, textures and stickers) can be PNG, JPEG or SVG; an SVG is drawn as a picture, 1024 px along its longer side.
 
 The same tools are served over MCP for agents outside the app. Turn on "External agents (MCP)": while the app is open, it serves MCP over HTTP at a local URL, `http://127.0.0.1:47833/mcp/<token>`, and stops when the app closes. The agent starts no process of ours; it talks to the open window. The settings list the agents found on this computer (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity) with a switch that registers the URL, and show the URL and the command to copy, for example:
 
@@ -65,7 +65,7 @@ The same tools are served over MCP for agents outside the app. Turn on "External
 claude mcp add -s user --transport http buildcraft3d http://127.0.0.1:47833/mcp/<token>
 ```
 
-An agent that runs where the app cannot read its files (a sandbox, a container, another machine) sends the file itself: `open`, `import`, `load_image`, `emboss_text` and `apply_texture` take `file_name` with `file_text` (SVG, OBJ, ASCII STL or PLY) or `file_base64` (any format, up to 25 MB) instead of a path. The app writes it to a folder of its own under the system temp folder; folders older than a day are removed.
+An agent that runs where the app cannot read its files (a sandbox, a container, another machine) sends the file itself: `open`, `import`, `load_image`, `emboss_text` and `apply_texture` take `file_name` with `file_text` (a text format: SVG, OBJ, ASCII STL or PLY for models, SVG for pictures) or `file_base64` (any format the tool takes, up to 25 MB) instead of a path. The app writes it to a folder of its own under the system temp folder; folders older than a day are removed.
 
 The token is made once and kept in the config folder (readable by you only), so the URL stays the same between runs; the port is `mcp_port` under `[ai]` in the settings file. Registrations from older versions (the `--mcp` command) show as outdated; turning the switch on replaces them.
 

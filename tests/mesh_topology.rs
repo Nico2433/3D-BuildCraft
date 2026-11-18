@@ -247,3 +247,17 @@ fn every_primitive_is_a_closed_positive_solid() {
         assert!(s.volume > 0.0, "{p:?}");
     }
 }
+
+#[test]
+fn face_region_follows_flat_faces_and_all_faces_at_180_degrees() {
+    let cube = primitives::cube(10.0);
+    // Welded or not, a flat face of a cube is two triangles; the next face bends 90°.
+    assert_eq!(cube.face_region(0, 1.0).len(), 2);
+    assert_eq!(cube.face_region(0, 91.0).len(), cube.triangles.len());
+    assert!(cube.face_region(99, 90.0).is_empty());
+    let sphere = primitives::sphere(10.0, 24, 24);
+    assert_eq!(sphere.face_region(5, 180.0).len(), sphere.triangles.len());
+    let [a, b, c] = sphere.triangle_positions().nth(5).unwrap();
+    let near = sphere.face_region_near(5, 1.0, &Mat4::IDENTITY, Some(((a + b + c) / 3.0, 3.0)));
+    assert!(near.len() > 1 && near.len() < sphere.triangles.len() / 2);
+}

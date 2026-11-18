@@ -2,9 +2,8 @@
 //! and printing: each goes through the same state and actions as the print view, the
 //! "About the model" panel and "Print on paper".
 
-use super::agent::parse_hex;
 use super::*;
-use crate::mcp::{self, Reply};
+use crate::mcp::{self, args, Reply};
 use serde_json::{json, Value};
 
 /// The `model_info` argument for each [`io::ModelInfo::fields`] entry, in that order.
@@ -15,6 +14,10 @@ const INFO_KEYS: [&str; 5] = [
     "license_terms",
     "description",
 ];
+
+/// The most filament slots a printer may have (a slot number above it is an error before
+/// the printer's own count is looked at).
+const FILAMENT_SLOTS: u64 = 64;
 
 /// What `print_setup` was asked to change; filament slots are counted from 0.
 #[derive(Debug, Default, PartialEq)]
@@ -114,11 +117,9 @@ impl App {
             }
         };
         let colors = self.scene_colors();
+        // Every choice is checked before any is made, so an error changes no filament.
         if let Some(slot) = setup.filament {
             in_range(slot)?;
-            for &c in &colors {
-                self.apply(Action::ChooseFilament(c, slot), ctx);
-            }
         }
         for &(color, slot) in &setup.filaments {
             in_range(slot)?;
@@ -133,6 +134,13 @@ impl App {
                         .join(", ")
                 ));
             }
+        }
+        if let Some(slot) = setup.filament {
+            for &c in &colors {
+                self.apply(Action::ChooseFilament(c, slot), ctx);
+            }
+        }
+        for &(color, slot) in &setup.filaments {
             self.apply(Action::ChooseFilament(color, slot), ctx);
         }
         Ok(self.print_setup_json())
@@ -216,13 +224,9 @@ impl App {
 fn info_args(a: &Value, mut info: io::ModelInfo) -> Result<Option<io::ModelInfo>, String> {
     let mut changed = false;
     for (key, (_, value)) in INFO_KEYS.iter().zip(info.fields_mut()) {
-        match &a[*key] {
-            Value::Null => {}
-            Value::String(s) => {
-                *value = s.clone();
-                changed = true;
-            }
-            _ => return Err(format!("{key} must be a string")),
+        if let Some(text) = args::text(a, key, args::limits::INFO_CHARS)? {
+            *value = text;
+            changed = true;
         }
     }
     Ok(changed.then_some(info))
@@ -238,17 +242,18 @@ fn info_json(info: &io::ModelInfo) -> Value {
 
 fn parse_setup(a: &Value) -> Result<Setup, String> {
     let text = |key: &str| -> Result<Option<String>, String> {
-        match &a[key] {
-            Value::Null => Ok(None),
-            Value::String(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
-            _ => Err(format!("{key} must be a non-empty string")),
+        match args::text(a, key, args::limits::INFO_CHARS)? {
+            Some(s) if s.trim().is_empty() => Err(format!("{key} must be a non-empty string")),
+            s => Ok(s),
         }
     };
     // Slots are numbered from 1, as the slicer and the Material page show them.
     let slot = |v: &Value, what: &str| -> Result<usize, String> {
         match v.as_u64() {
-            Some(n) if n >= 1 => Ok(n as usize - 1),
-            _ => Err(format!("{what} must be a filament slot number, from 1")),
+            Some(n) if (1..=FILAMENT_SLOTS).contains(&n) => Ok(n as usize - 1),
+            _ => Err(format!(
+                "{what} must be a filament slot number, from 1 to {FILAMENT_SLOTS}"
+            )),
         }
     };
     let filament = match &a["filament"] {
@@ -257,11 +262,19 @@ fn parse_setup(a: &Value) -> Result<Setup, String> {
     };
     let filaments = match &a["filaments"] {
         Value::Null => Vec::new(),
+        Value::Array(items) if items.len() > args::limits::LIST_ITEMS => {
+            return Err(format!(
+                "filaments has {} items; at most {} are accepted",
+                items.len(),
+                args::limits::LIST_ITEMS
+            ))
+        }
         Value::Array(items) => items
             .iter()
             .map(|item| {
-                let color = item["color"].as_str().and_then(parse_hex);
-                let color = color.ok_or("each filaments color must look like #RRGGBB")?;
+                let color = args::color(item, "color")
+                    .map_err(|e| format!("each filaments {e}"))?
+                    .ok_or("each filaments color is missing: #RRGGBB, e.g. #FF8000")?;
                 Ok((color, slot(&item["slot"], "each filaments slot")?))
             })
             .collect::<Result<_, String>>()?,
@@ -340,7 +353,7 @@ fn status_json(i: usize, p: &crate::slicer::Printer, s: &crate::slicer::Status) 
 }
 
 fn hex(c: Rgba) -> String {
-    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+    format!("#{}", crate::io::hex6(c))
 }
 
 #[cfg(test)]

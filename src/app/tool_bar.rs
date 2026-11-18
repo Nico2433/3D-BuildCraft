@@ -4,6 +4,7 @@
 use super::icons::Icon;
 use super::style;
 use super::*;
+use crate::section::Tilt;
 
 impl App {
     pub(super) fn capture_photo(&mut self) {
@@ -117,7 +118,7 @@ impl App {
                                 Action::Capture,
                                 matches!(cam.latest(), Some(Ok(_))),
                             )),
-                            Some(Tool::Measure { .. }) | None => None,
+                            Some(Tool::Measure(_)) | None => None,
                         }
                     };
                     let cancel = if self.pending_import.is_empty() {
@@ -294,28 +295,116 @@ impl App {
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
-            Some(Tool::Measure { points, hover }) => {
-                let d = match (&points[..], hover) {
-                    ([a, b], _) => a.distance(*b),
-                    ([a], Some(h)) => a.distance(*h),
-                    _ => 0.0,
-                } / units.to_mm();
+            Some(Tool::Measure(m)) => {
                 ui.add_space(12.0);
-                style::label(
-                    ui,
-                    &format!(
-                        "{}    {d:.2}    {}",
-                        tr(lang, "Distance"),
-                        tr(lang, units.label())
-                    ),
-                );
+                let distance = tr(lang, Mode::Distance.label());
+                let mut kind = usize::from(m.is_round());
+                if style::segmented(ui, &[distance, tr(lang, "Diameter")], &mut kind) {
+                    m.set_round(kind == 1);
+                }
+                if m.is_round() {
+                    ui.add_space(8.0);
+                    let names = Mode::ROUND.map(|x| tr(lang, x.label()));
+                    let mut k = Mode::ROUND.iter().position(|x| *x == m.mode).unwrap_or(0);
+                    if style::dropdown(ui, "measure_mode", 215.0, &names, &mut k) {
+                        m.set_mode(Mode::ROUND[k]);
+                    }
+                }
+                style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                let unit = tr(lang, units.label());
+                // The diameter is what the round tools are for: large and first.
+                let diameter = |d: f32| format!("{}    {:.2}    {unit}", tr(lang, "Diameter"), d);
+                match (m.mode, m.current_round()) {
+                    (Mode::Distance, _) => {
+                        style::label(
+                            ui,
+                            &format!(
+                                "{}    {:.2}    {unit}",
+                                tr(lang, Mode::Distance.label()),
+                                m.distance() / units.to_mm()
+                            ),
+                        );
+                    }
+                    (_, Some(r)) => {
+                        let c = r.center / units.to_mm();
+                        style::label_large(ui, &diameter(r.diameter() / units.to_mm()));
+                        style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                        style::label(
+                            ui,
+                            &format!(
+                                "{}    {:.2}    {unit}    {}    {:.2}, {:.2}, {:.2}",
+                                tr(lang, "Radius"),
+                                r.radius / units.to_mm(),
+                                tr(lang, "Center"),
+                                c.x,
+                                c.y,
+                                c.z
+                            ),
+                        );
+                    }
+                    (Mode::Section, None) if m.section.is_some() => {
+                        style::label(ui, tr(lang, "Not a circular section"));
+                    }
+                    (Mode::Surface, None) if !m.points.is_empty() => {
+                        style::label(ui, tr(lang, "Not a round surface"));
+                    }
+                    _ => {
+                        style::label_large(ui, &diameter(0.0));
+                    }
+                }
+                // A plane turned to where the contour is round.
+                let tilted = m
+                    .section
+                    .as_ref()
+                    .filter(|s| m.mode == Mode::Section && s.section.auto_tilted);
+                if let Some(s) = tilted {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    let degrees = s.section.tilt_degrees();
+                    style::label(ui, &format!("{} {degrees:.0}°", tr(lang, "Tilted")));
+                }
+                // What else the cut says: every round contour (outer and inner diameters)
+                // and the wall's thickness.
+                let diameters: Vec<String> = m
+                    .section_diameters()
+                    .iter()
+                    .take(4)
+                    .map(|(outer, d)| {
+                        let role = if *outer { "Outer" } else { "Inner" };
+                        format!("{}  {:.2}", tr(lang, role), d / units.to_mm())
+                    })
+                    .chain(m.section_wall().map(|w| {
+                        format!("{}  {:.2}", tr(lang, "Wall"), w.thickness / units.to_mm())
+                    }))
+                    .collect();
+                if !diameters.is_empty() {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    style::label(ui, &format!("{}    {unit}", diameters.join("    ")));
+                }
+                if m.mode == Mode::Section {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    let mut auto = m.tilt == Tilt::Auto;
+                    let switch = style::labeled(ui, tr(lang, "Tilt"), |ui| {
+                        style::switch(ui, &mut auto, tr(lang, "Auto"), tr(lang, "Off"))
+                    });
+                    switch.clone().on_hover_text(tr(
+                        lang,
+                        "Tilts the plane through the click to where the contour is round (a tilted mouth)",
+                    ));
+                    if switch.changed() {
+                        m.tilt = if auto { Tilt::Auto } else { Tilt::None };
+                        m.section = None;
+                    }
+                }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let snap = &mut self.settings.snap;
-                if style::labeled(ui, tr(lang, "Snap"), |ui| {
+                let switch = style::labeled(ui, tr(lang, "Snap"), |ui| {
                     style::switch(ui, snap, tr(lang, "On"), tr(lang, "Off"))
-                })
-                .changed()
-                {
+                });
+                switch.clone().on_hover_text(tr(
+                    lang,
+                    "Snaps to vertices, edges and face centres; hold Alt to turn it around",
+                ));
+                if switch.changed() {
                     let _ = self.settings.save();
                 }
             }

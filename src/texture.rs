@@ -53,9 +53,26 @@ impl FaceTex {
         }
         let v = (d11 * d20 - d01 * d21) / den;
         let w = (d00 * d21 - d01 * d20) / den;
-        let u = 1.0 - v - w;
-        let at = |k: usize| u * self.uv[0][k] + v * self.uv[1][k] + w * self.uv[2][k];
+        self.uv_mix([1.0 - v - w, v, w])
+    }
+
+    /// The picture coordinates at the point with corner weights `w`.
+    fn uv_mix(&self, w: [f32; 3]) -> [f32; 2] {
+        let at = |k: usize| w[0] * self.uv[0][k] + w[1] * self.uv[1][k] + w[2] * self.uv[2][k];
         [at(0), at(1)]
+    }
+
+    /// The picture's colour at the point with corner weights `w`, as the viewport's
+    /// shader samples it (but the nearest pixel): a tile repeats, a sticker shows only
+    /// inside its rectangle (`None` outside). `img` is this layer's [`image`].
+    pub fn sample(&self, img: &RgbaImage, w: [f32; 3]) -> Option<[u8; 4]> {
+        let [u, v] = self.uv_mix(w);
+        let inside = |t: f32| (0.0..=1.0).contains(&t);
+        if self.decal && !(inside(u) && inside(v)) || img.width() == 0 || img.height() == 0 {
+            return None;
+        }
+        let px = |t: f32, n: u32| ((t.rem_euclid(1.0) * n as f32) as u32).min(n - 1);
+        Some(img.get_pixel(px(u, img.width()), px(v, img.height())).0)
     }
 
     /// The same texture for a triangle `to` cut out of the one with corners `from`: each
