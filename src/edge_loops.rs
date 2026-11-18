@@ -23,6 +23,9 @@ use std::sync::{Arc, Weak};
 
 /// Faces bent more than this (degrees between their normals) share a feature edge.
 pub const FEATURE_DEG: f32 = 40.0;
+/// Soft mode's threshold: rounded rims bend only a few degrees from one facet to the next,
+/// so the circular-edge search can lower the crease angle to find them.
+pub const SOFT_DEG: f32 = 6.0;
 /// Two feature edges at a vertex are one line only when the path turns less than this.
 pub const MAX_TURN_DEG: f32 = 150.0;
 /// RMS distance of a loop's vertices from its circle, as a fraction of the radius.
@@ -61,8 +64,18 @@ struct EdgeFaces {
 }
 
 impl FeatureEdges {
-    /// Finds the feature edges of `mesh` and joins them into chains.
+    /// Finds the sharp feature edges of `mesh` ([`FEATURE_DEG`]) and joins them into chains.
     pub fn compute(mesh: &Mesh) -> Arc<FeatureEdges> {
+        Self::compute_at(mesh, FEATURE_DEG)
+    }
+
+    /// The same with the low threshold [`SOFT_DEG`], which also finds rounded rims.
+    pub fn compute_soft(mesh: &Mesh) -> Arc<FeatureEdges> {
+        Self::compute_at(mesh, SOFT_DEG)
+    }
+
+    /// Feature edges where faces bend more than `angle` degrees.
+    pub fn compute_at(mesh: &Mesh, angle: f32) -> Arc<FeatureEdges> {
         let (welded, count) = mesh.welded_indices();
         let tris: Vec<[u32; 3]> = mesh
             .triangles
@@ -92,7 +105,7 @@ impl FeatureEdges {
                 e.count += 1;
             }
         }
-        let cos = FEATURE_DEG.to_radians().cos();
+        let cos = angle.to_radians().cos();
         let mut keys: Vec<u64> = seen
             .iter()
             .filter(|(_, e)| match e.count {
@@ -293,22 +306,31 @@ impl FeatureEdges {
     }
 }
 
-/// The feature edges of a mesh for callers that can wait for them (the MCP tools):
+/// The sharp feature edges of a mesh for callers that can wait for them (the MCP tools):
 /// computed on the calling thread and kept for the last few meshes.
 pub fn feature_edges(mesh: &Arc<Mesh>) -> Arc<FeatureEdges> {
-    type Kept = Vec<(Weak<Mesh>, Arc<FeatureEdges>)>;
+    feature_edges_at(mesh, FEATURE_DEG)
+}
+
+/// [`feature_edges`] for a crease angle in degrees (kept per mesh and angle).
+pub fn feature_edges_at(mesh: &Arc<Mesh>, angle: f32) -> Arc<FeatureEdges> {
+    type Kept = Vec<(Weak<Mesh>, u32, Arc<FeatureEdges>)>;
     thread_local! { static KEPT: std::cell::RefCell<Kept> = const { std::cell::RefCell::new(Vec::new()) }; }
     KEPT.with(|kept| {
         let mut kept = kept.borrow_mut();
-        kept.retain(|(m, _)| m.strong_count() > 0);
-        if let Some((_, f)) = kept.iter().find(|(m, _)| m.as_ptr() == Arc::as_ptr(mesh)) {
+        kept.retain(|(m, _, _)| m.strong_count() > 0);
+        let bits = angle.to_bits();
+        if let Some((_, _, f)) = kept
+            .iter()
+            .find(|(m, a, _)| m.as_ptr() == Arc::as_ptr(mesh) && *a == bits)
+        {
             return f.clone();
         }
-        let f = FeatureEdges::compute(mesh);
-        if kept.len() >= 4 {
+        let f = FeatureEdges::compute_at(mesh, angle);
+        if kept.len() >= 6 {
             kept.remove(0);
         }
-        kept.push((Arc::downgrade(mesh), f.clone()));
+        kept.push((Arc::downgrade(mesh), bits, f.clone()));
         f
     })
 }
@@ -338,7 +360,8 @@ pub struct CircleFit {
 }
 
 impl EdgeLoop {
-    fn new(chain: usize, points: Vec<Vec3>, closed: bool) -> Self {
+    /// Fits a circle to `points` (a chain of feature edges or a section's contour).
+    pub fn new(chain: usize, points: Vec<Vec3>, closed: bool) -> Self {
         let fit = fit_loop(&points, closed);
         EdgeLoop {
             chain,

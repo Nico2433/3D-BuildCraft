@@ -162,14 +162,15 @@ fn measure_overlay(
                 Stroke::new(1.5 / ppp, MEASURE_GREEN),
             ));
         }
-        // Radius line to the rim (the whole diameter for a circular edge, to the loop's
-        // first vertex), the centre as a dot with a small cross.
-        let edge = m.edge.as_ref().or(m.edge_hover.as_ref());
-        let rim = match (m.mode, edge.and_then(|l| l.points.first())) {
-            (Mode::Edge, Some(p)) => (*p - r.center).normalize_or_zero(),
-            _ => r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector()),
+        // Radius line to the rim (the whole diameter for a circular edge or section, to
+        // the outline's first vertex), the centre as a dot with a small cross.
+        let outline = m.outline();
+        let on_outline = outline.is_some();
+        let rim = match outline.and_then(|l| l.points.first()) {
+            Some(p) => (*p - r.center).normalize_or_zero(),
+            None => r.axis.map_or(Vec3::X, |a| a.any_orthonormal_vector()),
         };
-        let start = if m.mode == Mode::Edge {
+        let start = if on_outline {
             r.center - rim * r.radius
         } else {
             r.center
@@ -198,12 +199,27 @@ fn measure_overlay(
         painter.add(egui::Shape::line(line, Stroke::new(2.5 / ppp, color)));
     };
     if m.mode == Mode::Edge {
-        let chosen = m.edge.as_ref().map(|l| l.chain);
-        if let Some(l) = m.edge_hover.as_ref().filter(|l| Some(l.chain) != chosen) {
+        let chosen = m.edge.as_ref().map(|l| (l.chain, m.edge_soft));
+        let hover = m
+            .edge_hover
+            .as_ref()
+            .map(|l| (l, (l.chain, m.edge_hover_soft)));
+        if let Some((l, _)) = hover.filter(|(_, key)| Some(*key) != chosen) {
             loop_line(l, SNAP_YELLOW);
         }
         if let Some(l) = &m.edge {
             loop_line(l, MEASURE_GREEN);
+        }
+    }
+    // The section: every contour of the cut, the clicked one in green.
+    if let Some(s) = m.section.as_ref().filter(|_| m.mode == Mode::Section) {
+        for (i, c) in s.section.contours.iter().enumerate() {
+            if Some(i) != s.chosen {
+                loop_line(&c.outline, SNAP_YELLOW);
+            }
+        }
+        if let Some(c) = s.chosen.and_then(|i| s.section.contours.get(i)) {
+            loop_line(&c.outline, MEASURE_GREEN);
         }
     }
     for (p, color) in marks {

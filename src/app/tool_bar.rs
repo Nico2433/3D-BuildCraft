@@ -295,12 +295,19 @@ impl App {
                 style::label(ui, &format!("{wall:.1}  mm"));
             }
             Some(Tool::Measure(m)) => {
-                let modes = [Mode::Distance, Mode::Surface, Mode::Circle, Mode::Edge];
+                let modes = [
+                    Mode::Distance,
+                    Mode::Surface,
+                    Mode::Circle,
+                    Mode::Edge,
+                    Mode::Section,
+                ];
                 let names = [
                     tr(lang, "Distance"),
                     tr(lang, "Radius of a surface"),
                     tr(lang, "Radius from 3 points"),
                     tr(lang, "Circular edge"),
+                    tr(lang, "Section at height"),
                 ];
                 let mut k = modes.iter().position(|x| *x == m.mode).unwrap_or(0);
                 ui.add_space(12.0);
@@ -334,12 +341,31 @@ impl App {
                     (Mode::Edge, None) if m.edge.is_some() || m.edge_hover.is_some() => {
                         tr(lang, "Not a circular edge").to_string()
                     }
+                    (Mode::Section, None) if m.section.is_some() => {
+                        tr(lang, "Not a circular section").to_string()
+                    }
                     (Mode::Surface, None) if !m.points.is_empty() => {
                         tr(lang, "Not a round surface").to_string()
                     }
                     _ => format!("{}    0.00    {unit}", tr(lang, "Radius")),
                 };
                 style::label(ui, &text);
+                // What else the result says: a soft edge was used, or the wall's thickness.
+                let note = if m.is_soft() {
+                    Some(tr(lang, "Soft edge (rounded rim)").to_string())
+                } else {
+                    m.section_wall().map(|w| {
+                        format!(
+                            "{}    {:.2}    {unit}",
+                            tr(lang, "Wall"),
+                            w.thickness / units.to_mm()
+                        )
+                    })
+                };
+                if let Some(note) = note {
+                    style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
+                    style::label(ui, &note);
+                }
                 style::separator(ui, style::TOOL_H, style::BLUE_FIELD_BORDER);
                 let snap = &mut self.settings.snap;
                 let switch = style::labeled(ui, tr(lang, "Snap"), |ui| {

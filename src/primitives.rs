@@ -327,6 +327,54 @@ pub fn torus(major: f32, minor: f32, nu: usize, nv: usize) -> Mesh {
     Mesh::new(positions, triangles)
 }
 
+/// A solid of revolution about Z from a closed profile of (radius, z) points. Points on
+/// the axis (radius 0) are single vertices; the segment along the axis is skipped.
+pub fn revolve(profile: &[(f32, f32)], n: usize) -> Mesh {
+    let mut positions = Vec::new();
+    let mut index: Vec<Vec<u32>> = Vec::new();
+    for &(r, z) in profile {
+        let count = if r < 1e-6 { 1 } else { n };
+        let ring = (0..count)
+            .map(|j| {
+                let a = j as f32 / n as f32 * std::f32::consts::TAU;
+                positions.push(Vec3::new(r * a.cos(), r * a.sin(), z));
+                (positions.len() - 1) as u32
+            })
+            .collect();
+        index.push(ring);
+    }
+    let at = |i: usize, j: usize| index[i][j % index[i].len()];
+    let mut triangles = Vec::new();
+    for i in 0..profile.len() {
+        let k = (i + 1) % profile.len();
+        for j in 0..n {
+            let (a, b, c, d) = (at(i, j), at(i, j + 1), at(k, j + 1), at(k, j));
+            for t in [[a, b, c], [a, c, d]] {
+                if t[0] != t[1] && t[1] != t[2] && t[0] != t[2] {
+                    triangles.push(t);
+                }
+            }
+        }
+    }
+    Mesh::new(positions, triangles)
+}
+
+/// A hollow flower pot for tests: 80 mm across the mouth, 90 high, 3 mm walls, 4 mm floor,
+/// the rim rounded over by a half circle of the wall's thickness in 16 steps (no crease
+/// reaches 40°, so it has no sharp rim edge).
+#[cfg(test)]
+pub(crate) fn rounded_pot() -> Mesh {
+    let (ro, wall, h) = (40.0f32, 3.0f32, 90.0f32);
+    let (rm, zc, rr) = (ro - wall / 2.0, h - wall / 2.0, wall / 2.0);
+    let mut profile = vec![(0.0, 0.0), (25.0, 0.0), (ro, zc)];
+    for s in 1..16 {
+        let a = s as f32 / 16.0 * PI;
+        profile.push((rm + rr * a.cos(), zc + rr * a.sin()));
+    }
+    profile.extend([(ro - wall, zc), (ro - wall, 4.0), (0.0, 4.0)]);
+    revolve(&profile, 96)
+}
+
 /// Makes every face of a convex mesh point away from its centroid.
 fn orient_convex(mut m: Mesh) -> Mesh {
     let centroid = m.positions.iter().copied().sum::<Vec3>() / m.positions.len() as f32;

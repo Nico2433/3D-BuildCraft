@@ -21,6 +21,7 @@ pub mod picture;
 pub mod primitives;
 pub mod repair;
 pub mod scene;
+pub mod section;
 pub mod settings;
 pub mod slicer;
 pub mod snapping;
