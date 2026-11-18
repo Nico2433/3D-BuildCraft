@@ -2,6 +2,7 @@
 //! and runs each call here, on the UI thread, through the same actions as the UI. So every
 //! change is an undo step and shows on screen as it happens.
 
+use super::agent_shot::Shot;
 use super::*;
 use crate::mcp::{self, Reply};
 use serde_json::{json, Value};
@@ -64,21 +65,8 @@ impl App {
         let processed = !requests.is_empty();
         let lang = self.settings.lang();
         for r in requests {
-            if r.tool == "screenshot" && self.power.sleeping() {
-                let _ = r
-                    .reply
-                    .send(Err("screenshots are unavailable while minimized".into()));
-                continue;
-            }
             if r.tool == "screenshot" {
-                if self.agent_shot.is_some() {
-                    let _ = r
-                        .reply
-                        .send(Err("a screenshot is already being taken".into()));
-                } else {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-                    self.agent_shot = Some(r.reply);
-                }
+                self.screenshot(r, ctx);
                 continue;
             }
             if r.tool != "get_scene" {
@@ -385,6 +373,35 @@ pub(super) fn parse_hex(s: &str) -> Option<Rgba> {
     Some([byte(0)?, byte(2)?, byte(4)?, 0xFF])
 }
 
+impl App {
+    /// An off-screen view when the arguments ask for one, drawn on its own thread (the
+    /// meshes are shared, not copied); otherwise the window as it is.
+    fn screenshot(&mut self, r: Request, ctx: &egui::Context) {
+        let reply = match Shot::parse(&self.scene, &r.args) {
+            Err(e) => Err(e),
+            Ok(Some(shot)) => {
+                std::thread::spawn(move || {
+                    let [w, h] = shot.size();
+                    let _ = r.reply.send(png_reply(w, h, shot.render()));
+                });
+                return;
+            }
+            Ok(None) if self.power.sleeping() => {
+                Err("screenshots are unavailable while minimized".into())
+            }
+            Ok(None) if self.agent_shot.is_some() => {
+                Err("a screenshot is already being taken".into())
+            }
+            Ok(None) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                self.agent_shot = Some(r.reply);
+                return;
+            }
+        };
+        let _ = r.reply.send(reply);
+    }
+}
+
 fn round3(v: Vec3) -> [f32; 3] {
     v.to_array().map(|x| (x * 100.0).round() / 100.0)
 }
@@ -392,7 +409,12 @@ fn round3(v: Vec3) -> [f32; 3] {
 fn encode_png(img: &egui::ColorImage) -> Reply {
     let [w, h] = img.size;
     let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-    let rgba = image::RgbaImage::from_raw(w as u32, h as u32, bytes).ok_or("bad screenshot")?;
+    png_reply(w as u32, h as u32, bytes)
+}
+
+/// RGBA rows, `w`×`h`, as the PNG image a tool replies with.
+fn png_reply(w: u32, h: u32, bytes: Vec<u8>) -> Reply {
+    let rgba = image::RgbaImage::from_raw(w, h, bytes).ok_or("bad screenshot")?;
     let mut png = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut png, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;

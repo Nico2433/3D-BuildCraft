@@ -2,7 +2,7 @@
 //! picked by the preset). It works on the scene through the same tools an external agent
 //! gets over MCP (`crate::mcp`); agents such as Claude Code or Codex attach that way.
 
-use crate::host::{host_command, in_flatpak};
+use crate::host::{home, host_command, in_flatpak};
 use crate::mcp::{self, Reply};
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -194,6 +194,38 @@ pub fn mcp_url(port: u16) -> Result<String> {
     Ok(mcp::http::url(port, &mcp::http::token()?))
 }
 
+/// The settings files that hold an agent's MCP servers, for agents whose `mcp list`
+/// cannot be used: Antigravity's command opens the editor, and OpenCode's lists names
+/// and states without URLs (and an empty list when its background service has none).
+fn config_files(kind: AgentKind) -> Option<Vec<std::path::PathBuf>> {
+    let home = home()?;
+    match kind {
+        AgentKind::Antigravity => Some(vec![home.join(".gemini/antigravity/mcp_config.json")]),
+        AgentKind::OpenCode => {
+            // Inside the sandbox XDG_CONFIG_HOME is the app's own; OpenCode runs on the host.
+            let config = std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|_| !in_flatpak())
+                .map_or_else(|| home.join(".config"), Into::into)
+                .join("opencode");
+            Some(
+                ["opencode.json", "opencode.jsonc", "config.json"]
+                    .map(|name| config.join(name))
+                    .into(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Whether any of the settings `files` has our server; missing files count as `No`.
+fn file_registration(files: &[std::path::PathBuf], url: &str) -> Registration {
+    let text: String = files
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect();
+    Registration::read(&text, url)
+}
+
 /// Antigravity's `mcp_config.json` entry for the server at `url`.
 pub fn antigravity_config(url: &str) -> String {
     json!({ "mcpServers": { SERVER: { "serverUrl": url } } }).to_string()
@@ -302,9 +334,12 @@ pub fn detect(url: &str) -> Detected {
         AgentKind::Antigravity,
     ] {
         if let Some(path) = find_program(kind.names().1) {
-            let registered = run_agent(&path, &["mcp".into(), "list".into()])
-                .map(|output| Registration::read(&output, url))
-                .map_err(|e| format!("{e:#}"));
+            let registered = match config_files(kind) {
+                Some(files) => Ok(file_registration(&files, url)),
+                None => run_agent(&path, &["mcp".into(), "list".into()])
+                    .map(|output| Registration::read(&output, url))
+                    .map_err(|e| format!("{e:#}")),
+            };
             found.agents.push(InstalledAgent {
                 kind,
                 path,
@@ -713,4 +748,28 @@ pub fn test(cfg: &Config, key: Option<&str>) -> Result<String> {
         },
     )?;
     Ok(said)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn reads_registration_from_settings_files() {
+        let dir = std::env::temp_dir().join(format!("bc3d-agent-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("opencode.json");
+        let missing = dir.join("config.json");
+        let url = "http://127.0.0.1:1/mcp/abc";
+        let files = [file.clone(), missing];
+        assert_eq!(file_registration(&files, url), Registration::No);
+        let entry = json!({ "mcp": { "servers": { SERVER: { "type": "remote", "url": url } } } });
+        std::fs::write(&file, entry.to_string()).unwrap();
+        assert_eq!(file_registration(&files, url), Registration::Current);
+        assert_eq!(
+            file_registration(&files, "http://127.0.0.1:2/mcp/x"),
+            Registration::Outdated
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

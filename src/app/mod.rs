@@ -31,6 +31,7 @@ mod add_dialog;
 mod agent;
 mod agent_model;
 mod agent_print;
+mod agent_shot;
 mod assistant_ui;
 mod dialogs;
 mod emboss_bar;

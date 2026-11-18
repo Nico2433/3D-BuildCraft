@@ -47,7 +47,7 @@ fn config_dir(slicer: &Slicer) -> Option<(PathBuf, &'static str)> {
         "Bambu Studio" => "BambuStudio",
         _ => return None,
     };
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let home = crate::host::home().unwrap_or_default();
     let flatpak = KNOWN
         .iter()
         .flat_map(|k| k.2.iter())

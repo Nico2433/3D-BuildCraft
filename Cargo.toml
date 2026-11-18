@@ -1,6 +1,6 @@
 [package]
 name = "buildcraft3d"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 description = "3D BuildCraft: build, repair and prepare 3D models for printing"
 license = "MIT"
@@ -52,11 +52,15 @@ usvg = { version = "0.45", default-features = false }
 [dev-dependencies]
 tempfile = "3"
 
+# Line numbers in panics and backtraces are enough; full debug info made every test and
+# dev binary hundreds of MB.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 [profile.release]
 lto = "thin"

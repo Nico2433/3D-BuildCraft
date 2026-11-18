@@ -76,13 +76,13 @@ pub fn detect() -> Vec<Slicer> {
         }
     } else if cfg!(target_os = "macos") {
         roots.push(PathBuf::from("/Applications"));
-        if let Some(home) = std::env::var_os("HOME") {
-            roots.push(PathBuf::from(home).join("Applications"));
+        if let Some(home) = crate::host::home() {
+            roots.push(home.join("Applications"));
         }
     } else {
         roots.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
-        if let Some(home) = std::env::var_os("HOME") {
-            roots.push(PathBuf::from(home).join(".local/share/flatpak/exports/bin"));
+        if let Some(home) = crate::host::home() {
+            roots.push(home.join(".local/share/flatpak/exports/bin"));
         }
     }
     // The Flatpak exports are hidden in our own sandbox: list them on the host.
@@ -198,8 +198,8 @@ pub fn open(slicer: &Path, model: &Path) -> Result<()> {
 /// A folder for files sent to the slicer that a Flatpak slicer can read too. Inside our
 /// Flatpak the app cache is under `~/.var/app`, which other Flatpaks cannot see.
 pub fn print_dir() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) if in_flatpak() => PathBuf::from(home).join(".cache/buildcraft3d/print"),
+    match crate::host::home() {
+        Some(home) if in_flatpak() => home.join(".cache/buildcraft3d/print"),
         _ => crate::settings::dirs()
             .map(|d| d.cache_dir().join("print"))
             .unwrap_or_else(|| std::env::temp_dir().join("buildcraft3d-print")),
