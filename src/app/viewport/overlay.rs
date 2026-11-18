@@ -99,7 +99,7 @@ impl App {
     }
 }
 
-/// The measure marks: arrows on the placed points (blue the first, green the others) and on
+/// The measure marks: arrows on the placed points (blue) and on
 /// the live one (the arrow is the tool's cursor), the faint line between two of them, and
 /// the fitted circle or sphere with its radius line.
 fn measure_overlay(
@@ -114,16 +114,11 @@ fn measure_overlay(
             Stroke::new(11.0 / ppp, Color32::from_white_alpha(13)),
         );
     };
-    let live = if m.points.len() < m.capacity() {
-        m.hover
-    } else {
-        None
-    };
+    let live = if m.picking() { m.hover } else { None };
     let marks: Vec<(Vec3, Color32)> = m
         .points
         .iter()
-        .enumerate()
-        .map(|(i, p)| (p.point, if i == 0 { MEASURE_BLUE } else { MEASURE_GREEN }))
+        .map(|p| (p.point, MEASURE_BLUE))
         .chain(live.map(|p| (p.point, MEASURE_GREEN)))
         .collect();
     if let (Mode::Distance, [(a, _), (b, _)]) = (m.mode, &marks[..]) {

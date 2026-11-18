@@ -537,6 +537,12 @@ impl Measure {
         }
     }
 
+    /// Whether the next click places something, so the arrow marker follows the pointer:
+    /// every mode but a finished one; a section is picked by each click.
+    pub fn picking(&self) -> bool {
+        self.mode == Mode::Section || self.points.len() < self.capacity()
+    }
+
     /// The distance between the placed points, or the last one and the cursor.
     pub fn distance(&self) -> f32 {
         let at = |s: &Spot| s.point;

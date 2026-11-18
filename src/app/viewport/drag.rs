@@ -661,7 +661,7 @@ impl App {
                     m.cancel();
                 }
                 // The arrow marker takes the place of the system cursor.
-                if resp.hovered() && m.points.len() < m.capacity() {
+                if resp.hovered() && m.picking() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
                 }
             }
