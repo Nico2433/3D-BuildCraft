@@ -503,7 +503,20 @@ impl Scene {
             if let Some(why) = crate::cut::misses(&mesh, plane, &name) {
                 anyhow::bail!("{why}");
             }
-            for piece in crate::cut::split(&mesh, plane, keep)? {
+            let cut = crate::cut::split(&mesh, plane, keep)?;
+            if plane.size.is_some() && crate::cut::unchanged(&mesh, &cut) {
+                let side = |axis| {
+                    plane
+                        .extent(axis)
+                        .map_or("full".into(), |e| format!("{e} mm"))
+                };
+                anyhow::bail!(
+                    "the plane's width ({}) and length ({}) leave nothing of {name} to cut; make them larger or move the plane over the object",
+                    side(0),
+                    side(1)
+                );
+            }
+            for piece in cut {
                 let mut piece = Object::new(o.name.clone(), piece, o.color);
                 piece.material = o.material;
                 pieces.push(piece);

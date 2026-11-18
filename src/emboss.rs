@@ -372,8 +372,13 @@ fn layout(e: &Emboss) -> Result<Layout> {
     let (lo, hi) = bounds(&pieces);
     let (width, height) = (hi.x - lo.x, hi.y - lo.y);
     if width * height > MAX_AREA {
+        let (what, fix) = match e.pattern {
+            Pattern::Text => ("pattern", "Use a smaller size or width, or less text"),
+            Pattern::Image(_) => ("picture", "Use a smaller size"),
+            Pattern::Shape(_) => ("pattern", "Use a smaller size or width"),
+        };
         bail!(
-            "The pattern would cover {:.0} mm² ({width:.0} × {height:.0} mm); the most is {MAX_AREA:.0} mm². Use a smaller size or width, or less text",
+            "The {what} would cover {:.0} mm² ({width:.0} × {height:.0} mm); the most is {MAX_AREA:.0} mm². {fix}",
             width * height
         );
     }

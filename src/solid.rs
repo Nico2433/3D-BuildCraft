@@ -414,14 +414,23 @@ pub fn round(mesh: &Mesh, amount: f32) -> Result<Mesh> {
 
 /// Removes the inside of `mesh`, leaving a closed wall at least `wall` thick.
 pub fn hollow(mesh: &Mesh, wall: f32) -> Result<Mesh> {
+    let size = mesh.aabb().size().min_element();
     // No ball of radius `wall` fits inside an object thinner than twice the wall.
-    if mesh.aabb().size().min_element() <= 2.0 * wall {
-        bail!("The object is too thin to hollow with a {wall} mm wall");
+    if size <= 2.0 * wall {
+        bail!(
+            "The object is too thin to hollow with a {wall} mm wall: its smallest side is {size:.2} mm and must be more than twice the wall ({:.2} mm)",
+            2.0 * wall
+        );
     }
     let solid = to_manifold(mesh)?;
     let inside = inner(mesh, wall)?;
     if inside.is_empty() {
-        bail!("The object is too thin to hollow with a {wall} mm wall");
+        // The cavity is what is left of the smallest side after both walls.
+        bail!(
+            "The wall is too thick for this size: what is left inside a {wall} mm wall ({:.2} mm) is smaller than the {:.2} mm voxels (a quarter of the wall) that build the cavity. Use a thinner wall",
+            size - 2.0 * wall,
+            voxel(mesh, wall)
+        );
     }
     Ok(from_manifold(&solid.difference(&inside)))
 }
@@ -464,13 +473,18 @@ const SLACK: f32 = 0.02;
 
 const JITTER: (f32, f32) = (0.013_7, 0.029_1);
 
+/// The voxel size of `hollow`'s grid: depths are exact distances to the surface near the
+/// wall, so the wall is within the margin of the request; big models get coarse voxels
+/// and so a coarser surface.
+fn voxel(mesh: &Mesh, wall: f32) -> f32 {
+    (wall / 4.0).max(mesh.aabb().size().max_element() / MAX_CELLS)
+}
+
 /// The region deeper than `wall` inside `mesh`, as a solid.
 fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     let b = mesh.aabb();
     let size = b.max - b.min;
-    // Depths are exact distances to the surface near the wall, so the wall is within
-    // the margin of the request; big models get coarse voxels and so a coarser surface.
-    let h = (wall / 4.0).max(size.max_element() / MAX_CELLS);
+    let h = voxel(mesh, wall);
     // One outside voxel on every side, so every line starts and ends outside.
     let cells = (size / h).ceil().as_uvec3() + 2;
     let n = cells.to_array().map(|v| v as usize);

@@ -209,3 +209,48 @@ fn a_plane_that_misses_the_selection_cuts_nothing_and_says_why() {
         1
     );
 }
+
+#[test]
+fn a_plane_on_a_face_or_with_no_reach_cuts_nothing_and_keeps_the_object() {
+    use buildcraft3d::cut::Keep;
+    use buildcraft3d::scene::{Object, Scene, DEFAULT_COLOR};
+    let mut scene = Scene::default();
+    let id = scene.add(Object::new(
+        "Cube",
+        primitives::Primitive::Cube.build(),
+        DEFAULT_COLOR,
+    ));
+    scene.selection.insert(id);
+    let b = scene.get(id).unwrap().world_aabb();
+    for (z, face) in [(b.min.z, "bottom"), (b.max.z, "top")] {
+        let e = scene
+            .cut_pieces(&CutPlane::at_height(z), Keep::Top)
+            .unwrap_err()
+            .to_string();
+        let want = format!(
+            "z must be strictly between the bottom ({} mm) and the top ({} mm) of the object; z {} is on its {face} face and cuts nothing",
+            (b.min.z * 100.0).round() / 100.0,
+            (b.max.z * 100.0).round() / 100.0,
+            (z * 100.0).round() / 100.0
+        );
+        assert_eq!(e, want);
+    }
+    // A finite plane too small to reach any material replaces nothing.
+    let mut tiny = CutPlane::at_height(b.center().z);
+    tiny.set_extent(0, Some(1e-9));
+    tiny.set_extent(1, Some(1e-9));
+    for keep in [Keep::Top, Keep::Bottom, Keep::Both] {
+        let e = scene.cut_pieces(&tiny, keep).unwrap_err().to_string();
+        assert!(
+            e.contains("leave nothing of the object to cut"),
+            "{keep:?}: {e}"
+        );
+    }
+    assert_eq!(scene.objects.len(), 1);
+    assert_eq!(scene.objects[0].id, id);
+    // A real finite plane still cuts.
+    let mut real = CutPlane::at_height(b.center().z);
+    real.set_extent(0, Some(10.0));
+    real.set_extent(1, Some(10.0));
+    assert!(!scene.cut_pieces(&real, Keep::Top).unwrap().is_empty());
+}

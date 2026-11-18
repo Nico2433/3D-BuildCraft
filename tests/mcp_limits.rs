@@ -484,3 +484,30 @@ fn load_image_of_a_blank_picture_gives_a_solid_in_every_method() {
         }
     }
 }
+
+#[test]
+fn the_area_error_of_a_picture_does_not_talk_about_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = json!({"path": picture(dir.path()).to_str().unwrap(), "method": "edge", "size": 500});
+    let e = image3d::build(&args::load_image(&a).unwrap()).unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.starts_with("The picture would cover"), "{e}");
+    assert!(
+        e.ends_with("Use a smaller size") && !e.contains("text"),
+        "{e}"
+    );
+    // Text keeps its own advice.
+    let long = emboss::Emboss {
+        text: "W".repeat(60),
+        size: 200.0,
+        ..emboss::Emboss::default()
+    };
+    let e = emboss::text_solid(&primitives::box_mesh(glam::Vec3::splat(50.0)), &long)
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default();
+    assert!(
+        e.starts_with("The pattern would cover") && e.contains("or less text"),
+        "{e}"
+    );
+}
