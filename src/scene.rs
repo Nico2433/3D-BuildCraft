@@ -538,14 +538,72 @@ impl Scene {
 }
 
 use std::sync::{mpsc, Weak};
-type StatsEntry = (Weak<Mesh>, Option<crate::mesh::MeshStats>);
-type StatsPending = (Weak<Mesh>, mpsc::Receiver<crate::mesh::MeshStats>);
-#[derive(Default)]
-struct StatsCache {
-    ready: Vec<StatsEntry>,
-    pending: Option<StatsPending>,
+
+/// Results computed off the UI thread from an immutable mesh, keyed by its identity
+/// (`Arc<Mesh>`). Weak keys do not retain obsolete geometry: the result of a mesh that
+/// was edited or deleted meanwhile is dropped with it and never shown for another mesh.
+/// A single worker at a time bounds concurrent allocations.
+pub struct WorkCache<T> {
+    ready: Vec<(Weak<Mesh>, T)>,
+    /// The receiver sits in a `Mutex` only to make the cache `Sync` (the renderer holds one).
+    pending: Option<(Weak<Mesh>, std::sync::Mutex<mpsc::Receiver<T>>)>,
 }
-thread_local! { static STATS: std::cell::RefCell<StatsCache> = std::cell::RefCell::new(StatsCache::default()); }
+
+impl<T> Default for WorkCache<T> {
+    fn default() -> Self {
+        Self {
+            ready: Vec::new(),
+            pending: None,
+        }
+    }
+}
+
+impl<T: Clone + Send + 'static> WorkCache<T> {
+    /// The result for `mesh` when the worker has finished it; otherwise starts the
+    /// worker (if idle) and returns `None`. `on_done` runs on the worker thread after
+    /// the result is sent, for example to request a repaint.
+    pub fn get(
+        &mut self,
+        mesh: &Arc<Mesh>,
+        compute: fn(&Mesh) -> T,
+        on_done: impl FnOnce() + Send + 'static,
+    ) -> Option<T> {
+        self.ready.retain(|(m, _)| m.strong_count() > 0);
+        if let Some((key, mut rx)) = self.pending.take() {
+            match rx.get_mut().unwrap_or_else(|e| e.into_inner()).try_recv() {
+                Ok(value) => self.ready.push((key, value)),
+                Err(mpsc::TryRecvError::Empty) => self.pending = Some((key, rx)),
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        let key = Arc::downgrade(mesh);
+        if let Some((_, value)) = self.ready.iter().find(|(m, _)| Weak::ptr_eq(m, &key)) {
+            return Some(value.clone());
+        }
+        if self.pending.is_none() {
+            if self.ready.len() >= 64 {
+                self.ready.remove(0);
+            }
+            let (tx, rx) = mpsc::channel();
+            let mesh = mesh.clone();
+            std::thread::spawn(move || {
+                if tx.send(compute(&mesh)).is_ok() {
+                    on_done();
+                }
+            });
+            self.pending = Some((key, std::sync::Mutex::new(rx)));
+        }
+        None
+    }
+
+    /// Forgets the result for `mesh`, for callers that moved it somewhere else.
+    pub fn take(&mut self, mesh: &Arc<Mesh>) {
+        let key = Arc::downgrade(mesh);
+        self.ready.retain(|(m, _)| !Weak::ptr_eq(m, &key));
+    }
+}
+
+thread_local! { static STATS: std::cell::RefCell<WorkCache<crate::mesh::MeshStats>> = std::cell::RefCell::new(WorkCache::default()); }
 
 thread_local! {
     static LOCAL: std::cell::RefCell<Vec<(std::sync::Weak<Mesh>, Aabb)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -554,41 +612,14 @@ thread_local! {
 
 /// Releases rebuildable caches on the calling (UI) thread.
 pub fn clear_caches() {
-    STATS.with(|c| *c.borrow_mut() = StatsCache::default());
+    STATS.with(|c| *c.borrow_mut() = WorkCache::default());
     LOCAL.with(|c| *c.borrow_mut() = Vec::new());
     BOUNDS.with(|c| *c.borrow_mut() = Vec::new());
 }
 
-/// Topology statistics are computed off the UI thread. Weak keys do not retain
-/// obsolete geometry, and a single worker bounds concurrent topology allocations.
+/// Topology statistics are computed off the UI thread (see [`WorkCache`]).
 pub fn cached_stats(mesh: &Arc<Mesh>) -> Option<crate::mesh::MeshStats> {
-    STATS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache.ready.retain(|(m, _)| m.strong_count() > 0);
-        if let Some((key, rx)) = cache.pending.take() {
-            match rx.try_recv() {
-                Ok(stats) => cache.ready.push((key, Some(stats))),
-                Err(mpsc::TryRecvError::Empty) => cache.pending = Some((key, rx)),
-                Err(mpsc::TryRecvError::Disconnected) => {}
-            }
-        }
-        let key = Arc::downgrade(mesh);
-        if let Some((_, stats)) = cache.ready.iter().find(|(m, _)| Weak::ptr_eq(m, &key)) {
-            return *stats;
-        }
-        if cache.pending.is_none() {
-            if cache.ready.len() >= 64 {
-                cache.ready.remove(0);
-            }
-            let (tx, rx) = mpsc::channel();
-            let mesh = mesh.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(mesh.stats());
-            });
-            cache.pending = Some((key, rx));
-        }
-        None
-    })
+    STATS.with(|cache| cache.borrow_mut().get(mesh, Mesh::stats, || {}))
 }
 
 fn cached_aabb_local(mesh: &Arc<Mesh>) -> Aabb {
@@ -663,6 +694,64 @@ pub fn cached_aabb(mesh: &Arc<Mesh>, matrix: &Mat4) -> Aabb {
 mod tests {
     use super::*;
     use crate::primitives::Primitive;
+
+    fn shade(m: &Mesh) -> std::sync::Arc<crate::mesh::Shading> {
+        std::sync::Arc::new(m.shading(40.0))
+    }
+
+    fn wait_for(
+        cache: &mut WorkCache<std::sync::Arc<crate::mesh::Shading>>,
+        mesh: &Arc<Mesh>,
+    ) -> std::sync::Arc<crate::mesh::Shading> {
+        loop {
+            if let Some(s) = cache.get(mesh, shade, || {}) {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn worker_shading_equals_synchronous_shading() {
+        let mesh = Arc::new(Primitive::Sphere.build());
+        let mut cache = WorkCache::default();
+        // Not ready on the first call: the caller draws the provisional shading.
+        let first = cache.get(&mesh, shade, || {});
+        let got = first.unwrap_or_else(|| wait_for(&mut cache, &mesh));
+        let want = mesh.shading(40.0);
+        assert_eq!(got.positions, want.positions);
+        assert_eq!(got.normals, want.normals);
+        assert_eq!(got.triangles, want.triangles);
+        assert_eq!(got.edges, want.edges);
+        assert_eq!(got.colors, want.colors);
+        cache.take(&mesh);
+        assert!(cache.ready.is_empty());
+    }
+
+    #[test]
+    fn superseded_mesh_result_is_discarded() {
+        let mut cache = WorkCache::default();
+        let old = Arc::new(Primitive::Sphere.build());
+        assert!(cache.get(&old, shade, || {}).is_none());
+        // The object is edited or deleted while the worker runs.
+        drop(old);
+        let new = Arc::new(Primitive::Cube.build());
+        let got = wait_for(&mut cache, &new);
+        assert_eq!(got.positions, new.shading(40.0).positions);
+        // The stale result went with its mesh; only the live one is kept.
+        assert!(cache.get(&new, shade, || {}).is_some());
+        assert_eq!(cache.ready.len(), 1);
+    }
+
+    #[test]
+    fn provisional_shading_covers_the_same_triangles() {
+        let mesh = Primitive::Sphere.build();
+        let p = mesh.provisional_shading();
+        assert_eq!(p.triangles, mesh.triangles);
+        assert_eq!(p.normals.len(), p.positions.len());
+        assert_eq!(p.colors.len(), p.positions.len());
+        assert!(p.edges.is_empty());
+    }
 
     #[test]
     fn empty_mesh_world_bounds_remain_invalid() {

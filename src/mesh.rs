@@ -427,6 +427,22 @@ impl Mesh {
         n.iter().map(|v| v.normalize_or_zero()).collect()
     }
 
+    /// A cheap stand-in for [`Mesh::shading`] (linear time, a few ms at 320k triangles):
+    /// the mesh's own vertices with smooth normals, no creases, paint or textures. Drawn
+    /// while the real shading is computed on a worker.
+    pub fn provisional_shading(&self) -> Shading {
+        let n = self.positions.len();
+        Shading {
+            positions: self.positions.clone(),
+            normals: self.vertex_normals(),
+            colors: vec![[0; 4]; n],
+            uvs: vec![[0.0; 2]; n],
+            tex: vec![0; n],
+            triangles: self.triangles.clone(),
+            edges: Vec::new(),
+        }
+    }
+
     /// The mesh as drawn: vertices split where faces meet at more than `crease_deg`, so
     /// flat faces look flat and smooth ones stay smooth, with the crease edges that
     /// outline a selected object.

@@ -294,6 +294,7 @@ impl Renderer {
             object_capacity,
             object_bytes: Vec::new(),
             meshes: HashMap::new(),
+            shading: Default::default(),
             textures,
             texture_bg,
             textures_loaded: 0,

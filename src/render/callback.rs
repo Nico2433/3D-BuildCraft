@@ -73,10 +73,8 @@ impl CallbackTrait for FrameCallback {
         for (i, it) in self.items.iter().enumerate() {
             let key = Arc::as_ptr(&it.mesh) as usize;
             live.insert(key);
-            let gm = r
-                .meshes
-                .entry(key)
-                .or_insert_with(|| Renderer::upload_mesh(device, &it.mesh));
+            r.sync_mesh(device, &it.mesh, &self.repaint);
+            let gm = r.meshes.get_mut(&key).expect("mesh synced above");
             let c = it.color;
             let color = Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32)
                 .to_array()

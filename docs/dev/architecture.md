@@ -69,8 +69,14 @@ Screenshots of a known state: `cargo run --release -- --screenshot out.png` with
   faces inline (`smallvec`). 3MF is deflated at level 3: three times faster to save for a
   file 4% bigger than the default.
 - Per-frame work is cached by mesh identity (`Arc<Mesh>`): GPU uploads, world boxes, stats,
-  the picking BVH and the measure face. A change that rebuilds a mesh pays `Mesh::shading`
-  once (about 65 ms at 320k triangles, on the UI thread).
+  the picking BVH and the measure face. `scene::WorkCache<T>` is the shared "compute on a
+  worker, keyed by a weak mesh pointer" helper (one worker at a time; results of meshes that
+  were edited or deleted are dropped with them): `cached_stats` and the renderer's
+  `Mesh::shading` both use it. A new mesh is drawn at once with `Mesh::provisional_shading`
+  (own vertices, smooth normals, no creases, paint or textures; 2 ms at 320k triangles) and
+  swapped for the real shading, with a repaint, when the worker finishes (about 70 ms at
+  320k triangles). Before, the UI thread ran `Mesh::shading` (65-73 ms hitch).
+  `shading_upload_hitch` in `tests/perf_bench.rs` measures both.
 
 ## Hubs
 

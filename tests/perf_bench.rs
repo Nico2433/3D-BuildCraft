@@ -109,3 +109,34 @@ fn paint_region() {
     println!("BENCH region triangles: {}", n.len());
     let _ = Vec3::ZERO;
 }
+
+/// The frame hitch of a new mesh upload: the UI thread used to run `Mesh::shading`;
+/// now it builds the provisional shading and the worker computes the real one.
+#[test]
+#[ignore]
+fn shading_upload_hitch() {
+    use buildcraft3d::scene::WorkCache;
+    use std::sync::Arc;
+    let mesh = Arc::new(primitives::sphere(10.0, 400, 400));
+    println!("BENCH triangles: {}", mesh.triangles.len());
+    time("ui_thread_before (sync shading)", || mesh.shading(40.0));
+    time("ui_thread_after (provisional shading)", || {
+        mesh.provisional_shading()
+    });
+    let mut cache: WorkCache<Arc<buildcraft3d::mesh::Shading>> = WorkCache::default();
+    let t = Instant::now();
+    let first = time("ui_thread_after (cache poll, starts worker)", || {
+        cache.get(&mesh, |m| Arc::new(m.shading(40.0)), || {})
+    });
+    assert!(first.is_none());
+    while cache
+        .get(&mesh, |m| Arc::new(m.shading(40.0)), || {})
+        .is_none()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    println!(
+        "BENCH total_to_final_shading: {:.1} ms",
+        t.elapsed().as_secs_f64() * 1e3
+    );
+}

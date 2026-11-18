@@ -73,6 +73,7 @@ impl App {
             .collect();
         items.splice(0..0, waiting);
         let cb = FrameCallback {
+            repaint: ui.ctx().clone(),
             items,
             decal: preview,
             view_proj: self.camera.view_proj(aspect),

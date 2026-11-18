@@ -150,6 +150,8 @@ pub struct Clip {
 }
 
 pub struct FrameCallback {
+    /// Woken by workers (mesh shading) when they finish.
+    pub repaint: egui::Context,
     pub items: Vec<DrawItem>,
     pub decal: Option<DecalPreview>,
     pub view_proj: Mat4,
@@ -166,6 +168,9 @@ pub struct FrameCallback {
     pub lines: Vec<Polyline>,
 }
 
+/// Angle above which neighbouring faces get separate vertices (a crease).
+const CREASE_DEG: f32 = 40.0;
+
 struct GpuMesh {
     _keep: Arc<Mesh>,
     vbuf: wgpu::Buffer,
@@ -175,6 +180,8 @@ struct GpuMesh {
     /// Drawn triangles, for the wireframe built on first use.
     triangles: Vec<[u32; 3]>,
     lines: Option<(wgpu::Buffer, u32)>,
+    /// Drawn with [`Mesh::provisional_shading`] until the worker's shading replaces it.
+    provisional: bool,
 }
 
 #[derive(PartialEq)]
@@ -217,6 +224,8 @@ pub struct Renderer {
     /// Scratch for the per-frame object uniforms, kept to avoid reallocating.
     object_bytes: Vec<u8>,
     meshes: HashMap<usize, GpuMesh>,
+    /// `Mesh::shading` results from the worker, until they are uploaded.
+    shading: crate::scene::WorkCache<Arc<crate::mesh::Shading>>,
     /// The texture array and how many registry pictures it already holds.
     textures: wgpu::Texture,
     texture_bg: wgpu::BindGroup,
@@ -360,8 +369,40 @@ impl Renderer {
         (buf, bg)
     }
 
-    fn upload_mesh(device: &wgpu::Device, mesh: &Arc<Mesh>) -> GpuMesh {
-        let shading = mesh.shading(40.0);
+    /// The GPU copy of `mesh`, from the worker's shading when it is ready and from the
+    /// provisional one otherwise (the worker is started and wakes `repaint` when done).
+    fn sync_mesh(&mut self, device: &wgpu::Device, mesh: &Arc<Mesh>, repaint: &egui::Context) {
+        let key = Arc::as_ptr(mesh) as usize;
+        if self.meshes.get(&key).is_some_and(|g| !g.provisional) {
+            return;
+        }
+        let repaint = repaint.clone();
+        let ready = self.shading.get(
+            mesh,
+            |m| Arc::new(m.shading(CREASE_DEG)),
+            move || repaint.request_repaint(),
+        );
+        match ready {
+            Some(shading) => {
+                self.shading.take(mesh);
+                self.meshes
+                    .insert(key, Self::upload_mesh(device, mesh, &shading, false));
+            }
+            None if !self.meshes.contains_key(&key) => {
+                let shading = mesh.provisional_shading();
+                self.meshes
+                    .insert(key, Self::upload_mesh(device, mesh, &shading, true));
+            }
+            None => {}
+        }
+    }
+
+    fn upload_mesh(
+        device: &wgpu::Device,
+        mesh: &Arc<Mesh>,
+        shading: &crate::mesh::Shading,
+        provisional: bool,
+    ) -> GpuMesh {
         let verts: Vec<Vertex> = shading
             .positions
             .iter()
@@ -393,7 +434,8 @@ impl Renderer {
             index_count: (shading.triangles.len() * 3) as u32,
             bounds: mesh.aabb(),
             lines: None,
-            triangles: shading.triangles,
+            triangles: shading.triangles.clone(),
+            provisional,
         }
     }
 
