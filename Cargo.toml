@@ -31,6 +31,8 @@ earcutr = "0.5"
 epaint_default_fonts = "0.31"
 ttf-parser = "0.25"
 meshopt = "0.7"
+# Fast non-cryptographic hasher for the mesh topology maps (already in the lock).
+rustc-hash = "2"
 manifold-rust = "0.19"
 # The 2D offsets and fill rules under manifold-rust's CrossSection, for SVG strokes.
 clipper2-rust = "1.2"

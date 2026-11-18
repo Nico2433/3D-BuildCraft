@@ -2,7 +2,7 @@
 
 use crate::texture::FaceTex;
 use glam::{Mat4, Vec3};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mesh {
@@ -112,7 +112,8 @@ impl Mesh {
 
     /// Builds an indexed mesh from loose triangles, merging bit-identical vertices.
     pub fn from_triangle_soup(tris: &[[Vec3; 3]]) -> Self {
-        let mut map: HashMap<[u32; 3], u32> = HashMap::with_capacity(tris.len());
+        let mut map: HashMap<[u32; 3], u32> =
+            HashMap::with_capacity_and_hasher(tris.len(), Default::default());
         let mut positions = Vec::with_capacity(tris.len() / 2 + 3);
         let mut triangles = Vec::with_capacity(tris.len());
         for t in tris {
@@ -328,7 +329,7 @@ impl Mesh {
         let cos = max_deg.clamp(0.0, 180.0).to_radians().cos();
         // Quantize positions for topology only; preserve triangle numbering and colours.
         let tolerance = self.aabb().size().max_element().max(1.0) * 1e-6;
-        let mut vertices = HashMap::new();
+        let mut vertices = HashMap::default();
         let welded: Vec<u32> = self
             .positions
             .iter()
@@ -343,7 +344,7 @@ impl Mesh {
             .iter()
             .map(|t| t.map(|v| welded[v as usize]))
             .collect();
-        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
         for (f, t) in triangles.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -421,7 +422,7 @@ impl Mesh {
             }
         }
         let mut out = Shading::default();
-        let mut index: HashMap<Corner, u32> = HashMap::new();
+        let mut index: HashMap<Corner, u32> = HashMap::default();
         let mut corner = vec![[0u32; 3]; self.triangles.len()];
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
@@ -457,7 +458,7 @@ impl Mesh {
             }
         }
         out.triangles = corner.clone();
-        let mut edges: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::new();
+        let mut edges: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::default();
         for (f, t) in self.triangles.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -542,9 +543,9 @@ impl Mesh {
             ..Default::default()
         };
         let mut undirected: HashMap<(u32, u32), u32> =
-            HashMap::with_capacity(self.triangles.len() * 2);
+            HashMap::with_capacity_and_hasher(self.triangles.len() * 2, Default::default());
         let mut directed: HashMap<(u32, u32), u32> =
-            HashMap::with_capacity(self.triangles.len() * 3);
+            HashMap::with_capacity_and_hasher(self.triangles.len() * 3, Default::default());
         let mut dsu = Dsu::new(self.positions.len());
         for t in &self.triangles {
             if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
@@ -603,7 +604,7 @@ impl Mesh {
             dsu.union(t[0] as usize, t[1] as usize);
             dsu.union(t[1] as usize, t[2] as usize);
         }
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
         for (i, t) in self.triangles.iter().enumerate() {
             groups.entry(dsu.find(t[0] as usize)).or_default().push(i);
         }
@@ -650,7 +651,7 @@ impl Mesh {
 
     /// The given triangles, with only the vertices they use.
     fn sub_mesh(&self, tris: &[usize]) -> Mesh {
-        let mut map: HashMap<u32, u32> = HashMap::new();
+        let mut map: HashMap<u32, u32> = HashMap::default();
         let mut m = Mesh::default();
         let colored = self.colors.len() == self.triangles.len();
         let textured = self.tex.len() == self.triangles.len();
