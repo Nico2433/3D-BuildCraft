@@ -95,5 +95,5 @@ fn cut_obj_emboss() {
     let mut e2 = e.clone();
     emboss::place(&small, &mut e2, Vec3::new(0.0, -10.0, 0.0), -Vec3::Y);
     println!("BENCH emboss target triangles: {}", small.triangles.len());
-    time("emboss_apply", || emboss::apply(&small, &e2));
+    time("emboss_apply", || emboss::apply(&small, &e2).is_ok());
 }
