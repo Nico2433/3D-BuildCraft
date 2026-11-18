@@ -308,7 +308,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "screenshot",
-            "A PNG picture of the app window as it is now, with any dialog that is open. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours but no textures or stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
+            "A PNG picture of the app window as it is now, with any dialog that is open. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours, textures and stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
             json!({ "type": "object", "properties": {
                 "view": { "type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"], "description": "front looks from -Y towards +Y (X to the right), left from -X, right from +X, top down from +Z with the front at the bottom of the picture; iso is from the front right and above. Not with azimuth/elevation" },
                 "azimuth": { "type": "number", "description": "degrees around the vertical, 0 = front, 90 = right, 180 = back, 270 = left; default 45. Not with view" },
@@ -422,13 +422,14 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "apply_texture",
-            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage as in paint_area). sticker prints it once at point as a flat picture facing out of the surface (no geometry; for raised lettering or shapes use emboss_text).",
+            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage and radius as in paint_area; on curved meshes give radius, or even a small coverage covers the whole curved surface). sticker prints it once at point as a flat picture facing out of the surface (no geometry; for raised lettering or shapes use emboss_text).",
             with_file(json!({ "type": "object", "properties": {
                 "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes); give this or image"),
                 "image": text(&format!("{picture}; give this or texture")),
                 "mode": one_of(&["brush", "sticker"], "default brush; sticker needs point"),
                 "point": vec3(point),
                 "coverage": num("brush with point: 0..1, default 1 (the whole connected surface)"),
+                "radius": num("brush with point: texture only triangles whose centre is within this many mm of point (the triangle at point always); default no limit"),
                 "id": int("a selected object to use; default the selected object nearest to point"),
                 "size": num("sticker width, mm; default 40% of the object's longest side"),
                 "angle": num("sticker turn about the surface normal, degrees, default 0"),

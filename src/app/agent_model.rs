@@ -97,12 +97,8 @@ impl App {
             None => self.scene.objects.iter().map(|o| o.id).collect(),
         };
         let at = point(a)?;
-        let radius = match &a["radius"] {
-            Value::Null => None,
-            v => Some(positive(v, "radius")?),
-        };
         let (id, tri, _) = self.surface_at(&ids, at)?;
-        let near = radius.map(|r| (at, r));
+        let near = radius(a)?.map(|r| (at, r));
         self.apply(Action::PaintArea(id, tri, color, coverage, near), ctx);
         Ok(())
     }
@@ -147,15 +143,20 @@ impl App {
         )? {
             "brush" => {
                 let coverage = number(a, "coverage", 1.0, 0.0..=1.0)?;
+                let radius = radius(a)?;
                 match at {
                     Some(p) => {
                         let (id, tri, _) = self.surface_at(&ids, p)?;
-                        self.texture_box(id, Some((tri, coverage)), layer, true);
+                        let near = radius.map(|r| (p, r));
+                        self.texture_box(id, Some((tri, coverage)), near, layer, true);
+                    }
+                    None if radius.is_some() => {
+                        return Err("radius needs point, the brush's centre [x, y, z] in mm".into())
                     }
                     // The whole of every object, as one undo step.
                     None => {
                         for (i, id) in ids.into_iter().enumerate() {
-                            self.texture_box(id, None, layer, i == 0);
+                            self.texture_box(id, None, None, layer, i == 0);
                         }
                     }
                 }
@@ -486,6 +487,14 @@ fn object_id(a: &Value) -> Result<Option<u64>, String> {
 /// The required `point`.
 fn point(a: &Value) -> Result<Vec3, String> {
     vec3(a, "point")?.ok_or_else(|| "point is missing: a surface point [x, y, z] in mm".into())
+}
+
+/// The optional `radius` (mm) that keeps a brush to the triangles centred near its point.
+fn radius(a: &Value) -> Result<Option<f32>, String> {
+    match &a["radius"] {
+        Value::Null => Ok(None),
+        v => positive(v, "radius").map(Some),
+    }
 }
 
 /// A path to an existing file under `key`; tools that take one also take it inline.

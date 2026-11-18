@@ -41,11 +41,14 @@ fn model_tools_are_listed_once_with_their_arguments() {
                 "at",
             ],
         ),
-        ("paint_area", &["point", "color", "coverage", "id"]),
+        (
+            "paint_area",
+            &["point", "color", "coverage", "radius", "id"],
+        ),
         ("set_material", &["type", "color"]),
         (
             "apply_texture",
-            &["texture", "image", "mode", "point", "coverage"],
+            &["texture", "image", "mode", "point", "coverage", "radius"],
         ),
         ("import", &["path", "units"]),
         ("load_image", &["path", "method", "levels", "invert"]),
@@ -88,6 +91,29 @@ fn every_texture_name_round_trips() {
     assert_eq!(Kind::WaterDrops.name(), "water_drops");
     assert_eq!(Kind::from_name("Green_Marble"), Some(Kind::GreenMarble));
     assert_eq!(Kind::from_name("plywood"), None);
+}
+
+#[test]
+fn a_radius_keeps_the_texture_brush_to_part_of_a_sphere() {
+    use buildcraft3d::texture::{apply_box, layer_of};
+    let sphere = primitives::Primitive::Sphere.build();
+    let model = Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0));
+    let layer = layer_of(Kind::all().next().unwrap()).unwrap();
+    let [a, b, c] =
+        sphere.triangles[0].map(|v| model.transform_point3(sphere.positions[v as usize]));
+    let at = (a + b + c) / 3.0;
+    let textured = |near| {
+        let faces = sphere.face_region_near(0, 1.0, &model, near);
+        let out = apply_box(&sphere, &model, &faces, layer, 10.0);
+        (0..out.triangles.len())
+            .filter(|&i| out.face_tex(i).is_some())
+            .count()
+    };
+    let all = sphere.triangles.len();
+    // Without a radius, full coverage floods the smooth surface, as before.
+    assert_eq!(textured(None), all);
+    let part = textured(Some((at, 8.0)));
+    assert!(part > 1 && part < all / 4, "{part} of {all}");
 }
 
 #[test]

@@ -1,9 +1,13 @@
-//! Small pictures of a mesh for tiles (recent files, libraries, the selection pane),
-//! drawn on the CPU so they need no GPU work and look the same everywhere.
+//! Small pictures of a mesh for tiles (recent files, libraries, the selection pane) and
+//! the agent's off-screen views, drawn on the CPU so they need no GPU work and look the
+//! same everywhere. Painted colours, textures and stickers show as in the viewport.
 
 use crate::io::Rgba;
 use crate::mesh::{Aabb, Mesh};
 use glam::{Mat4, Vec3};
+use image::RgbaImage;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// One mesh in one colour; see [`render_parts`].
 pub fn render(mesh: &Mesh, color: Rgba, size: u32) -> Vec<u8> {
@@ -60,7 +64,8 @@ pub fn render_parts(parts: &[(&Mesh, Rgba)], size: u32) -> Vec<u8> {
 /// Part of the picture left around a framed box, on each side.
 const MARGIN: f32 = 0.06;
 
-/// The meshes, each in its colour (or their faces' painted colours), as `view` sees them
+/// The meshes, each in its colour (or their faces' painted colours, textures and
+/// stickers), as `view` sees them
 /// with a parallel projection: a `width`×`height` RGBA image. Drawn at twice the size and
 /// averaged, for smooth edges.
 pub fn render_view(parts: &[(&Mesh, Rgba)], view: &View) -> Vec<u8> {
@@ -106,6 +111,8 @@ pub fn render_view(parts: &[(&Mesh, Rgba)], view: &View) -> Vec<u8> {
     };
     let light = Vec3::new(-0.35, -0.55, 0.75).normalize();
     let mut depth = vec![f32::NEG_INFINITY; sw * sh];
+    // Each texture layer's picture, looked up once.
+    let mut pictures: HashMap<u16, Option<Arc<RgbaImage>>> = HashMap::new();
     for (mesh, color) in parts {
         let pts: Vec<Vec3> = mesh
             .positions
@@ -121,6 +128,12 @@ pub fn render_view(parts: &[(&Mesh, Rgba)], view: &View) -> Vec<u8> {
             .collect();
         for (ti, t) in mesh.triangles.iter().enumerate() {
             let color = mesh.face_color(ti).unwrap_or(*color);
+            let tex = mesh.face_tex(ti).and_then(|t| {
+                let img = pictures
+                    .entry(t.layer)
+                    .or_insert_with(|| crate::texture::image(t.layer));
+                Some((t, img.clone()?))
+            });
             let [a, bb, c] = t.map(|i| pts[i as usize]);
             let [wa, wb, wc] = t.map(|i| mesh.positions[i as usize]);
             let mut n = (wb - wa).cross(wc - wa).normalize_or_zero();
@@ -129,7 +142,14 @@ pub fn render_view(parts: &[(&Mesh, Rgba)], view: &View) -> Vec<u8> {
                 n = -n;
             }
             let k = 0.42 + 0.58 * n.dot(light).max(0.0);
-            let shade = [0, 1, 2].map(|i| (color[i] as f32 * k).min(255.0) as u8);
+            // The picture over the colour, by its alpha, as the shader mixes them.
+            let surface = |w: [f32; 3]| match tex.as_ref().and_then(|(t, img)| t.sample(img, w)) {
+                Some(p) => {
+                    let a = p[3] as f32 / 255.0;
+                    [0, 1, 2].map(|i| color[i] as f32 * (1.0 - a) + p[i] as f32 * a)
+                }
+                None => [0, 1, 2].map(|i| color[i] as f32),
+            };
             let area = (bb.x - a.x) * (c.y - a.y) - (c.x - a.x) * (bb.y - a.y);
             if area.abs() < 1e-9 {
                 continue;
@@ -156,6 +176,8 @@ pub fn render_view(parts: &[(&Mesh, Rgba)], view: &View) -> Vec<u8> {
                     let i = y * sw + x;
                     if z > depth[i] {
                         depth[i] = z;
+                        let base = surface([w0, w1, w2]);
+                        let shade = [0, 1, 2].map(|c| (base[c] * k).min(255.0) as u8);
                         rgba[i * 4..i * 4 + 4]
                             .copy_from_slice(&[shade[0], shade[1], shade[2], 255]);
                     }
@@ -203,6 +225,34 @@ mod tests {
         let shades: std::collections::HashSet<u8> =
             (8..56).map(|y| at(32, y)[2]).filter(|b| *b > 0).collect();
         assert!(shades.len() >= 2, "{shades:?}");
+    }
+
+    #[test]
+    fn textures_show_in_the_picture() {
+        // Left half red, right half blue, tiled once over each face of a 40 mm cube.
+        let picture = RgbaImage::from_fn(8, 8, |x, _| {
+            image::Rgba(if x < 4 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            })
+        });
+        let layer = crate::texture::register_image(&picture).unwrap();
+        let cube = Primitive::Cube.build();
+        let faces: Vec<usize> = (0..cube.triangles.len()).collect();
+        let textured = crate::texture::apply_box(&cube, &Mat4::IDENTITY, &faces, layer, 40.0);
+        let count = |px: &[u8]| {
+            let (mut red, mut blue) = (0, 0);
+            for p in px.chunks(4).filter(|p| p[3] == 255) {
+                red += usize::from(p[0] as u32 > 2 * p[2] as u32 && p[0] > 60);
+                blue += usize::from(p[2] as u32 > 2 * p[0] as u32 && p[2] > 60);
+            }
+            (red, blue)
+        };
+        let (red, blue) = count(&render(&textured, [200, 200, 200, 255], 64));
+        assert!(red > 100 && blue > 100, "red {red}, blue {blue}");
+        // Untextured, the grey cube has neither.
+        assert_eq!(count(&render(&cube, [200, 200, 200, 255], 64)), (0, 0));
     }
 
     #[test]

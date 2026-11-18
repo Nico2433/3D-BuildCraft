@@ -471,10 +471,11 @@ fn inner(mesh: &Mesh, wall: f32) -> Result<Manifold> {
     // models get coarse voxels and thick walls until there is a sparse grid.
     let h = (wall / 4.0).max(size.max_element() / MAX_CELLS);
     // One outside voxel on every side, so every line starts and ends outside.
-    let n = ((size / h).ceil().as_uvec3() + 2)
-        .to_array()
-        .map(|v| v as usize);
-    let origin = b.min - Vec3::splat(h * 0.75);
+    let cells = (size / h).ceil().as_uvec3() + 2;
+    let n = cells.to_array().map(|v| v as usize);
+    // Centred on the model, so the first outside voxel centre lies as far beyond the
+    // surface on both ends of every axis and the cavity is not shifted towards one side.
+    let origin = (b.min + b.max - cells.as_vec3() * h) * 0.5;
     let center = |i: usize, axis: usize| origin[axis] + (i as f32 + 0.5) * h;
     let idx = |x: usize, y: usize, z: usize| (z * n[1] + y) * n[0] + x;
 
@@ -821,5 +822,41 @@ mod tests {
         assert_eq!(smooth.colors.len(), smooth.triangles.len());
         assert!(smooth.colors.iter().all(|c| palette.contains(c)));
         assert!(palette.iter().all(|p| smooth.colors.contains(p)));
+    }
+
+    /// Wall thickness on each side (-x, +x, -y, +y, -z, +z) of a hollowed cube.
+    fn walls(size: f32, wall: f32) -> [f32; 6] {
+        let cube = Primitive::Cube.build();
+        let k = size / (cube.aabb().max - cube.aabb().min).x;
+        let cube = cube.transformed(&glam::Mat4::from_scale(Vec3::splat(k)));
+        let out = hollow(&cube, wall).unwrap();
+        let o = out.aabb();
+        // The cavity is every vertex off the outer box.
+        let mut c = crate::mesh::Aabb::empty();
+        for &p in &out.positions {
+            if (p - o.min).min_element() > 0.1 && (o.max - p).min_element() > 0.1 {
+                c.grow(p);
+            }
+        }
+        assert!(c.is_valid());
+        let (lo, hi) = (c.min - o.min, o.max - c.max);
+        [lo.x, hi.x, lo.y, hi.y, lo.z, hi.z]
+    }
+
+    #[test]
+    fn hollow_cube_cavity_is_centred() {
+        // The wall comes out thicker than asked by the grid margin, but the same on all
+        // six sides.
+        for size in [30.0, 40.0, 25.3] {
+            let w = walls(size, 2.0);
+            for axis in 0..3 {
+                let (a, b) = (w[2 * axis], w[2 * axis + 1]);
+                assert!((a - b).abs() < 0.02, "{size} mm cube, axis {axis}: {w:?}");
+            }
+            let (min, max) = w
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+            assert!(min >= 2.0 && max - min < 0.02, "{size} mm cube: {w:?}");
+        }
     }
 }

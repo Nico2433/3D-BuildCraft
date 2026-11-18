@@ -444,16 +444,18 @@ impl App {
     /// Tiles the picture over the faces around a brush hit. A stroke is one undo step.
     pub(super) fn texture_dab(&mut self, t: &Texture, hit: (u64, usize, Vec3), new_stroke: bool) {
         let (id, tri, _) = hit;
-        self.texture_box(id, Some((tri, t.coverage)), t.layer, new_stroke);
+        self.texture_box(id, Some((tri, t.coverage)), None, t.layer, new_stroke);
     }
 
     /// Tiles the picture on `layer` over object `id` with box mapping: the area around
-    /// `(triangle, coverage)` as the brush paints it, or the whole object for `None`.
+    /// `(triangle, coverage)` as the brush paints it, or the whole object for `None`;
+    /// `near` (a world point and radius, mm) keeps the area to triangles centred within it.
     /// `new_stroke` makes it a new undo step; otherwise it joins the last one.
     pub(super) fn texture_box(
         &mut self,
         id: u64,
         area: Option<(usize, f32)>,
+        near: Option<(Vec3, f32)>,
         layer: u16,
         new_stroke: bool,
     ) {
@@ -463,7 +465,7 @@ impl App {
         let (mesh, model) = (o.mesh.clone(), o.matrix());
         // As Paint's coverage: how far the area spreads over the connected surface.
         let faces = match area {
-            Some((tri, coverage)) => mesh.face_region(tri, coverage.clamp(0.0, 1.0) * 180.0),
+            Some((tri, coverage)) => mesh.face_region_near(tri, coverage, &model, near),
             None => (0..mesh.triangles.len()).collect(),
         };
         let tile = texture::natural_size(&mesh, &model, 0.5);

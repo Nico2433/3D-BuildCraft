@@ -87,6 +87,9 @@ pub struct MeshStats {
     pub nonmanifold_edges: usize,
     pub misoriented_edges: usize,
     pub components: usize,
+    /// Pieces `Mesh::solids` splits the mesh into: components, with each cavity counted
+    /// as part of the solid around it.
+    pub solids: usize,
     pub area: f64,
     pub volume: f64,
 }
@@ -286,6 +289,25 @@ impl Mesh {
     /// between adjacent faces: the area "Color" paints with a given coverage.
     pub fn face_region(&self, start: usize, max_deg: f32) -> Vec<usize> {
         self.face_region_within(start, max_deg, |_| true)
+    }
+
+    /// The area a brush (Paint's colour, Texture's brush) covers from triangle `start` of
+    /// this mesh placed by `model`: [`Mesh::face_region`] up to `coverage` × 180°, and with
+    /// `near` (a world point and radius, mm) only triangles whose centres lie within it,
+    /// so a smooth surface, where every edge bends a little, is not flooded.
+    pub fn face_region_near(
+        &self,
+        start: usize,
+        coverage: f32,
+        model: &Mat4,
+        near: Option<(Vec3, f32)>,
+    ) -> Vec<usize> {
+        self.face_region_within(start, coverage.clamp(0.0, 1.0) * 180.0, |f| {
+            near.is_none_or(|(at, r)| {
+                let [a, b, c] = self.triangles[f].map(|v| self.positions[v as usize]);
+                model.transform_point3((a + b + c) / 3.0).distance(at) <= r
+            })
+        })
     }
 
     /// [`Mesh::face_region`], spreading only through triangles `within` accepts; `start`
@@ -554,6 +576,11 @@ impl Mesh {
         roots.sort_unstable();
         roots.dedup();
         s.components = roots.len();
+        s.solids = if s.components > 1 {
+            self.solid_groups().map_or(1, |g| g.len())
+        } else {
+            s.components
+        };
         s
     }
 }
@@ -563,6 +590,14 @@ impl Mesh {
     /// cut. A closed inner surface (the cavity of a hollowed part, wound inwards) stays with
     /// the smallest solid around it.
     pub fn solids(&self) -> Vec<Mesh> {
+        match self.solid_groups() {
+            Some(groups) => groups.iter().map(|g| self.sub_mesh(g)).collect(),
+            None => vec![self.clone()],
+        }
+    }
+
+    /// Triangle indices of each solid `solids` returns; `None` when the mesh is one piece.
+    fn solid_groups(&self) -> Option<Vec<Vec<usize>>> {
         let mut dsu = Dsu::new(self.positions.len());
         for t in &self.triangles {
             dsu.union(t[0] as usize, t[1] as usize);
@@ -573,7 +608,7 @@ impl Mesh {
             groups.entry(dsu.find(t[0] as usize)).or_default().push(i);
         }
         if groups.len() < 2 {
-            return vec![self.clone()];
+            return None;
         }
         let mut shells: Vec<Vec<usize>> = groups.into_values().collect();
         shells.sort_by_key(|g| g[0]);
@@ -597,7 +632,7 @@ impl Mesh {
         };
         let (outer, voids): (Vec<_>, Vec<_>) = shells.into_iter().partition(|g| volume(g) >= 0.0);
         if outer.is_empty() {
-            return vec![self.clone()];
+            return None;
         }
         let boxes: Vec<(Aabb, f64)> = outer.iter().map(|g| (aabb(g), volume(g))).collect();
         let mut solids = outer;
@@ -610,7 +645,7 @@ impl Mesh {
                 .unwrap_or(0);
             solids[host].extend(v);
         }
-        solids.iter().map(|g| self.sub_mesh(g)).collect()
+        Some(solids)
     }
 
     /// The given triangles, with only the vertices they use.

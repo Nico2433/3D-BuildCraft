@@ -497,15 +497,8 @@ impl App {
         self.remember_color(color);
         self.edit(|s| {
             if let Some(o) = s.get_mut(id) {
-                let matrix = o.matrix();
-                let mesh = &o.mesh;
-                let within = |f: usize| {
-                    near.is_none_or(|(at, r)| {
-                        let [a, b, c] = mesh.triangles[f].map(|v| mesh.positions[v as usize]);
-                        matrix.transform_point3((a + b + c) / 3.0).distance(at) <= r
-                    })
-                };
-                o.mesh = std::sync::Arc::new(paint_region(mesh, tri, color, coverage, within));
+                let area = o.mesh.face_region_near(tri, coverage, &o.matrix(), near);
+                o.mesh = std::sync::Arc::new(paint_faces(&o.mesh, &area, color));
             }
         });
     }
@@ -520,19 +513,11 @@ impl App {
     }
 }
 
-/// `mesh` with the region `face_region` finds from `tri` painted, keeping to the
-/// triangles `within` accepts (the start triangle always).
-fn paint_region(
-    mesh: &Mesh,
-    tri: usize,
-    color: Rgba,
-    coverage: f32,
-    within: impl Fn(usize) -> bool,
-) -> Mesh {
-    let area = mesh.face_region_within(tri, coverage.clamp(0.0, 1.0) * 180.0, within);
+/// `mesh` with `area`'s triangles painted `color`.
+fn paint_faces(mesh: &Mesh, area: &[usize], color: Rgba) -> Mesh {
     let mut mesh = mesh.clone();
     mesh.colors.resize(mesh.triangles.len(), [0; 4]);
-    for face in area {
+    for &face in area {
         mesh.colors[face] = color;
     }
     mesh
@@ -540,13 +525,22 @@ fn paint_region(
 
 #[cfg(test)]
 mod tests {
+    use crate::mesh::Mesh;
+    use glam::{Mat4, Vec3};
+
+    /// Paint's click on triangle 0 of `mesh`, placed as it is.
+    fn paint_region(mesh: &Mesh, color: [u8; 4], coverage: f32, near: Option<(Vec3, f32)>) -> Mesh {
+        let area = mesh.face_region_near(0, coverage, &Mat4::IDENTITY, near);
+        super::paint_faces(mesh, &area, color)
+    }
+
     #[test]
     fn zero_coverage_paints_only_the_connected_flat_region() {
         let mut cube = crate::primitives::Primitive::Cube.build();
         let old_color = [0, 0, 255, 255];
         let new_color = [255, 0, 0, 255];
         cube.colors = vec![old_color; cube.triangles.len()];
-        let painted = super::paint_region(&cube, 0, new_color, 0.0, |_| true);
+        let painted = paint_region(&cube, new_color, 0.0, None);
         assert_eq!(
             painted.colors.iter().filter(|&&c| c == new_color).count(),
             2
@@ -566,7 +560,7 @@ mod tests {
         ] {
             let mesh = primitive.build();
             let color = [255, 0, 0, 255];
-            let painted = super::paint_region(&mesh, 0, color, 1.0, |_| true);
+            let painted = paint_region(&mesh, color, 1.0, None);
             assert!(painted.colors.iter().all(|&c| c == color));
         }
     }
@@ -581,7 +575,7 @@ mod tests {
             let [a, b, c] = sphere.triangles[f].map(|v| sphere.positions[v as usize]);
             ((a + b + c) / 3.0).distance(at) <= 10.0
         };
-        let painted = super::paint_region(&sphere, 0, color, 1.0, near);
+        let painted = paint_region(&sphere, color, 1.0, Some((at, 10.0)));
         let count = painted.colors.iter().filter(|&&c| c == color).count();
         assert_eq!(
             count,

@@ -339,7 +339,7 @@ impl Scene {
     pub fn can_ungroup(&self) -> Option<bool> {
         let mut any = false;
         for o in self.selected() {
-            any |= cached_stats(&o.mesh)?.components > 1;
+            any |= cached_stats(&o.mesh)?.solids > 1;
         }
         Some(any)
     }
@@ -714,6 +714,32 @@ mod tests {
                 .iter()
                 .all(|c| *c == [DEFAULT_COLOR, PALETTE[1].1][i]));
         }
+    }
+
+    #[test]
+    fn ungroup_is_offered_only_when_it_splits() {
+        let ungroupable = |mesh: Mesh| {
+            let mut scene = Scene::default();
+            let id = scene.add(Object::new("part", mesh, DEFAULT_COLOR));
+            scene.selection.insert(id);
+            let any = loop {
+                if let Some(any) = scene.can_ungroup() {
+                    break any;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            scene.ungroup_selected();
+            assert_eq!(scene.objects.len(), if any { 2 } else { 1 });
+            any
+        };
+        // The cavity of a hollowed cube stays with its shell.
+        let hollowed = crate::solid::hollow(&Primitive::Cube.build(), 2.0).unwrap();
+        assert_eq!(hollowed.stats().components, 2);
+        assert!(!ungroupable(hollowed));
+        let cube = Primitive::Cube.build();
+        let mut two = cube.clone();
+        two.append(&cube.transformed(&Mat4::from_translation(Vec3::X * 80.0)));
+        assert!(ungroupable(two));
     }
 
     #[test]
