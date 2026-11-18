@@ -63,15 +63,25 @@ pub struct PointSnap {
     pub point: Vec3,
     pub normal: Vec3,
     pub kind: SnapKind,
+    /// The face is one facet of a curved surface (a polygonal cylinder or sphere), so its
+    /// normal is not the surface's: aligning along it would measure to the facet.
+    pub curved: bool,
 }
 
+/// Neighbouring faces bending by at most this many degrees make a facet part of a curved
+/// surface; more is a real edge, as on a box.
+const CURVED_BEND: f32 = 45.0;
+
 /// The flat face (triangles within 1 degree of each other) around a triangle, in world
-/// space: its centre, normal and outline edges.
+/// space: its centre, normal and outline edges, and whether it is a facet of a curved
+/// surface.
 #[derive(Clone, Debug)]
 pub struct FaceInfo {
     pub centre: Vec3,
     pub normal: Vec3,
     pub edges: Vec<[Vec3; 2]>,
+    /// The face is a facet of a curved surface, see [`PointSnap::curved`].
+    pub curved: bool,
 }
 
 impl FaceInfo {
@@ -81,6 +91,7 @@ impl FaceInfo {
             mesh.triangles[t].map(|v| model.transform_point3(mesh.positions[v as usize]))
         };
         let region = mesh.face_region(tri, 1.0);
+        let flat = region.len();
         let [a, b, c] = world(*region.first()?);
         let normal = Mesh::face_normal(a, b, c);
         if normal == Vec3::ZERO {
@@ -105,6 +116,7 @@ impl FaceInfo {
         (area > 0.0).then(|| FaceInfo {
             centre: sum / area,
             normal,
+            curved: mesh.face_region(tri, CURVED_BEND).len() > flat,
             edges: edges
                 .into_values()
                 .filter(|e| e.0 == 1)
@@ -156,6 +168,7 @@ pub fn snap_point(face: &FaceInfo, hit: Vec3, threshold: f32) -> PointSnap {
         point,
         normal: face.normal,
         kind,
+        curved: face.curved,
     }
 }
 
@@ -269,6 +282,20 @@ mod tests {
             snap_point(&f, Vec3::new(0.2, 0.1, 0.), 0.5).point,
             Vec3::ZERO
         );
+    }
+    #[test]
+    fn a_facet_of_a_curved_surface_is_marked_but_a_box_face_is_not() {
+        let curved = |mesh: Mesh| {
+            let tri = (0..mesh.triangles.len())
+                .find(|&t| {
+                    let [a, b, c] = mesh.triangles[t].map(|v| mesh.positions[v as usize]);
+                    Mesh::face_normal(a, b, c).z.abs() < 0.1
+                })
+                .unwrap();
+            FaceInfo::new(&mesh, &Mat4::IDENTITY, tri).unwrap().curved
+        };
+        assert!(curved(crate::primitives::prism(24, 10.0, 20.0)));
+        assert!(!curved(crate::primitives::cube(10.0)));
     }
     #[test]
     fn parallel_faces_give_the_perpendicular_distance() {

@@ -327,8 +327,12 @@ pub fn nearest_surface(scene: &Scene, p: Vec3) -> Option<(&Object, usize, Vec3)>
 }
 
 /// Snap `p` to the nearest face feature (vertex, edge middle, edge, face centre) of any
-/// object within `tolerance` mm of it; `None` when no surface is that near.
-pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<PointSnap> {
+/// object within `tolerance` mm of it, with that object's id; `None` when no surface is
+/// that near, or when `tolerance` is 0 (no snapping).
+pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<(u64, PointSnap)> {
+    if tolerance <= 0.0 {
+        return None;
+    }
     scene
         .objects
         .iter()
@@ -336,7 +340,8 @@ pub fn snap_to_scene(scene: &Scene, p: Vec3, tolerance: f32) -> Option<PointSnap
             let model = o.matrix();
             let (tri, q) = o.mesh.closest_triangle(&model, p)?;
             let face = FaceInfo::new(&o.mesh, &model, tri)?;
-            (q.distance(p) <= tolerance).then(|| (q.distance(p), snap_point(&face, q, tolerance)))
+            (q.distance(p) <= tolerance)
+                .then(|| (q.distance(p), (o.id, snap_point(&face, q, tolerance))))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, s)| s)
@@ -604,7 +609,8 @@ impl Measure {
                     let s = snap_point(face, p, tolerance);
                     Spot {
                         point: s.point,
-                        normal: Some(s.normal),
+                        // A facet of a curved surface has no normal to line up along.
+                        normal: (!s.curved).then_some(s.normal),
                         kind: Some(s.kind),
                         aligned: None,
                     }
@@ -804,10 +810,12 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(Object::new("cube", Primitive::Cube.build(), DEFAULT_COLOR));
         let max = scene.get(id).unwrap().world_aabb().max;
-        let s = snap_to_scene(&scene, max + Vec3::new(0.3, 0.0, 0.2), 1.0).unwrap();
-        assert_eq!(s.kind, SnapKind::Vertex);
+        let (found, s) = snap_to_scene(&scene, max + Vec3::new(0.3, 0.0, 0.2), 1.0).unwrap();
+        assert_eq!((found, s.kind), (id, SnapKind::Vertex));
         assert!(s.point.distance(max) < 1e-3);
         assert!(snap_to_scene(&scene, max + Vec3::splat(50.0), 1.0).is_none());
+        // A tolerance of 0 snaps nothing, not even a point on the surface.
+        assert!(snap_to_scene(&scene, max, 0.0).is_none());
     }
 
     #[test]

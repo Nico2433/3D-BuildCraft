@@ -208,9 +208,14 @@ fn list_fonts_filters_and_find_font_suggests() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let v = list_fonts(&all, Some("dejavu"));
+    let v = list_fonts(&all, Some("dejavu"), None);
     assert_eq!(v["count"], 2);
-    assert_eq!(list_fonts(&all, None)["count"], 4);
+    assert_eq!(list_fonts(&all, None, None)["count"], 4);
+    let few = list_fonts(&all, None, Some(1));
+    assert_eq!(
+        (few["count"].as_u64(), few["fonts"].as_array().map(Vec::len)),
+        (Some(4), Some(1))
+    );
     assert!(tools().iter().any(|t| t["name"] == "list_fonts"));
     assert_eq!(find_font(&all, " dejavu serif ").unwrap(), "DejaVu Serif");
     let err = find_font(&all, "Noto Serif").unwrap_err();

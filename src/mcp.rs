@@ -2,6 +2,7 @@
 //! over stdio, one message per line, or over HTTP from the open app (`http`). The tools
 //! themselves run in the app; this module only speaks the protocol and describes them.
 
+pub mod args;
 pub mod http;
 
 use serde_json::{json, Value};
@@ -123,7 +124,7 @@ fn base64(bytes: &[u8]) -> String {
 
 const INSTRUCTIONS: &str = concat!(
     "These tools work on the scene open in 3D BuildCraft, a 3D modelling app for 3D printing (the app must be open, with external agents on in its AI assistant settings). ",
-    "Every change shows in the app and is one undo step. Tools that change the scene reply with the scene as get_scene lists it. ",
+    "Every change shows in the app and is one undo step. Tools that change the scene reply with the scene as get_scene lists it, plus changes: the ids created, removed and modified by that call. ",
     "Call screenshot to see the result; give it a view (front, top, iso...) and focus ids to look from another angle without moving the user's camera. ",
     "If unsure whether a format or argument works, try it: the error says what is accepted and what to use instead.\n",
     crate::rules!()
@@ -137,7 +138,12 @@ macro_rules! rules {
         "Rules:\n\
 - Units are millimetres, Z is up, the floor is Z = 0.\n\
 - insert_shape puts a 40 mm shape on the floor at the centre and selects it. transform, \
-set_color and edit act on the selection, so select the object you mean first.\n\
+set_color, edit, hollow, smooth, simplify, split, emboss_text and the other editing tools act on the \
+CURRENT selection, which changes after insert_shape, split, emboss_text, import and load_image: \
+call select with the ids from get_scene before each one.\n\
+- If a file path fails with \"no such file\", the app may run in a sandbox (Flatpak) that does not share \
+your disk: send the file itself with file_name and file_text or file_base64. save writes on the app's \
+computer, in a folder that exists there.\n\
 - In transform, position is the CENTRE of the bounding box. To set the positions of the \
 sides instead, give bottom (min Z), left/right (min/max X), front/back (min/max Y). \
 Bottom 0 = standing on the floor.\n\
@@ -237,11 +243,11 @@ pub fn tools() -> Vec<Value> {
             "measure",
             "Read-only measurements; lengths in mm, areas in mm², volume in mm³. Give ONE kind of measurement per call (two kinds is an error; call again). With none it measures the selection.\n\
 - no argument: bounding box, volume and surface area of each selected object and of the selection.\n\
-- section: slice an object with a plane and read the circles fitted to the cut. THE way to get the diameter, centre or wall thickness of anything round: a cylinder's rim, a pot's mouth, a hole, a cone at some height, a torus, a hollow wall.\n\
-- diameter_of: only when the WHOLE object is a sphere, cylinder, cone or torus.\n\
+- section: slice an object with a plane and read the circles fitted to the cut. THE way to get the exact diameter, centre or wall thickness of anything round: a cylinder's rim, a pot's mouth, a hole, a cone at some height, a torus, a hollow wall. Complete example: {\"section\": {\"id\": 1, \"near\": [20, 0, 40]}} (id goes inside section).\n\
+- diameter_of: only when the WHOLE object is a sphere, cylinder, cone (its base circle) or torus (its outer equator).\n\
 - circle: three known points on a circle.\n\
-- from and to: distance between two points. ids: gap between two objects.\n\
-- snap, snap_tolerance, align: catch from, to and circle points on the model (distance between two walls: from, to and snap true).\n\
+- from and to: distance between two points. ids: the exact gap between two objects' bounding boxes.\n\
+- snap, snap_tolerance, align: catch from, to and circle points on the model. On a curved wall snap catches a facet of the polygon, so for diameters use section and for the gap between objects ids.\n\
 Each argument's description says what it returns, with an example.",
             json!({"type":"object","properties":{
                 "section":{"type":"object","properties":{
@@ -252,90 +258,98 @@ Each argument's description says what it returns, with an example.",
                     "normal":vec3("the plane's normal, any length > 0, default [0, 0, 1]; with z it must be vertical. A given normal is used exactly, never tilted"),
                     "tilt":{"type":"string","enum":["auto","none"],"description":"auto (default with near, or point without normal): when the horizontal contour is not round, as on a tilted cylinder or a pot cut at a slant, turn the plane to where it is, so diameters are true; the answer's plane.tilt_degrees and auto_tilted say so. none keeps it horizontal"}
                 },"required":["id"],"description":"Slice object id with a plane (give near, or z, or point with normal). Returns plane, total, contours (role outer, inner or open; circular; diameter and radius in mm; center; axis; fit_error; why_not when not round; 50 listed at most), walls (thickness = outer radius minus inner radius, center_offset) and nearest (the contour closest to near, else null). A plane in a flat face (a rim, a base) is moved into the material by 0.02 mm per 100 mm of the object's largest size (shifted_mm). Examples: cylinder top rim {id, near: [right, centre y, top]}, read contours[nearest].diameter; pot mouth: near on its rim; wall thickness: near on the outer wall at mid height, read walls[0].thickness"},
-                "diameter_of":{"type":"integer","description":"object id from get_scene, only when the whole object is a sphere, cylinder, cone or torus (a cone or torus gives its widest circle). Returns kind, diameter and radius in mm, center, axis. Errors when the object is not round: use section"},
+                "diameter_of":{"type":"integer","description":"object id from get_scene, only when the whole object is a sphere, cylinder, cone or torus. Returns kind, diameter and radius in mm, center, axis. A cone gives its widest circle, the base (center at the base); a torus its outer equator; both with kind circle. Errors when the object is not round: use section"},
                 "circle":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":3,"maxItems":3,"description":"three points [x, y, z] in mm on a circle, e.g. [[5,0,0],[0,5,0],[-5,0,0]]. Returns kind, diameter and radius in mm, center, axis. Errors when they lie on a line"},
                 "from":vec3("first point [x, y, z] in mm; needs to. Returns distance in mm and differences [dx, dy, dz]"),
                 "to":vec3("second point [x, y, z] in mm; needs from"),
                 "ids":{"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2,"description":"two object ids from get_scene. Returns gap [x, y, z] in mm between their bounding boxes (0 on an axis where they touch or overlap) and centre_distance"},
-                "snap":{"type":"boolean","description":"default false. Moves each from, to and circle point to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance (else leaves it); the answer lists snapped and, for from/to, from, to and alignment. Distance between two walls: from and to near each wall, snap true. Ignored by section"},
-                "snap_tolerance":{"type":"number","description":"with snap: how far, in mm, a point may be from a feature to catch it; default 1, 0 or more"},
-                "align":{"type":"boolean","description":"with snap and from/to, default true: lines the second point up with the first, so the distance is perpendicular between parallel faces, or exact along X, Y or Z when within 3 degrees of it; false keeps the snapped points as they are"}
+                "snap":{"type":"boolean","description":"default false. Moves each from, to and circle point to the nearest vertex, edge middle, edge or face centre of an object within snap_tolerance (else leaves it). The answer's snapped lists, per point, {kind, object id, curved_face} or null; for from/to also from, to and alignment. On a curved wall (a polygonal cylinder or sphere) a point lands on one facet, not on the true surface: use section for diameters and ids for the gap between two objects. Ignored by section"},
+                "snap_tolerance":{"type":"number","description":format!("with snap: how far, in mm, a point may be from a feature to catch it; default 1, {}; 0 turns snapping and align off", args::limits::SNAP_TOLERANCE)},
+                "align":{"type":"boolean","description":"with snap and from/to, default true: lines the second point up with the first, so the distance is perpendicular between parallel flat faces, or exact along X, Y or Z when within 3 degrees of it; never along the facets of a curved wall; false keeps the snapped points as they are"}
             }}),
         ),
         tool(
             "get_scene",
-            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh), selected, material (none, simple, realistic or translucent) and the surface's extras as true/false: painted (areas painted with paint_area), textured (a texture brushed on) and stickers; plus the chosen slicer and can_undo/can_redo. Units mm and degrees. valid false: run edit repair. Call it to learn the ids; tools that change the scene reply in the same format.",
+            "Read-only: the objects, each with id, name, colour, center, center_of_mass (volume centroid, or the bounding box centre for near-zero volume), size, bottom/top (min/max Z), left/right (min/max X), front/back (min/max Y), rotation, triangle count, valid (a closed mesh), selected, material (none, simple, realistic or translucent) and the surface's extras as true/false: painted (areas painted with paint_area), textured (a texture brushed on) and stickers; plus the chosen slicer and can_undo/can_redo. Units mm and degrees. valid false: run edit repair. Call it to learn the ids; tools that change the scene reply in the same format, plus changes with the ids created, removed and modified.",
             none.clone(),
         ),
         tool(
             "select",
-            "Replace the selection with the objects whose ids are given (ids from get_scene); [] selects nothing. transform, set_color, edit and the other editing tools act on the selection.",
+            "Replace the selection with the objects whose ids are given (ids from get_scene); [] selects nothing. transform, set_color, edit, hollow, smooth, simplify, split, emboss_text and the other editing tools act on the CURRENT selection; it changes after insert_shape, split, emboss_text, import and load_image, so select first.",
             json!({ "type": "object", "properties": { "ids": { "type": "array", "items": { "type": "integer" }, "description": "object ids" } }, "required": ["ids"] }),
         ),
         tool(
             "transform",
-            "Move, rotate or resize the selection, every unit mm or degrees. Applied in this order: rotation, size, position, then bottom, left, right, front, back, which override position on their axis. To stack on an object, bottom = that object's top. Give only what changes.",
-            json!({ "type": "object", "properties": { "position": vec3("centre of the selection's bounding box, mm"), "rotation": vec3("each selected object's orientation as degrees about X, Y, Z, as get_scene lists it: it replaces the current rotation (it is not added to it) and turns the object about its box centre"), "size": vec3("bounding box, mm, all > 0 (the object is scaled; the bottom stays where it was unless position or bottom is given)"), "bottom": { "type": "number", "description": "height of the underside, mm; overrides position's Z (0 = on the floor)" }, "left": { "type": "number", "description": "minimum X, mm; overrides position's X" }, "right": { "type": "number", "description": "maximum X, mm; applied after left" }, "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" }, "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
+            "Move, rotate or resize the CURRENT selection, every unit mm or degrees (select first). Applied in this order: rotation, size, position, then bottom, left, right, front, back, which override position on their axis. To stack on an object, bottom = that object's top. Give only what changes.",
+            json!({ "type": "object", "properties": {
+                "position": vec3(&format!("centre of the selection's bounding box, mm, each {}", args::limits::COORD)),
+                "rotation": vec3(&format!("each selected object's orientation as degrees about X, Y, Z, as get_scene lists it, each {}: it replaces the current rotation (it is not added to it) and turns the object about its box centre", args::limits::ANGLE)),
+                "size": vec3(&format!("bounding box, mm, each {} (the object is scaled; the bottom stays where it was unless position or bottom is given)", args::limits::OBJECT_SIZE)),
+                "bottom": { "type": "number", "description": format!("height of the underside, mm, {}; overrides position's Z (0 = on the floor)", args::limits::COORD) },
+                "left": { "type": "number", "description": "minimum X, mm; overrides position's X; same range as position" },
+                "right": { "type": "number", "description": "maximum X, mm; applied after left" },
+                "front": { "type": "number", "description": "minimum Y, mm; overrides position's Y" },
+                "back": { "type": "number", "description": "maximum Y, mm; applied after front" } } }),
         ),
         tool(
             "edit",
-            "Apply an operation to the selection. delete removes it. duplicate adds copies to its right and selects them. group joins two or more objects into one without merging their shapes (each keeps its colour); ungroup splits an object made of separate solids into one object per solid. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults (3 passes, edges false); use the smooth tool for other settings. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
+            "Apply an operation to the CURRENT selection (select first). delete removes it. duplicate adds copies to its right and selects them. group joins two or more objects into one without merging their shapes (each keeps its colour); ungroup splits an object made of separate solids into one object per solid. merge/intersect need two or more objects. subtract with one object cuts it out of every object it overlaps and removes it; with more, it takes the others away from the one with the lowest id. Pieces a subtraction leaves apart become separate objects. repair fixes invalid (not closed) meshes. smooth is the smooth tool with its defaults (3 passes, edges false); use the smooth tool for other settings. extrude_down fills the space under overhangs down to the floor. settle drops objects onto the floor. mirror_x/y/z flip it along that axis in place. undo and redo step through history and need no selection.",
             json!({ "type": "object", "properties": { "operation": { "type": "string", "enum": EDIT_OPERATIONS, "description": "what to do to the selection; delete, duplicate, group, ungroup, merge, subtract, intersect and the rest are explained in the tool description" } }, "required": ["operation"] }),
         ),
         tool(
             "set_color",
-            "Give each selected object this colour (its whole surface; use paint_area for one region).",
+            "Give each object of the CURRENT selection this colour (its whole surface; use paint_area for one region).",
             json!({ "type": "object", "properties": { "color": { "type": "string", "description": "#RRGGBB, e.g. #FF8000" } }, "required": ["color"] }),
         ),
         tool(
             "hollow",
-            "Hollow each selected object, leaving a closed wall of the given thickness. The wall never comes out thinner than asked, and is within about 0.25 mm of it where the voxel size allows (voxels are a quarter of the wall, but never finer than 1/160 of the model's largest size, so very large models get coarser voxels and a somewhat thicker wall). Errors when the object is too thin for that wall: ask for a thinner one.",
-            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": "wall thickness, mm, > 0, e.g. 2" } }, "required": ["wall"] }),
+            "Hollow each object of the CURRENT selection, leaving a closed wall of the given thickness: the cavity is sealed, so the top is closed too. To open it, split the result with z a little below its top minus the wall (keep bottom): the cut then passes through the cavity and the object ends that much lower. The objects keep their ids. The wall never comes out thinner than asked, and is within about 0.25 mm of it where the voxel size allows (voxels are a quarter of the wall, but never finer than 1/160 of the model's largest size, so very large models get a somewhat thicker wall); check it with measure section (walls[0].thickness). Errors when the object is too thin for that wall: ask for a thinner one.",
+            json!({ "type": "object", "properties": { "wall": { "type": "number", "description": format!("wall thickness, mm, {}, e.g. 2; an object thinner than twice the wall cannot be hollowed", args::limits::WALL) } }, "required": ["wall"] }),
         ),
         tool(
             "smooth",
-            "Smooth the selection, as the Smooth tool. Without edges each pass splits faces while the model is small and relaxes the surface, keeping about its size (it shrinks slightly); with edges each pass rounds edges and corners off (Loop subdivision), shrinking it.",
+            "Smooth the CURRENT selection, as the Smooth tool; the objects keep their ids. Each pass splits every face in four while the model is small (a cube has 12, 48, 192, 768 and 3072 triangles after 0 to 4 passes) and relaxes the surface; without edges it keeps about the model's size (it shrinks slightly), with edges each pass rounds edges and corners off (Loop subdivision), shrinking it. Two passes leave a cube visibly faceted; use 3 or 4 for round.",
             json!({ "type": "object", "properties": {
-                "passes": { "type": "integer", "description": "how strongly to smooth, a whole number 0..6, default 3" },
+                "passes": { "type": "integer", "description": "how strongly to smooth, a whole number 0..6, default 3; each pass multiplies the triangles by about 4 on a small model" },
                 "edges": { "type": "boolean", "description": "round sharp edges and corners off too (the model shrinks), default false" }
             } }),
         ),
         tool(
             "simplify",
-            "Reduce the number of triangles of the selection, keeping its shape as well as it can.",
+            "Reduce the number of triangles of the CURRENT selection, keeping its shape as well as it can; the objects keep their ids.",
             json!({ "type": "object", "properties": { "remove": { "type": "number", "description": "fraction of the triangles to remove, 0..1 (0.5 halves them); get_scene lists the triangle count" } }, "required": ["remove"] }),
         ),
         tool(
             "open",
-            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. The opened objects get new ids and are all selected; the undo history is cleared. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
+            "Open a model file, replacing the scene: 3MF, STL, OBJ, PLY, glTF/GLB, or SVG (each colour becomes an object 3 mm tall). STL, OBJ and PLY are read as mm. Fails while the scene has unsaved changes unless discard_changes is true. The opened objects get new ids (all selected; call get_scene) and the undo history is cleared. To add to the scene instead use import; for a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
-                "path": { "type": "string", "description": "model file path on the app's computer" },
+                "path": { "type": "string", "description": "model file path on the app's computer; if it says no such file, send the file with file_name and file_text or file_base64" },
                 "discard_changes": { "type": "boolean", "description": "drop the scene's unsaved changes; default false" }
             } }), "path", &MODEL_FILES),
         ),
         tool(
             "save",
-            "Save the whole scene to a file on the app's computer. The extension picks the format: 3MF (keeps colours, materials and the model's details), STL, OBJ, PLY, GLB or glTF; a path without one gets .3mf. Fails if the file exists unless overwrite is true.",
+            "Save the whole scene to a file on the app's computer. The extension picks the format: 3MF (keeps colours, materials and the model's details), STL, OBJ, PLY, GLB or glTF; a path without one gets .3mf. Fails if the file exists unless overwrite is true. The app writes on its own computer: the folder must exist there and be writable for it (a sandboxed app, such as the Flatpak, sees only some folders).",
             json!({ "type": "object", "properties": {
-                "path": { "type": "string", "description": "file path, e.g. /home/me/box.3mf" },
+                "path": { "type": "string", "description": "file path in an existing folder, e.g. /home/me/box.3mf" },
                 "overwrite": { "type": "boolean", "description": "replace an existing file; default false" }
             }, "required": ["path"] }),
         ),
         tool(
             "print",
-            "Only when the user explicitly asks to print: open the scene in the user's chosen slicer, where it is sliced and sent to the printer. The file carries the printer profile, print profile and filaments chosen with print_setup.",
+            "Only when the user explicitly asks to print. It does NOT send anything to the printer: it saves the scene as a 3MF project (with the printer profile, print profile and filaments chosen with print_setup) and opens it in the user's chosen slicer, where the user slices and confirms the print. Without a chosen slicer it looks for installed ones and uses the first; if none is found it fails with no slicer found.",
             none,
         ),
         tool(
             "screenshot",
-            "A PNG picture of the app window as it is now, with any dialog that is open. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours, textures and stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above.",
+            "A PNG picture of the app window as it is now, with any dialog that is open. With any of view, azimuth, elevation, focus, isolate or size it instead draws the scene off screen from that angle (parallel projection, object and painted colours, textures and stickers, grey background), framed on the focused objects; this never moves the user's camera or changes the selection, and works while the app is minimized. Example: view top, focus [3], isolate true shows object 3 alone from above. view together with azimuth or elevation is an error (give one or the other); a focus id that does not exist is an error naming it.",
             json!({ "type": "object", "properties": {
                 "view": { "type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"], "description": "front looks from -Y towards +Y (X to the right), left from -X, right from +X, top down from +Z with the front at the bottom of the picture; iso is from the front right and above. Not with azimuth/elevation" },
                 "azimuth": { "type": "number", "description": "degrees around the vertical, 0 = front, 90 = right, 180 = back, 270 = left; default 45. Not with view" },
                 "elevation": { "type": "number", "description": "degrees above the floor, -90 (from below) to 90 (from above); default 35. Not with view" },
                 "focus": { "description": "what to centre and frame: \"all\" (default), \"selection\", or a list of object ids from get_scene", "oneOf": [{ "type": "string", "enum": ["all", "selection"] }, { "type": "array", "items": { "type": "integer" }, "minItems": 1 }] },
                 "isolate": { "type": "boolean", "description": "draw only the focused objects; default false" },
-                "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, each 64..2048; default [800, 600]" }
+                "size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "[width, height] in pixels, each 64..2048 (values outside are clamped); default [800, 600]" }
             } }),
         ),
     ]
@@ -374,50 +388,50 @@ fn model_tools() -> Vec<Value> {
     vec![
         tool(
             "insert_shape",
-            "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it becomes the selection. Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
+            "Add a shape on the floor at the centre (it may overlap objects already there; move it with transform); it gets a new id and becomes the selection (the previous selection is replaced). Without size it fits a 40 mm box. custom builds it as the Custom tool does (cube, sphere, cone, torus or cylinder only) with its own subdivisions and roundness.",
             json!({ "type": "object", "properties": {
                 "shape": { "type": "string", "enum": ["cube", "cylinder", "pyramid", "cone", "sphere", "hexagon", "wedge", "torus", "tetrahedron"], "description": "the shape to add" },
-                "size": vec3("bounding box [x, y, z] in mm, all > 0; applied last, the bottom stays on the floor"),
-                "custom": { "type": "object", "description": "Custom tool settings, only for cube, sphere, cone, torus or cylinder; leave out for the plain shape", "properties": {
-                    "latitude": int("subdivisions from bottom to top (box, sphere, torus), 3..48, default 10"),
-                    "longitude": int("subdivisions around (or across for the cube), 3..48, default 10"),
-                    "width": num("mm across, 1..1000, default 40; the shape keeps its proportions across"),
-                    "height": num("mm, 1..1000, default 40"),
-                    "roundness": int("0 (sharp) to 10 (round), default 0"),
+                "size": vec3(&format!("bounding box [x, y, z] in mm, each {}; applied last, the bottom stays on the floor", args::limits::OBJECT_SIZE)),
+                "custom": { "type": "object", "description": "Custom tool settings, only for cube, sphere, cone, torus or cylinder; leave out for the plain shape. More subdivisions and roundness make smoother shapes with more triangles: a sphere has 180 triangles at 10x10 and 4512 at 48x48, and 16 times as many at roundness 10 (2880 and 72192)", "properties": {
+                    "latitude": int(&format!("rings from bottom to top of a sphere or torus (rows on a cube's faces), {}, default 10", args::limits::CUSTOM_STEPS)),
+                    "longitude": int(&format!("segments around the shape (columns on a cube's faces), {}, default 10", args::limits::CUSTOM_STEPS)),
+                    "width": num(&format!("mm across, {}, default 40; the shape keeps its proportions across", args::limits::CUSTOM_SIZE)),
+                    "height": num(&format!("mm, {}, default 40", args::limits::CUSTOM_SIZE)),
+                    "roundness": int(&format!("0 (sharp) to 10 (round), {}, default 0: each step rounds the edges and corners off more and adds triangles", args::limits::ROUNDNESS)),
                 } },
             }, "required": ["shape"] }),
         ),
         tool(
             "split",
-            "Cut the selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). width and length give the plane a finite size (along its own X and Y); then only the part of the object inside the box that rectangle sweeps along the normal is cut (needs a closed, manifold object). The kept pieces stay in place, replace the cut objects with new ids (call get_scene) and become the selection. Fails, changing nothing, when the plane misses a selected object.",
+            "Cut the CURRENT selection with a plane, as the Split tool. With only z the plane is horizontal at that height. For a slanted plane give point (or z, which replaces point's Z; the default point is the selection's centre) and either normal or rotation. top is the side the normal points to (+Z when level). width and length give the plane a finite size (along its own X and Y); then only the part of the object inside the box that rectangle sweeps along the normal is cut (needs a closed, manifold object). The kept pieces stay in place and replace the cut objects: the old ids are gone, the pieces have NEW ids (the answer's changes lists removed and created) and are the selection. Fails, changing nothing, when the plane misses a selected object.",
             json!({ "type": "object", "properties": {
-                "z": num("height of a horizontal plane, mm"),
-                "point": vec3("a point the plane passes through, mm"),
+                "z": num(&format!("height of a horizontal plane, mm, {}", args::limits::COORD)),
+                "point": vec3("a point the plane passes through, mm; same range as z"),
                 "normal": vec3("direction the plane faces (its top side), any length > 0"),
-                "rotation": vec3("the Split tool's plane angles in degrees about X, Y, Z (as an object's rotation); [0, 0, 0] is level"),
+                "rotation": vec3(&format!("the Split tool's plane angles in degrees about X, Y, Z (as an object's rotation), each {}; [0, 0, 0] is level", args::limits::ANGLE)),
                 "keep": one_of(&["top", "bottom", "both"], "default top; with a finite plane, both gives the part inside the box below the plane and the rest"),
-                "width": num("plane width along its own X, mm; default 0, the whole object"),
-                "length": num("plane length along its own Y, mm; default 0, the whole object"),
+                "width": num(&format!("plane width along its own X, mm, {}; default 0, the whole object", args::limits::PLANE_EXTENT)),
+                "length": num(&format!("plane length along its own Y, mm, {}; default 0, the whole object", args::limits::PLANE_EXTENT)),
             } }),
         ),
         tool(
             "emboss_text",
-            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as raised lettering on a ball. A top_color or side_color different from the object's makes that part a separate object; all pieces are selected afterwards.",
+            "Emboss (or engrave) a pattern onto the one selected object, as the Emboss tool: text, one of the built-in shapes (named in pattern), or the dark areas of a picture (PNG, JPEG or SVG). planar projects straight onto a face: the top, centred, unless at puts it on another face (any side or slant) or offset moves it; cylindrical wraps it around the object's vertical axis on its front (-Y), as a label round a mug; spherical wraps it around the object's centre on its front, as raised lettering on a ball. The object keeps its id. The pattern has the object's colour, so the relief is hard to see: give top_color. A top_color or side_color different from the object's makes that part a new object (see changes.created); all pieces are selected afterwards. The work grows with the pattern: text up to 60 characters, and its box at most 100000 mm².",
             with_file(json!({ "type": "object", "properties": {
                 "pattern": one_of(&patterns, "text, a shape (star is four-pointed, burst eight-pointed, cross a diagonal X, no_sign a ring with a bar, smiley a face with eyes and mouth cut out) or image; default text"),
-                "text": text("the text, for pattern text"),
+                "text": text(&format!("the text, for pattern text, up to {} characters", args::limits::TEXT_CHARS)),
                 "image": text(&format!("for pattern image, {picture}. Its dark, opaque areas are embossed")),
                 "font": text("installed font family (see list_fonts); default the bundled font"),
-                "size": num("capital letter height for text, overall height for shapes and images, mm, default 10; the width follows in proportion unless width is given"),
-                "width": num("overall width of the pattern, mm, stretching it sideways without changing its height; default: in proportion to size"),
-                "depth": num("height above the surface (or depth when engraving), mm, default 1"),
+                "size": num(&format!("capital letter height for text, overall height for shapes and images, mm, {}, default 10; the width follows in proportion unless width is given", args::limits::EMBOSS_SIZE)),
+                "width": num(&format!("overall width of the pattern, mm, {}, stretching it sideways without changing its height; default: in proportion to size", args::limits::EMBOSS_WIDTH)),
+                "depth": num(&format!("TOTAL height above the surface (or depth when engraving), mm, {}, default 1; with top_color only the top layer, 25% of the depth but at most 0.4 mm, is coloured", args::limits::EMBOSS_DEPTH)),
                 "engrave": flag("cut into the surface instead of raising; default false"),
                 "bevel": flag("slope the edges; default false"),
-                "angle": num("turn in its own plane, degrees, default 0"),
+                "angle": num(&format!("turn in its own plane, degrees, {}, default 0", args::limits::TURN)),
                 "projection": one_of(&["planar", "cylindrical", "spherical"], "default planar"),
-                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical)" },
-                "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face there, facing out"),
-                "top_color": color("colour of the top layer; default the object's"),
+                "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": format!("[x, y] mm from the object's centre across the face the pattern lies on (planar; the top unless at chose another) or along the surface from the front (cylindrical, spherical), each {}", args::limits::COORD) },
+                "at": vec3("a world point on the surface to centre the pattern on, mm; overrides offset. A planar pattern lies on the face of the triangle nearest to it, facing out; on an edge or corner that choice is ambiguous, so aim at the middle of the face"),
+                "top_color": color("colour of the top layer (the cap, see depth); default the object's, which makes the relief hard to see"),
                 "side_color": color("colour of the sides of a raised pattern; default the object's"),
             } }), "image", &PICTURE_FILES),
         ),
@@ -428,13 +442,13 @@ fn model_tools() -> Vec<Value> {
                 "point": vec3(point),
                 "color": color("the paint"),
                 "coverage": num("0..1, default 0"),
-                "radius": num("paint only triangles whose centre is within this many mm of point (the triangle at point always); default no limit"),
+                "radius": num(&format!("paint only triangles whose centre is within this many mm of point (the triangle at point always), {}; default no limit", args::limits::BRUSH_RADIUS)),
                 "id": int("object to paint; default the object nearest to point"),
             }, "required": ["point", "color"] }),
         ),
         tool(
             "set_material",
-            "Give the selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through). Any type but none also gives each object the colour and clears its painted areas; textures and stickers stay. none only removes the material, keeping colour and paint.",
+            "Give the CURRENT selection a material, as Paint → Material: none (plain), simple (matte), realistic (glossy) or translucent (see-through). Any type but none also gives each object the colour and clears its painted areas; textures and stickers stay. none only removes the material, keeping colour and paint.",
             json!({ "type": "object", "properties": {
                 "type": one_of(&["none", "simple", "realistic", "translucent"], "the material"),
                 "color": color("default the first selected object's colour; not used with none"),
@@ -442,47 +456,47 @@ fn model_tools() -> Vec<Value> {
         ),
         tool(
             "apply_texture",
-            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage and radius as in paint_area; on curved meshes give radius, or even a small coverage covers the whole curved surface). sticker prints it once at point as a flat picture facing out of the surface (no geometry; for raised lettering or shapes use emboss_text).",
+            "Put a built-in texture or a picture (PNG, JPEG or SVG) on the CURRENT selection's surface, as Paint → Texture; it colours the surface and does not change the shape. brush tiles it with box mapping: over every selected object when no point is given, else over the region around point (coverage and radius as in paint_area; on curved meshes give radius, or even a small coverage covers the whole curved surface). sticker prints it once at point as a flat picture facing out of the surface (no geometry; for raised lettering or shapes use emboss_text).",
             with_file(json!({ "type": "object", "properties": {
                 "texture": one_of(&textures, "a built-in texture (the last six are white stencil shapes); give this or image"),
                 "image": text(&format!("{picture}; give this or texture")),
                 "mode": one_of(&["brush", "sticker"], "default brush; sticker needs point"),
                 "point": vec3(point),
                 "coverage": num("brush with point: 0..1, default 1 (the whole connected surface)"),
-                "radius": num("brush with point: texture only triangles whose centre is within this many mm of point (the triangle at point always); default no limit"),
+                "radius": num(&format!("brush with point: texture only triangles whose centre is within this many mm of point (the triangle at point always), {}; default no limit", args::limits::BRUSH_RADIUS)),
                 "id": int("a selected object to use; default the selected object nearest to point"),
-                "size": num("sticker width, mm; default 40% of the object's longest side"),
-                "angle": num("sticker turn about the surface normal, degrees, default 0"),
+                "size": num(&format!("sticker width, mm, {}; default 40% of the object's longest side", args::limits::STICKER_SIZE)),
+                "angle": num(&format!("sticker turn about the surface normal, degrees, {}, default 0", args::limits::TURN)),
             } }), "image", &PICTURE_FILES),
         ),
         tool(
             "import",
-            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (call get_scene) and become the selection. For a picture (PNG, JPEG) use load_image.",
+            "Add a model file to the scene without replacing it, as Add → Import model: 3MF, STL, OBJ, PLY, glTF/GLB, or an SVG drawing (each colour becomes an object 3 mm tall, at the drawing's real size). It lands centred on the floor (it may overlap objects already there; move it with transform); its objects get new ids (changes.created) and become the selection, replacing the previous one. For a picture (PNG, JPEG) use load_image.",
             with_file(json!({ "type": "object", "properties": {
-                "path": text("model file path on the app's computer"),
+                "path": text("model file path on the app's computer; if it says no such file, send the file with file_name and file_text or file_base64"),
                 "units": one_of(&["micron", "mm", "cm", "inch", "foot", "m"], "what one unit of an STL, OBJ or PLY file is, default mm; 3MF, glTF and SVG carry their own"),
             } }), "path", &MODEL_FILES),
         ),
         tool(
             "extrude_outline",
-            "Add a border around (or inside) the selection's outline seen from above, as Edit → Extrude outline, e.g. to make a badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object of its colour; with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. Without keep_model only the border remains, replacing the selection.",
+            "Add a border around (or inside) the CURRENT selection's outline seen from above, as Edit → Extrude outline, e.g. to make a badge of an imported SVG. Several selected objects share one border. It rises from the lowest bottom. keep_model with one object merges it with its border into one object (same id, its colour); with several objects (or a mesh that is not a closed solid) the border is a new object of the first one's colour, selected with them. keep_model false DELETES the original: only the border remains, in the first selected object (it keeps that id) and the other selected objects are removed.",
             json!({ "type": "object", "properties": {
                 "side": one_of(&["outside", "inside"], "outside: a ring around the outline; inside: a band just within its edge. Default outside"),
-                "width": num("border width, mm, default 2"),
-                "height": num("border height from the object's bottom, mm; default the selection's height"),
-                "keep_model": flag("merge the border with the object (default true); false leaves only the border"),
+                "width": num(&format!("border width, mm, {}, default 2", args::limits::BORDER_WIDTH)),
+                "height": num(&format!("border height from the object's bottom, mm, {}; default the selection's height", args::limits::BORDER_HEIGHT)),
+                "keep_model": flag("merge the border with the object (default true); false DELETES the original and leaves only the border"),
                 "smooth_outer": num("round the corners of the border's outer edge, 0 (sharp, default) to 1"),
                 "smooth_inner": num("round the corners of the border's inner edge, 0 (sharp, default) to 1"),
             } }),
         ),
         tool(
             "load_image",
-            "Turn a picture (PNG, JPEG or SVG) into a new solid, as Load image, added on the floor at the centre (it may overlap objects already there; move it with transform) and selected. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert; transparent counts as white. For a solid made of an SVG's own shapes at their real size, use import instead.",
+            "Turn a picture (PNG, JPEG or SVG) into a new solid, as Load image, added on the floor at the centre (it may overlap objects already there; move it with transform) as a new object with a new id, which becomes the selection. contour: brightness in flat steps; height_map: smooth relief; edge: the dark areas' outline extruded; stamp: a mirrored two-level stamp. Dark is high unless invert; transparent counts as white. For a solid made of an SVG's own shapes at their real size, use import instead.",
             with_file(json!({ "type": "object", "properties": {
-                "path": text(&picture),
+                "path": text(&format!("{picture}; if it says no such file, send the file with file_name and file_text or file_base64")),
                 "method": one_of(&["contour", "height_map", "edge", "stamp"], "default contour"),
-                "size": num("mm along the longer side (the height for edge), default 80"),
-                "depth": num("most relief, mm, default 3; contour, height_map and stamp stand on a 0.6 mm base, so depth 3 is 3.6 mm tall"),
+                "size": num(&format!("mm along the longer side (the height for edge), {}, default 80; edge outlines may cover at most 100000 mm²", args::limits::IMAGE_SIZE)),
+                "depth": num(&format!("most relief, mm, {}, default 3; contour, height_map and stamp stand on a 0.6 mm base, so depth 3 is 3.6 mm tall", args::limits::IMAGE_DEPTH)),
                 "levels": int("contour steps, 2..8, default 8"),
                 "smooth": num("blur before sampling, 0..1, default 1"),
                 "invert": flag("light is high instead of dark; default false"),
@@ -496,11 +510,11 @@ fn model_tools() -> Vec<Value> {
 fn print_tools() -> Vec<Value> {
     let none = json!({ "type": "object", "properties": {} });
     let tool = |name: &str, description: &str, schema: Value| json!({ "name": name, "description": description, "inputSchema": schema });
-    let field = |what: &str| json!({ "type": "string", "description": what });
+    let field = |what: &str| json!({ "type": "string", "description": format!("{what}, up to {} characters", args::limits::INFO_CHARS) });
     vec![
         tool(
             "model_info",
-            "Read or set the model's metadata (\"About the model\"), saved in 3MF files and sent to the slicer. With no arguments it only reads. Given fields replace those fields; an empty string clears one. The title also names the window and the print file. Replies with all the fields.",
+            "Read or set the model's metadata (\"About the model\"), saved in 3MF files and sent to the slicer. With no arguments it only reads. Given fields replace those fields; an empty string clears one, and clearing the title restores the default one, the scene's file name (or New scene). The title also names the window and the print file. Replies with all the fields as they are now, the default title included.",
             json!({ "type": "object", "properties": {
                 "title": field("model title"),
                 "designer": field("who designed it"),
@@ -522,8 +536,11 @@ fn print_tools() -> Vec<Value> {
         ),
         tool(
             "list_fonts",
-            "Read-only: the installed font families that emboss_text accepts in font, as count and fonts. Without font, emboss_text uses the bundled font.",
-            json!({ "type": "object", "properties": { "filter": field("only families whose name contains this text, ignoring case") } }),
+            "Read-only: the installed font families that emboss_text accepts in font, as count (all matches) and fonts. Without font, emboss_text uses the bundled font.",
+            json!({ "type": "object", "properties": {
+                "filter": field("only families whose name contains this text, ignoring case"),
+                "limit": { "type": "integer", "description": "list at most this many families (count still says how many match); default all" },
+            } }),
         ),
         tool(
             "printer_status",
@@ -943,13 +960,13 @@ pub fn inline_dir() -> std::path::PathBuf {
 }
 
 /// The font families from `all` whose names contain `filter`, ignoring case.
-pub fn list_fonts(all: &[String], filter: Option<&str>) -> Value {
+pub fn list_fonts(all: &[String], filter: Option<&str>, limit: Option<usize>) -> Value {
     let filter = filter.map(|f| f.trim().to_lowercase()).unwrap_or_default();
     let fonts: Vec<&String> = all
         .iter()
         .filter(|n| n.to_lowercase().contains(&filter))
         .collect();
-    json!({ "count": fonts.len(), "fonts": fonts })
+    json!({ "count": fonts.len(), "fonts": fonts.iter().take(limit.unwrap_or(usize::MAX)).collect::<Vec<_>>() })
 }
 
 /// The installed family named `name`, ignoring case; the error names up to
@@ -979,15 +996,17 @@ pub fn find_font(all: &[String], name: &str) -> Result<String, String> {
     ))
 }
 
-/// A point argument `[x, y, z]` in mm.
+/// A point argument `[x, y, z]` in mm, each within [`args::limits::COORD`].
 fn point_arg(v: &Value, what: &str) -> Result<glam::Vec3, String> {
-    let bad = || format!("{what} must be a point [x, y, z] in mm");
-    let a = v.as_array().filter(|a| a.len() == 3).ok_or_else(bad)?;
-    let mut p = [0.0; 3];
-    for i in 0..3 {
-        p[i] = a[i].as_f64().ok_or_else(bad)? as f32;
-    }
-    Ok(glam::Vec3::from_array(p))
+    args::vec3(&json!({ "p": v }), "p", args::limits::COORD)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "{what} must be a point [x, y, z], three numbers each {}",
+                args::limits::COORD
+            )
+        })
 }
 
 fn round_json(r: &crate::measure::Round) -> Value {
@@ -1028,7 +1047,10 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
     // flat face, the side with material).
     let (point, hint, horizontal) = match (spec["z"].as_f64(), given, near) {
         (Some(_), Some(_), _) => return Err("section takes z or point, not both".into()),
-        (Some(z), None, _) => (glam::Vec3::new(0.0, 0.0, z as f32), near, true),
+        (Some(_), None, _) => {
+            let z = args::number_in(&spec["z"], "section.z", args::limits::COORD)?;
+            (glam::Vec3::new(0.0, 0.0, z), near, true)
+        }
         (None, Some(p), _) => {
             let p = point_arg(p, "section.point")?;
             (p, near.or(Some(p)), false)
@@ -1138,25 +1160,33 @@ fn section_json(scene: &crate::scene::Scene, spec: &Value) -> Result<Value, Stri
     Ok(out)
 }
 
+/// A snapped point: the id of the object it landed on and how.
+type Snapped = (u64, crate::snapping::PointSnap);
+
+/// `snapped` in the answer: what each point caught and on which object, null when nothing.
+fn snapped_json(hit: Option<Snapped>) -> Value {
+    hit.map_or(
+        Value::Null,
+        |(id, h)| json!({"kind": h.kind.name(), "object": id, "curved_face": h.curved}),
+    )
+}
+
 /// Computes measurements without modifying the scene.
 pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, String> {
     use crate::snapping::{align, Alignment};
     let vector = |v: glam::Vec3| v.to_array();
     let flag = |key: &str, default: bool| args[key].as_bool().unwrap_or(default);
     let snap = flag("snap", false);
-    let tolerance = args["snap_tolerance"].as_f64().unwrap_or(1.0) as f32;
-    if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err("snap_tolerance must be a distance in mm, 0 or more".into());
-    }
+    let tolerance = args::number(args, "snap_tolerance", 1.0, args::limits::SNAP_TOLERANCE)?;
+    // A tolerance of 0 catches nothing, and lines nothing up either.
+    let snap = snap && tolerance > 0.0;
     // Each point, snapped to the nearest face feature of an object when asked to.
-    let pick = |v: &Value,
-                what: &str|
-     -> Result<(glam::Vec3, Option<crate::snapping::PointSnap>), String> {
+    let pick = |v: &Value, what: &str| -> Result<(glam::Vec3, Option<Snapped>), String> {
         let p = point_arg(v, what)?;
         let hit = snap
             .then(|| crate::measure::snap_to_scene(scene, p, tolerance))
             .flatten();
-        Ok((hit.map_or(p, |h| h.point), hit))
+        Ok((hit.map_or(p, |h| h.1.point), hit))
     };
     // Null counts as left out, as in `check_args`.
     let given = |key: &str| args.get(key).filter(|v| !v.is_null());
@@ -1197,10 +1227,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
             .ok_or("the three points lie on a line or coincide, so no circle goes through them")?;
         let mut out = round_json(&round);
         if snap {
-            out["snapped"] = json!(picked
-                .iter()
-                .map(|p| p.1.map(|h| h.kind.name()))
-                .collect::<Vec<_>>());
+            out["snapped"] = json!(picked.iter().map(|p| snapped_json(p.1)).collect::<Vec<_>>());
             out["points"] = json!(picked.iter().map(|p| vector(p.0)).collect::<Vec<_>>());
         }
         return Ok(out);
@@ -1213,7 +1240,9 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         let (mut b, hb) = pick(&args["to"], "to")?;
         let mut alignment = None;
         if snap && flag("align", true) {
-            if let Some((p, how)) = align(a, ha.map(|h| h.normal), b, hb.map(|h| h.normal)) {
+            // A facet of a curved wall has no normal to line up along.
+            let flat = |h: Option<Snapped>| h.filter(|h| !h.1.curved).map(|h| h.1.normal);
+            if let Some((p, how)) = align(a, flat(ha), b, flat(hb)) {
                 b = p;
                 alignment = Some(match how {
                     Alignment::Perpendicular => "perpendicular".to_string(),
@@ -1226,7 +1255,7 @@ pub fn measure(scene: &crate::scene::Scene, args: &Value) -> Result<Value, Strin
         if snap {
             out["from"] = json!(vector(a));
             out["to"] = json!(vector(b));
-            out["snapped"] = json!([ha.map(|h| h.kind.name()), hb.map(|h| h.kind.name())]);
+            out["snapped"] = json!([snapped_json(ha), snapped_json(hb)]);
             out["alignment"] = json!(alignment);
         }
         return Ok(out);
@@ -1485,7 +1514,9 @@ mod tests {
         // Near the top corner and over the bottom face: both snap, and the line is the height.
         let args = json!({"from":[hi.x - 0.2, hi.y - 0.1, hi.z],"to":[lo.x + 3.0, lo.y + 2.0, lo.z],"snap":true});
         let r = measure(&scene, &args).unwrap();
-        assert_eq!(r["snapped"][0], "Vertex");
+        assert_eq!(r["snapped"][0]["kind"], "Vertex");
+        assert_eq!(r["snapped"][0]["object"], 1);
+        assert_eq!(r["snapped"][0]["curved_face"], false);
         assert_eq!(r["alignment"], "perpendicular");
         let height = (hi.z - lo.z) as f64;
         assert!((r["distance"].as_f64().unwrap() - height).abs() < 1e-3);
@@ -1495,13 +1526,39 @@ mod tests {
             &scene,
             &json!({"from":[0,0,0],"to":[1,1,1],"snap":true,"snap_tolerance":-1})
         )
-        .is_err());
+        .unwrap_err()
+        .contains("between 0 and 1000 mm"));
         let circle = measure(
             &scene,
             &json!({"circle":[[hi.x,hi.y,hi.z],[lo.x,hi.y,hi.z],[lo.x,lo.y,hi.z]],"snap":true}),
         )
         .unwrap();
-        assert_eq!(circle["snapped"][2], "Vertex");
+        assert_eq!(circle["snapped"][2]["kind"], "Vertex");
+        // A tolerance of 0 is no snapping at all, even for a point on the surface.
+        let none = measure(
+            &scene,
+            &json!({"from":[hi.x, hi.y, hi.z],"to":[lo.x, lo.y, lo.z],"snap":true,"snap_tolerance":0}),
+        )
+        .unwrap();
+        assert!(none.get("snapped").is_none() && none.get("alignment").is_none());
+    }
+
+    #[test]
+    fn measure_snap_on_a_polygonal_cylinder_does_not_line_up_along_a_facet() {
+        let (scene, id) = scene_with(crate::primitives::Primitive::Cylinder);
+        let b = scene.get(id).unwrap().world_aabb();
+        let c = b.center();
+        let args = json!({"from":[b.min.x, c.y, c.z],"to":[b.max.x, c.y, c.z],"snap":true});
+        let r = measure(&scene, &args).unwrap();
+        assert_eq!(r["snapped"][0]["curved_face"], true);
+        assert_eq!(r["snapped"][0]["object"], id);
+        // Not moved onto the perpendicular of a facet: still along X, the diameter.
+        assert!(
+            r["alignment"] == "along X" || r["alignment"].is_null(),
+            "{r}"
+        );
+        let d = r["distance"].as_f64().unwrap();
+        assert!((d - (b.max.x - b.min.x) as f64).abs() < 0.2, "{d}");
     }
 
     #[test]

@@ -161,10 +161,15 @@ fn focus(scene: &Scene, v: &Value) -> Result<Option<BTreeSet<u64>>, String> {
                 .filter(|id| scene.get(**id).is_none())
                 .map(u64::to_string)
                 .collect();
+            let have: Vec<String> = scene.objects.iter().map(|o| o.id.to_string()).collect();
+            let valid = format!("the scene's ids are {}", have.join(", "));
             match unknown.len() {
                 0 => Ok(Some(ids)),
-                1 => Err(format!("no object with id {}", unknown[0])),
-                _ => Err(format!("no objects with ids {}", unknown.join(", "))),
+                1 => Err(format!("no object with id {}; {valid}", unknown[0])),
+                _ => Err(format!(
+                    "no objects with ids {}; {valid}",
+                    unknown.join(", ")
+                )),
             }
         }
         _ => Err("focus must be \"all\", \"selection\" or a list of object ids".into()),
